@@ -1,0 +1,59 @@
+{
+  "entities": {
+    "User": {
+      "title": "Người dùng",
+      "description": "Thông tin hồ sơ người dùng",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["email", "updatedAt"]
+    },
+    "ProjectSession": {
+      "title": "Phiên làm việc",
+      "description": "Lịch sử biên tập và bản nháp bài viết",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "taskType": { "type": "string" },
+        "style": { "type": "string" },
+        "format": { "type": "string" },
+        "currentOutput": { "type": "string" },
+        "documentIds": { "type": "array", "items": { "type": "string" } },
+        "versions": { "type": "array", "items": { "type": "object" } },
+        "illustrations": { "type": "array", "items": { "type": "object" } },
+        "createdAt": { "type": "number" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["title", "taskType", "currentOutput", "createdAt", "updatedAt"]
+    },
+    "DocumentSource": {
+      "title": "Tư liệu nguồn",
+      "description": "Các tài liệu tham khảo cho bài viết",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "content": { "type": "string" },
+        "type": { "type": "string" },
+        "category": { "type": "string" },
+        "metadata": { "type": "object" }
+      },
+      "required": ["name", "content", "type", "category"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Hồ sơ người dùng"
+    },
+    "/users/{userId}/sessions/{sessionId}": {
+      "schema": "ProjectSession",
+      "description": "Các bài viết và phiên làm việc của người dùng"
+    },
+    "/users/{userId}/documents/{docId}": {
+      "schema": "DocumentSource",
+      "description": "Kho tư liệu cá nhân của người dùng"
+    }
+  }
+}

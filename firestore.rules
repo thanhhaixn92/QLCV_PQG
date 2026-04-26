@@ -1,0 +1,102 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Allow connection test
+    match /test/connection {
+      allow read: if true;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    match /users/{userId} {
+      function isValidUser(data) {
+        return data.size() >= 2
+          && data.email is string
+          && data.updatedAt is number;
+      }
+
+      allow get: if isOwner(userId);
+      allow create, update: if isOwner(userId) && isValidUser(request.resource.data);
+
+      // 2. Sessions Sub-collection
+      match /sessions/{sessionId} {
+        function isValidSession(data) {
+          return data.size() >= 5
+            && data.title is string
+            && data.taskType is string
+            && data.currentOutput is string
+            && data.currentOutput.size() <= 700000 // Reduced further to avoid 1MiB limit
+            && data.updatedAt is number;
+        }
+
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(sessionId) && isValidSession(request.resource.data);
+        allow update: if isOwner(userId) && isValidId(sessionId) && isValidSession(request.resource.data)
+            && request.resource.data.createdAt == resource.data.createdAt;
+        allow delete: if isOwner(userId);
+      }
+
+      // 3. Tasks Collection
+      match /tasks/{taskId} {
+        function isValidWorkTask(data) {
+          return data.size() >= 8
+            && data.title is string && data.title.size() > 0
+            && data.assignee is string
+            && data.categoryCode is string
+            && data.status is string
+            && data.priority is string
+            && data.isDeputy is bool
+            && data.ownerId == userId // Strict ownership
+            && data.updatedAt is number;
+        }
+
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidWorkTask(request.resource.data);
+        allow update: if isOwner(userId) && isValidWorkTask(request.resource.data);
+        allow delete: if isOwner(userId);
+      }
+
+      // 4. Documents Sub-collection
+      match /documents/{docId} {
+        function isValidDocument(data) {
+          return data.size() >= 4
+            && data.name is string
+            && (data.type is string || data.sourceType is string)
+            && data.category in ['GENERAL', 'PROJECT'];
+        }
+
+        allow read, list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidDocument(request.resource.data);
+        allow update: if isOwner(userId) && isValidDocument(request.resource.data);
+        allow delete: if isOwner(userId);
+      }
+
+      // 5. Library Collections Sub-collection
+      match /libraryCollections/{collectionId} {
+        allow read, list, create, update, delete: if isOwner(userId);
+      }
+
+      // 6. Settings Sub-collection
+      match /settings/aiKey {
+        // Block all direct client access to aiKey. Only backend should handle this.
+        // Frontend will use /api/user-ai-key/status to check status.
+        allow read, write: if false;
+      }
+    }
+  }
+}

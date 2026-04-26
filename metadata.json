@@ -1,0 +1,6 @@
+{
+  "name": "VMS Navigator - Trợ lý Nghiệp vụ & Biên tập",
+  "description": "Trợ lý quản lý công việc và biên tập nội dung chuyên sâu cho Công ty Hoa tiêu hàng hải miền Bắc.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["AI Task Management", "Maritime Journalism", "Pilot Service Workflow", "Doc Processing"]
+}
