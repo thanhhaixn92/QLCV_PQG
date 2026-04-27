@@ -11,75 +11,168 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import admin from 'firebase-admin';
 import firebaseConfig from './firebase-applet-config.json' with { type: 'json' };
 
-// Initialize Firebase Admin
-const configProjectId = firebaseConfig.projectId;
-const configDatabaseId = firebaseConfig.firestoreDatabaseId;
+export type LibrarySourceType =
+  | 'upload'
+  | 'web_link'
+  | 'google_drive_folder'
+  | 'google_drive_file'
+  | 'google_docs'
+  | 'google_sheets'
+  | 'google_slides'
+  | 'google_pdf'
+  | 'text';
 
-// Priority: Env Var > Config File > Default Hardcoded (Fallback)
-const projectId = process.env.FIREBASE_PROJECT_ID || configProjectId || 'gen-lang-client-0733170002';
-const databaseId = process.env.FIRESTORE_DATABASE_ID || configDatabaseId;
-
-console.log('[Firebase Init] Diagnostics:', {
-  detectedProjectId: projectId,
-  detectedDatabaseId: databaseId || '(default)',
-  envProjectId: process.env.FIREBASE_PROJECT_ID ? 'set' : 'not-set',
-  envDatabaseId: process.env.FIRESTORE_DATABASE_ID ? 'set' : 'not-set',
-  configProjectId: configProjectId ? 'present' : 'absent'
-});
-
-if (!admin.apps.length) {
-  try {
-    admin.initializeApp();
-    console.log('[Firebase Init] Admin SDK Initialized using ADC. Resolved Project ID:', admin.app().options.projectId);
-  } catch (err) {
-    console.error('[Firebase Init] Error initializing Admin SDK:', err);
-  }
-} else {
-    console.log('[Firebase Init] Admin SDK already initialized. Project ID:', admin.app().options.projectId);
+export interface DocumentSource {
+  id: string;
+  name: string;
+  content: string;
+  type: 'word' | 'pdf' | 'excel' | 'link' | 'text' | 'drive';
+  sourceType?: LibrarySourceType;
+  category: 'GENERAL' | 'PROJECT';
+  collectionId?: string;
+  driveFileId?: string;
+  driveMimeType?: string;
+  driveIconUrl?: string;
+  driveThumbnailUrl?: string;
+  driveWebViewLink?: string;
+  driveSize?: string;
+  contentStatus?: 'metadata_only' | 'extracting' | 'extracted' | 'summary_only' | 'unavailable' | 'error';
+  documentKind?: string;
+  taskCategoryCode?: string;
+  summary?: any;
+  metadata?: any;
+  ownerId?: string;
+  createdAt?: number;
+  updatedAt?: number;
 }
+
+// Initialization constants
+const DEFAULT_TEXT_MODEL = process.env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash';
+const DEFAULT_PRO_MODEL = process.env.GEMINI_PRO_MODEL || 'gemini-2.5-pro';
+const DEFAULT_FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || 'gemini-2.5-flash-lite';
+
+// Initialize Firebase Admin
+const targetProjectId = (process.env.FIREBASE_PROJECT_ID || firebaseConfig.projectId || '').trim();
+
+const configuredDatabaseId =
+  (process.env.FIRESTORE_DATABASE_ID || firebaseConfig.firestoreDatabaseId || '(default)').trim();
+
+const normalizedDatabaseId =
+  !configuredDatabaseId || configuredDatabaseId === 'default'
+    ? '(default)'
+    : configuredDatabaseId;
+
+if (admin.apps.length === 0) {
+  try {
+    admin.initializeApp({
+      projectId: targetProjectId
+    });
+    console.log(`[Firebase Admin] App initialized for project: ${targetProjectId}`);
+  } catch (err) {
+    console.error('[Firebase Admin] Initialization failed:', err);
+  }
+}
+
+const firebaseApp = admin.app();
 
 // We use getFirestore(app, databaseId) to ensure we use the correct database
 import { getFirestore } from 'firebase-admin/firestore';
 
 let db: admin.firestore.Firestore;
+let firestoreReady = false;
+let firestoreError: string | null = null;
+let firestoreErrorType: string | null = null;
+let actualFirestoreDatabaseId = normalizedDatabaseId;
+
 try {
-  // If databaseId is 'default' or '(default)', we should use the default database
-  const isDefault = !databaseId || databaseId === '(default)' || databaseId === '';
-  
-  if (!isDefault) {
-    db = getFirestore(admin.app(), databaseId);
-    console.log(`[Firestore] Proactive attempt with custom database: ${databaseId}`);
-  } else {
-    db = getFirestore(admin.app());
-    console.log('[Firestore] Proactive attempt with (default) database');
+  db =
+    normalizedDatabaseId === '(default)'
+      ? getFirestore(firebaseApp)
+      : getFirestore(firebaseApp, normalizedDatabaseId);
+
+  console.log(`[Firestore] Initialized project=${targetProjectId}, database=${normalizedDatabaseId}`);
+} catch (err: any) {
+  firestoreReady = false;
+  firestoreError = err?.message || String(err);
+  firestoreErrorType = 'firestore_init_failed';
+
+  console.error('[Firestore] Initialization failed:', {
+    projectId: targetProjectId,
+    databaseId: normalizedDatabaseId,
+    message: firestoreError
+  });
+
+  throw err;
+}
+
+function classifyFirestoreError(error: any) {
+  const message = String(error?.message || '');
+  const code = error?.code || error?.status || '';
+
+  if (code === 5 || message.includes('NOT_FOUND') || message.toLowerCase().includes('not found')) {
+    return {
+      errorType: 'firestore_database_not_found',
+      message: `Firestore database "${normalizedDatabaseId}" không tồn tại hoặc backend không có quyền truy cập trong project "${targetProjectId}".`
+    };
   }
-} catch (err) {
-  console.error('[Firestore] Initialization failed, falling back to basic initialization:', err);
-  db = getFirestore(admin.app());
+
+  if (code === 7 || message.toLowerCase().includes('permission')) {
+    return {
+      errorType: 'firestore_permission_denied',
+      message: 'Backend không có quyền truy cập Firestore database hiện tại.'
+    };
+  }
+
+  return {
+    errorType: 'firestore_unavailable',
+    message: 'Firestore chưa sẵn sàng hoặc không truy cập được.'
+  };
 }
 
 // Self-test helper to verify permissions on boot
 async function verifyFirestoreAccess() {
   try {
-    // Try to access a simple document to verify connectivity
-    await db.collection('_health').doc('check').get();
-    console.log('[Firestore] Connectivity verified successfully.');
+    // Connectivity check - limit(1) for speed
+    await db.collection('_health').limit(1).get();
+    firestoreReady = true;
+    firestoreError = null;
+    firestoreErrorType = null;
+    console.log(`[Firestore] Connectivity verified successfully: project=${targetProjectId}, database=${normalizedDatabaseId}`);
   } catch (err: any) {
-    console.error('[Firestore] Connectivity test failed:', err.message);
-    if (err.message?.includes('permission') || err.code === 7) {
-      console.warn('[Firestore] PERMISSION_DENIED on custom database. Attempting fallback to (default) database...');
-      try {
-        const fallbackDb = getFirestore(admin.app());
-        await fallbackDb.collection('_health').doc('check').get();
-        db = fallbackDb;
-        console.log('[Firestore] Fallback to (default) database successful.');
-      } catch (fallbackErr: any) {
-        console.error('[Firestore] Fallback also failed:', fallbackErr.message);
-      }
-    }
+    const classified = classifyFirestoreError(err);
+    firestoreReady = false;
+    firestoreError = classified.message;
+    firestoreErrorType = classified.errorType;
+
+    console.error('[Firestore] Connectivity failed:', {
+      projectId: targetProjectId,
+      databaseId: normalizedDatabaseId,
+      errorType: firestoreErrorType,
+      message: firestoreError
+    });
   }
 }
 verifyFirestoreAccess();
+
+function ensureFirestoreReady(res: express.Response) {
+  if (firestoreReady) return true;
+
+  res.status(503).json({
+    success: false,
+    errorType: firestoreErrorType || 'firestore_unavailable',
+    message:
+      firestoreError ||
+      'Firestore chưa sẵn sàng. Vui lòng kiểm tra FIRESTORE_DATABASE_ID và Firebase project.',
+    firestore: {
+      projectId: targetProjectId,
+      firestoreDatabaseId: normalizedDatabaseId,
+      actualFirestoreDatabaseId,
+      firestoreReady
+    }
+  });
+
+  return false;
+}
 
 // Middleware to catch Firestore errors globally if needed
 function logFirestoreError(context: string, error: any) {
@@ -138,38 +231,75 @@ async function getUserIdFromRequest(req: express.Request): Promise<string | null
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith('Bearer ')) return null;
   const token = authHeader.split('Bearer ')[1];
+  if (!token) return null;
   try {
-    const decodedToken = await admin.auth().verifyIdToken(token);
+    const decodedToken = await firebaseApp.auth().verifyIdToken(token);
     return decodedToken.uid;
-  } catch (err) {
+  } catch (err: any) {
+    console.error('[Auth] Token verification failed:', err?.message || err);
     return null;
   }
 }
 
-async function resolveActiveAIConfig(userId: string | null) {
+function getSystemGeminiApiKey() {
+  const geminiKey = process.env.GEMINI_API_KEY || '';
+  const googleKey = process.env.GOOGLE_API_KEY || '';
+
+  const isRealKey = (key: string) =>
+    !!key &&
+    !key.includes('your_gemini_api_key') &&
+    key !== 'MY_GEMINI_API_KEY' &&
+    key !== 'YOUR_GOOGLE_API_KEY' &&
+    key.length > 20;
+
+  if (isRealKey(geminiKey)) return geminiKey;
+  if (isRealKey(googleKey)) return googleKey;
+  return '';
+}
+
+async function resolveActiveAIConfig(userId: string | null): Promise<{
+  apiKey: string;
+  model: string;
+  provider: string;
+  source: string;
+  personalKeyError?: string;
+}> {
+  const systemApiKey = getSystemGeminiApiKey();
   const systemConfig = {
-    apiKey: process.env.GEMINI_API_KEY || '',
-    model: process.env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash',
-    provider: 'gemini'
+    apiKey: systemApiKey,
+    model: normalizeModelName(DEFAULT_TEXT_MODEL, 'gemini-2.5-flash'),
+    provider: 'gemini',
+    source: 'system'
   };
 
-  if (!userId) return systemConfig;
+  if (!userId || !firestoreReady) return systemConfig;
 
   try {
     const userKeyDoc = await db.collection('users').doc(userId).collection('settings').doc('aiKey').get();
+
     if (userKeyDoc.exists) {
       const data = userKeyDoc.data();
+
       if (data && data.status === 'active' && data.encryptedApiKey) {
         const decryptedKey = decryptApiKey(data.encryptedApiKey);
-        if (decryptedKey) {
-          // Double check the model format
-          const userModel = normalizeModelName(data.model, systemConfig.model);
+
+        if (!decryptedKey) {
+          // If decryption fails, we report error but can fallback to system if system key exists
           return {
-            apiKey: decryptedKey,
-            model: userModel,
-            provider: data.provider || 'gemini'
+            apiKey: systemApiKey,
+            model: systemConfig.model,
+            provider: 'gemini',
+            source: 'system',
+            personalKeyError: 'decrypt_failed'
           };
         }
+
+        return {
+          apiKey: decryptedKey,
+          model: normalizeModelName(data.model, systemConfig.model),
+          provider: data.provider || 'gemini',
+          source: 'personal'
+        };
       }
     }
   } catch (err) {
@@ -217,16 +347,7 @@ function normalizeModelName(name: string | undefined, defaultModel: string): str
 }
 
 function getAI(apiKeyOverride?: string) {
-  const gKey = apiKeyOverride || process.env.GEMINI_API_KEY;
-  const oKey = process.env.GOOGLE_API_KEY;
-  
-  let apiKey = '';
-
-  if (gKey && !gKey.includes('your_gemini_api_key') && gKey !== 'MY_GEMINI_API_KEY') {
-    apiKey = gKey;
-  } else if (oKey && oKey.startsWith('AIzaSy')) {
-    apiKey = oKey;
-  }
+  const apiKey = apiKeyOverride || getSystemGeminiApiKey();
 
   if (!apiKey) {
     throw new Error('Missing or invalid server-side GEMINI_API_KEY or GOOGLE_API_KEY. Vui lòng cấu hình API Key thật trong phần Settings.');
@@ -236,41 +357,63 @@ function getAI(apiKeyOverride?: string) {
   return new GoogleGenerativeAI(apiKey);
 }
 
-function extractJson(text: string) {
-  if (!text) throw new Error('AI trả về nội dung rỗng');
-  
-  // Clean markdown if present
-  let cleaned = text.trim();
-  if (cleaned.startsWith('```json')) {
-    cleaned = cleaned.replace(/^```json/, '').replace(/```$/, '').trim();
-  } else if (cleaned.startsWith('```')) {
-    cleaned = cleaned.replace(/^```/, '').replace(/```$/, '').trim();
+function extractJsonSafe(text: string) {
+  const raw = String(text || '').trim();
+  if (!raw) return null;
+
+  try {
+    return JSON.parse(raw);
+  } catch {}
+
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fenced?.[1]) {
+    try { return JSON.parse(fenced[1].trim()); } catch {}
   }
 
-  // Try parsing directly first
-  try {
-    return JSON.parse(cleaned);
-  } catch (e) {
-    // If direct parse fails, try to find a JSON block
-    const match = cleaned.match(/\{[\s\S]*\}/);
-    if (!match) {
-      console.error('AI Response Header (Failed JSON):', text.slice(0, 200));
-      throw new Error('AI không trả JSON hợp lệ (Không tìm thấy cặp ngoặc nhọn)');
+  const first = raw.indexOf('{');
+  const last = raw.lastIndexOf('}');
+  if (first >= 0 && last > first) {
+    try { return JSON.parse(raw.slice(first, last + 1)); } catch (e) {
+       // Deep clean attempt for tricky JSON
+       const candidate = raw.slice(first, last + 1)
+         .replace(/\\n/g, ' ')
+         .replace(/[\u0000-\u001F\u007F-\u009F]/g, "")
+         .trim();
+       try { return JSON.parse(candidate); } catch {}
     }
+  }
 
-    const rawJson = match[0];
-    try {
-      return JSON.parse(rawJson);
-    } catch (e2) {
-      // Final attempt: clean the matched block
-      const finalTry = rawJson.replace(/\\n/g, ' ').trim();
-      try {
-        return JSON.parse(finalTry);
-      } catch (e3) {
-        console.error('Failed to parse final try:', finalTry.slice(0, 500));
-        throw new Error('Không thể parse JSON từ phản hồi của AI. Vui lòng thử lại.');
+  return null;
+}
+
+async function generateChatJson(model: any, contents: any) {
+  try {
+    return await model.generateContent({
+      contents,
+      generationConfig: {
+        temperature: 0.35,
+        maxOutputTokens: 2048,
+        responseMimeType: 'application/json'
       }
-    }
+    });
+  } catch (err: any) {
+    const msg = String(err?.message || '').toLowerCase();
+    const canRetry =
+      msg.includes('responsemimetype') ||
+      msg.includes('response mime') ||
+      msg.includes('generationconfig') ||
+      msg.includes('not supported');
+
+    if (!canRetry) throw err;
+
+    console.warn('[AI Chat] responseMimeType not supported, retrying without it...');
+    return await model.generateContent({
+      contents,
+      generationConfig: {
+        temperature: 0.35,
+        maxOutputTokens: 2048
+      }
+    });
   }
 }
 
@@ -306,34 +449,116 @@ function getDynamicModel(content: string, taskType: string): string {
   return normalizeModelName(process.env.GEMINI_TEXT_MODEL, 'gemini-2.5-flash');
 }
 
+function classifyGeminiError(error: any) {
+  const message = String(error?.message || '');
+  const lower = message.toLowerCase();
+  const status = Number(error?.status || error?.statusCode || 0);
+
+  if (status === 429 || message.includes('429') || message.includes('RESOURCE_EXHAUSTED')) {
+    return { errorType: 'quota_exceeded', statusCode: 429, message: 'Hạn mức AI đã hết. Vui lòng thử lại sau.' };
+  }
+
+  if (
+    status === 503 ||
+    message.includes('503') ||
+    lower.includes('service unavailable') ||
+    lower.includes('overloaded') ||
+    lower.includes('high demand') ||
+    lower.includes('model is currently')
+  ) {
+    return { errorType: 'high_demand', statusCode: 503, message: 'Dịch vụ AI đang quá tải. Hệ thống sẽ thử model dự phòng nếu có.' };
+  }
+
+  if (status === 404 || message.includes('404') || lower.includes('not found')) {
+    return { errorType: 'model_not_found', statusCode: 404, message: 'Model AI đang chọn không khả dụng với API key hiện tại.' };
+  }
+
+  if (status === 401 || lower.includes('api key not valid') || lower.includes('invalid api key')) {
+    return { errorType: 'invalid_api_key', statusCode: 401, message: 'API key AI không hợp lệ. Vui lòng kiểm tra Cài đặt/Tài khoản.' };
+  }
+
+  if (status === 403 || lower.includes('permission')) {
+    return { errorType: 'permission_denied', statusCode: 403, message: 'API key hiện tại không có quyền dùng model này.' };
+  }
+
+  return { errorType: 'server_error', statusCode: 500, message: 'Không thể kết nối với máy chủ AI. Vui lòng thử lại sau.' };
+}
+
+async function generateChatWithFallback(ai: GoogleGenerativeAI, primaryModelId: string, contents: any, systemInstruction: string) {
+  const tried: string[] = [];
+
+  const runModel = async (modelId: string) => {
+    tried.push(modelId);
+    const model = ai.getGenerativeModel({
+      model: modelId,
+      systemInstruction
+    });
+    const result = await generateChatJson(model, contents);
+    return { result, actualModel: modelId, triedModels: tried };
+  };
+
+  try {
+    return await runModel(primaryModelId);
+  } catch (primaryError: any) {
+    const classified = classifyGeminiError(primaryError);
+    const shouldFallback =
+      classified.errorType === 'high_demand' ||
+      classified.errorType === 'model_not_found' ||
+      classified.errorType === 'permission_denied';
+
+    const fallbackModel = normalizeModelName(DEFAULT_FALLBACK_MODEL, 'gemini-2.5-flash-lite');
+
+    if (!shouldFallback || fallbackModel === primaryModelId) {
+      throw primaryError;
+    }
+
+    console.warn('[AI Chat] Primary model failed, retrying fallback model', {
+      errorType: classified.errorType,
+      primaryModelId,
+      fallbackModel
+    });
+
+    try {
+      return await runModel(fallbackModel);
+    } catch (fallbackError: any) {
+      // If fallback also fails, we throw the original error if it was more descriptive, or the new one
+      throw fallbackError;
+    }
+  }
+}
+
 
 async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT || 3000);
   app.use(express.json({ limit: '2mb' }));
 
-  app.get('/api/health', (req, res) => {
-    const gKey = process.env.GEMINI_API_KEY || '';
-    const oKey = process.env.GOOGLE_API_KEY || '';
-    
-    const isRealKey = (key: string) => 
-      key && 
-      !key.includes('your_gemini_api_key') && 
-      key !== 'MY_GEMINI_API_KEY' && 
-      key !== 'YOUR_GOOGLE_API_KEY' &&
-      (key.startsWith('AIza') || key.length > 20);
+  // Middleware to tag API responses and ensure JSON for errors
+  app.use('/api', (req, res, next) => {
+    res.setHeader('X-API-Response', 'true');
+    next();
+  });
 
-    const hasGeminiKey = isRealKey(gKey) || isRealKey(oKey);
+  app.get('/api/health', (req, res) => {
+    const hasSystemGeminiKey = !!getSystemGeminiApiKey();
 
     res.json({
       ok: true,
-      hasSystemGeminiKey: hasGeminiKey,
+      serverReady: true,
+      hasGeminiKey: hasSystemGeminiKey,
+      hasSystemGeminiKey,
       hasEncryptionSecret: !!process.env.AI_KEY_ENCRYPTION_SECRET,
       hasGoogleDriveKey: !!process.env.GOOGLE_DRIVE_API_KEY,
       imageGenerationEnabled: false,
-      textModel: process.env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash',
-      fallbackModel: process.env.GEMINI_FALLBACK_MODEL || 'gemini-2.5-flash',
-      firestoreDatabaseId: databaseId || '(default)',
+      textModel: DEFAULT_TEXT_MODEL,
+      proModel: DEFAULT_PRO_MODEL,
+      fallbackModel: DEFAULT_FALLBACK_MODEL,
+      firebaseProjectId: targetProjectId,
+      firestoreDatabaseId: normalizedDatabaseId,
+      actualFirestoreDatabaseId,
+      firestoreReady,
+      firestoreErrorType,
+      firestoreError,
       sdk: '@google/generative-ai',
       timestamp: new Date().toISOString()
     });
@@ -392,44 +617,76 @@ async function startServer() {
   app.post('/api/drive/import-public-link', async (req, res) => {
     try {
       const userId = await getUserIdFromRequest(req);
-      if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+      if (!userId) return res.status(401).json({ success: false, errorType: 'unauthorized', message: 'Vui lòng đăng nhập để thực hiện tác vụ này.' });
 
       const { url, collectionId } = req.body;
       const fileId = parseFileId(url);
-      if (!fileId) return res.status(400).json({ error: 'URL không hợp lệ.' });
+      if (!fileId) return res.status(400).json({ error: 'URL không hợp lệ hoặc không phải link Google Drive.' });
 
       const metadata = await getDriveMetadata(fileId);
       
-      // Attempt to fetch content for Docs/Sheets/Slides/Text/PDF
       let content = '';
-      let contentStatus = 'metadata_only';
-
+      let contentStatus: 'metadata_only' | 'extracting' | 'extracted' | 'summary_only' | 'unavailable' | 'error' = 'metadata_only';
       const apiKey = process.env.GOOGLE_DRIVE_API_KEY;
       const mime = metadata.mimeType;
 
-      if (mime === 'application/vnd.google-apps.document') {
-        const exportUrl = metadata.exportLinks?.['text/plain'];
-        if (exportUrl) {
-          const resp = await axios.get(exportUrl, { params: { key: apiKey } });
-          content = resp.data;
-          contentStatus = 'full';
-        }
+      // Determine sourceType and documentKind
+      let sourceType: LibrarySourceType = 'google_drive_file';
+      let documentKind: DocumentSource['documentKind'] = 'khac';
+      
+      if (mime === 'application/vnd.google-apps.folder') {
+        sourceType = 'google_drive_folder';
+      } else if (mime === 'application/vnd.google-apps.document') {
+        sourceType = 'google_docs';
+        documentKind = 'van_ban_chi_dao';
       } else if (mime === 'application/vnd.google-apps.spreadsheet') {
-        const exportUrl = metadata.exportLinks?.['text/csv'];
-        if (exportUrl) {
-          const resp = await axios.get(exportUrl, { params: { key: apiKey } });
-          content = resp.data;
-          contentStatus = 'full';
-        }
-      } else if (mime === 'text/plain' || mime === 'text/markdown') {
-        const resp = await axios.get(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&key=${apiKey}`);
-        content = resp.data;
-        contentStatus = 'full';
+        sourceType = 'google_sheets';
+        documentKind = 'bao_cao';
+      } else if (mime === 'application/vnd.google-apps.presentation') {
+        sourceType = 'google_slides';
+      } else if (mime === 'application/pdf') {
+        sourceType = 'google_pdf';
       }
 
-      const docData = {
+      // Content extraction logic
+      try {
+        if (mime === 'application/vnd.google-apps.document') {
+          const exportUrl = metadata.exportLinks?.['text/plain'];
+          if (exportUrl) {
+            const resp = await axios.get(exportUrl, { params: { key: apiKey } });
+            content = resp.data;
+            contentStatus = 'extracted';
+          }
+        } else if (mime === 'application/vnd.google-apps.spreadsheet') {
+          const exportUrl = metadata.exportLinks?.['text/csv'];
+          if (exportUrl) {
+            const resp = await axios.get(exportUrl, { params: { key: apiKey } });
+            content = resp.data;
+            contentStatus = 'extracted';
+          }
+        } else if (mime === 'text/plain' || mime === 'text/markdown') {
+          const resp = await axios.get(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&key=${apiKey}`);
+          content = typeof resp.data === 'string' ? resp.data : JSON.stringify(resp.data);
+          contentStatus = 'extracted';
+        }
+      } catch (e) {
+        console.warn('Silent fail on content extraction:', e);
+        contentStatus = 'unavailable';
+        content = "Chưa trích xuất được nội dung. Có thể mở tài liệu bằng nút Mở Drive hoặc Xem trước.";
+      }
+
+      // Preview/Open URLs
+      let previewUrl = `https://drive.google.com/file/d/${fileId}/preview`;
+      if (mime === 'application/vnd.google-apps.document') previewUrl = `https://docs.google.com/document/d/${fileId}/preview`;
+      else if (mime === 'application/vnd.google-apps.spreadsheet') previewUrl = `https://docs.google.com/spreadsheets/d/${fileId}/preview`;
+      else if (mime === 'application/vnd.google-apps.presentation') previewUrl = `https://docs.google.com/presentation/d/${fileId}/preview`;
+      else if (mime === 'application/vnd.google-apps.folder') previewUrl = `https://drive.google.com/drive/folders/${fileId}`;
+
+      const docData: any = {
         name: metadata.name,
         type: 'drive',
+        sourceType,
+        documentKind,
         driveFileId: metadata.id,
         driveMimeType: metadata.mimeType,
         driveIconUrl: metadata.iconLink,
@@ -437,21 +694,60 @@ async function startServer() {
         driveWebViewLink: metadata.webViewLink,
         driveSize: metadata.size,
         description: metadata.description || '',
-        content: content.substring(0, 100000), // Limit storage
+        content: content.substring(0, 100000),
         contentStatus,
         collectionId: collectionId || 'lib-drive',
         ownerId: userId,
         createdAt: Date.now(),
         updatedAt: Date.now(),
         metadata: {
-          parents: metadata.parents,
+          isGoogleDrive: true,
+          driveId: metadata.id,
           createdTime: metadata.createdTime,
-          modifiedTime: metadata.modifiedTime
+          modifiedTime: metadata.modifiedTime,
+          openUrl: metadata.webViewLink,
+          previewUrl: previewUrl,
+          webContentLink: metadata.webContentLink,
+          parentDriveFolderId: metadata.parents?.[0] || null,
+          syncStatus: 'synced'
         }
       };
 
       const docRef = await db.collection('users').doc(userId).collection('documents').add(docData);
-      res.json({ success: true, id: docRef.id, document: { id: docRef.id, ...docData } });
+      
+      // Auto-analyze
+      let finalAnalysis = null;
+      try {
+        const aiConfig = await resolveActiveAIConfig(userId);
+        const ai = getAI(aiConfig.apiKey);
+        const model = ai.getGenerativeModel({ 
+          model: aiConfig.model || 'gemini-2.0-flash',
+          systemInstruction: "Bạn là chuyên gia phân tích tài liệu nghiệp vụ hàng hải."
+        });
+        
+        const analyzePrompt = `Phân tích tài liệu: ${metadata.name}\nMime: ${mime}\nMô tả: ${metadata.description || ''}\nNội dung (trích): ${content.substring(0, 30000)}\n\nYêu cầu trả về JSON tóm tắt và phân loại (documentKind, taskCategoryCode).`;
+        const result = await model.generateContent({
+           contents: [{ role: 'user', parts: [{ text: analyzePrompt }] }],
+           generationConfig: { temperature: 0.1, responseMimeType: 'application/json' }
+        });
+        
+        const aiRes = extractJsonSafe(result.response.text());
+        finalAnalysis = {
+          documentKind: aiRes.classification?.documentKind || documentKind,
+          taskCategoryCode: aiRes.classification?.taskCategoryCode || 'LV_VPDT',
+          summary: {
+            ...aiRes.summary,
+            generatedAt: Date.now(),
+            model: aiConfig.model
+          }
+        };
+        await docRef.update({ ...finalAnalysis, updatedAt: Date.now() });
+      } catch (aiErr) {
+        console.warn('Auto-analysis skipped or failed:', aiErr);
+      }
+
+      const finalDoc = { id: docRef.id, ...docData, ...(finalAnalysis || {}) };
+      res.json({ success: true, id: docRef.id, document: finalDoc });
     } catch (error: any) {
       console.error('Drive Import Error:', error.response?.data || error.message);
       res.status(500).json({ error: 'Lỗi import Drive: ' + (error.response?.data?.error?.message || error.message) });
@@ -461,31 +757,36 @@ async function startServer() {
   app.post('/api/drive/sync-public-folder', async (req, res) => {
     try {
       const userId = await getUserIdFromRequest(req);
-      if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+      if (!userId) return res.status(401).json({ success: false, errorType: 'unauthorized', message: 'Vui lòng đăng nhập.' });
 
-      const { folderId, collectionId, nextPageToken } = req.body;
+      const { folderId, collectionId } = req.body;
       const apiKey = process.env.GOOGLE_DRIVE_API_KEY;
-
       if (!apiKey) return res.status(500).json({ error: 'Chưa cấu hình GOOGLE_DRIVE_API_KEY.' });
 
-      const response = await axios.get(`https://www.googleapis.com/drive/v3/files`, {
-        params: {
-          q: `'${folderId}' in parents and trashed = false`,
-          key: apiKey,
-          fields: 'nextPageToken, files(id, name, mimeType, webViewLink, iconLink, thumbnailLink, modifiedTime, size, description)',
-          pageSize: 100,
-          pageToken: nextPageToken
-        },
-        timeout: 15000
-      });
+      let allFiles: any[] = [];
+      let pageToken: string | undefined = undefined;
 
-      const files = response.data.files || [];
-      const stats = { added: 0, updated: 0, failed: 0 };
+      do {
+        const response: any = await axios.get(`https://www.googleapis.com/drive/v3/files`, {
+          params: {
+            q: `'${folderId}' in parents and trashed = false`,
+            key: apiKey,
+            fields: 'nextPageToken, files(id, name, mimeType, webViewLink, webContentLink, iconLink, thumbnailLink, modifiedTime, createdTime, size, description, parents)',
+            pageSize: 100,
+            pageToken
+          },
+          timeout: 30000
+        });
+        allFiles = allFiles.concat(response.data.files || []);
+        pageToken = response.data.nextPageToken;
+      } while (pageToken);
 
-      // Batch check existing docs in this collection for this folder
+      const stats = { addedCount: 0, updatedCount: 0, missingCount: 0, failedCount: 0 };
+      const folderCollectionPrefix = collectionId || 'lib-drive';
+
       const existingDocsSnap = await db.collection('users').doc(userId)
         .collection('documents')
-        .where('collectionId', '==', collectionId || 'lib-drive')
+        .where('collectionId', '==', folderCollectionPrefix)
         .get();
       
       const existingMap = new Map();
@@ -494,10 +795,15 @@ async function startServer() {
         if (data.driveFileId) existingMap.set(data.driveFileId, { id: d.id, ...data });
       });
 
-      for (const f of files) {
+      const currentFileIds = new Set(allFiles.map(f => f.id));
+
+      for (const f of allFiles) {
         try {
           const existing = existingMap.get(f.id);
-          const docData = {
+          const previewUrl = f.mimeType === 'application/vnd.google-apps.document' 
+            ? `https://docs.google.com/document/d/${f.id}/preview` : `https://drive.google.com/file/d/${f.id}/preview`;
+
+          const docData: any = {
             name: f.name,
             driveMimeType: f.mimeType,
             driveIconUrl: f.iconLink,
@@ -506,46 +812,65 @@ async function startServer() {
             driveSize: f.size,
             updatedAt: Date.now(),
             metadata: {
+              isGoogleDrive: true,
+              driveId: f.id,
               modifiedTime: f.modifiedTime,
-              description: f.description
+              createdTime: f.createdTime,
+              description: f.description,
+              parents: f.parents,
+              openUrl: f.webViewLink,
+              previewUrl: previewUrl,
+              webContentLink: f.webContentLink,
+              syncStatus: 'synced'
             }
           };
 
           if (existing) {
-            // Update if modifiedTime changed (simple check)
             if (existing.metadata?.modifiedTime !== f.modifiedTime) {
               await db.collection('users').doc(userId).collection('documents').doc(existing.id).update(docData);
-              stats.updated++;
+              stats.updatedCount++;
             }
           } else {
-            // Add new
+            let sourceType: LibrarySourceType = 'google_drive_file';
+            if (f.mimeType === 'application/vnd.google-apps.folder') sourceType = 'google_drive_folder';
+            else if (f.mimeType === 'application/vnd.google-apps.document') sourceType = 'google_docs';
+            else if (f.mimeType === 'application/vnd.google-apps.spreadsheet') sourceType = 'google_sheets';
+            else if (f.mimeType === 'application/pdf') sourceType = 'google_pdf';
+
             const newDoc = {
               ...docData,
               type: 'drive',
+              sourceType,
+              documentKind: 'khac',
               driveFileId: f.id,
-              content: '',
+              content: f.mimeType.includes('folder') ? "" : "Chưa trích xuất được nội dung. Hãy mở tài liệu để AI có thể phân tích sâu hơn.",
               contentStatus: 'metadata_only',
-              collectionId: collectionId || 'lib-drive',
+              collectionId: folderCollectionPrefix,
               ownerId: userId,
               createdAt: Date.now()
             };
             await db.collection('users').doc(userId).collection('documents').add(newDoc);
-            stats.added++;
+            stats.addedCount++;
           }
         } catch (err) {
-          console.error(`Sync File Fail: ${f.name}`, err);
-          stats.failed++;
+          stats.failedCount++;
         }
       }
 
-      res.json({ 
-        success: true, 
-        stats, 
-        nextPageToken: response.data.nextPageToken 
-      });
+      for (const [driveId, doc] of existingMap.entries()) {
+        if (!currentFileIds.has(driveId) && doc.metadata?.syncStatus !== 'missing') {
+          await db.collection('users').doc(userId).collection('documents').doc(doc.id).update({
+            'metadata.syncStatus': 'missing',
+            'updatedAt': Date.now()
+          });
+          stats.missingCount++;
+        }
+      }
+
+      res.json({ success: true, addedCount: stats.addedCount, updatedCount: stats.updatedCount, missingCount: stats.missingCount, failedCount: stats.failedCount });
     } catch (error: any) {
-      console.error('Folder Sync Error:', error.response?.data || error.message);
-      res.status(500).json({ error: 'Lỗi đồng bộ thư mục: ' + (error.response?.data?.error?.message || error.message) });
+      console.error('Folder Sync Error:', error);
+      res.status(500).json({ error: 'Lỗi đồng bộ thư mục.' });
     }
   });
 
@@ -629,7 +954,7 @@ TRẢ VỀ JSON:
         generationConfig: { temperature: 0.1, responseMimeType: 'application/json' }
       });
 
-      const analysis = extractJson(result.response.text());
+      const analysis = extractJsonSafe(result.response.text());
       analysis.summary.generatedAt = Date.now();
       analysis.summary.model = aiConfig.model;
       if (contentToAnalyze.length > 50000) analysis.summary.sourceLimitNote = "Dữ liệu phân tích bị giới hạn ở 50.000 ký tự đầu tiên.";
@@ -681,35 +1006,53 @@ TRẢ VỀ JSON:
     try {
       const userId = await getUserIdFromRequest(req);
       if (!userId) {
-        return res.status(401).json({ 
-          success: false, 
-          errorType: 'unauthorized', 
-          message: 'Vui lòng đăng nhập để xem trạng thái API key.' 
+        return res.status(401).json({
+          success: false,
+          errorType: 'unauthorized',
+          message: 'Vui lòng đăng nhập để xem trạng thái API key.'
         });
       }
 
-      const doc = await db.collection('users').doc(userId).collection('settings').doc('aiKey').get();
-      if (!doc.exists) {
-        return res.json({ hasKey: false, useSystem: true });
+      if (!ensureFirestoreReady(res)) return;
+
+      const snap = await db
+        .collection('users')
+        .doc(userId)
+        .collection('settings')
+        .doc('aiKey')
+        .get();
+
+      if (!snap.exists) {
+        return res.json({
+          success: true,
+          hasKey: false,
+          useSystem: true,
+          status: 'none'
+        });
       }
 
-      const data = doc.data();
-      res.json({
+      const data = snap.data() || {};
+      return res.json({
         success: true,
         hasKey: true,
-        provider: data?.provider,
-        model: data?.model,
-        keyLast4: data?.keyLast4,
-        status: data?.status,
-        lastTestedAt: data?.lastTestedAt,
-        useSystem: data?.status !== 'active'
+        provider: data.provider || 'gemini',
+        model: data.model || DEFAULT_TEXT_MODEL,
+        keyLast4: data.keyLast4 || '',
+        status: data.status || 'disabled',
+        lastTestedAt: data.lastTestedAt || null,
+        useSystem: data.status !== 'active'
       });
     } catch (error: any) {
-      logFirestoreError('api/user-ai-key/status', error);
-      res.status(500).json({ 
-        success: false, 
-        errorType: 'admin_db_error', 
-        message: 'Lỗi truy cập cơ sở dữ liệu: ' + error.message 
+      const classified = classifyFirestoreError(error);
+      console.error('[Firestore Error - api/user-ai-key/status]', {
+        errorType: classified.errorType,
+        message: classified.message
+      });
+
+      return res.status(500).json({
+        success: false,
+        errorType: classified.errorType || 'admin_db_error',
+        message: classified.message || 'Lỗi truy cập cơ sở dữ liệu.'
       });
     }
   });
@@ -730,7 +1073,7 @@ TRẢ VỀ JSON:
 
       if (provider === 'gemini') {
         const testAI = new GoogleGenerativeAI(apiKey);
-        const testModel = normalizeModelName(model, 'gemini-2.5-flash');
+        const testModel = normalizeModelName(model, 'gemini-2.0-flash');
         const generativeModel = testAI.getGenerativeModel({ model: testModel });
         const result = await generativeModel.generateContent({
           contents: [{ role: 'user', parts: [{ text: 'Kiểm tra kết nối. Trả lời "OK" ngắn gọn.' }] }],
@@ -854,8 +1197,317 @@ TRẢ VỀ JSON:
     }
   });
 
+  // --- USER PROFILE & SETTINGS ---
+  app.get('/api/user/profile', async (req, res) => {
+    try {
+      const userId = await getUserIdFromRequest(req);
+      if (!userId) {
+        return res.status(401).json({
+          success: false,
+          errorType: 'unauthorized',
+          message: 'Vui lòng đăng nhập để xem hồ sơ.'
+        });
+      }
+
+      if (!ensureFirestoreReady(res)) return;
+
+      const profileSnap = await db
+        .collection('users')
+        .doc(userId)
+        .collection('profile')
+        .doc('main')
+        .get();
+
+      if (!profileSnap.exists) {
+        return res.json({
+          success: true,
+          profile: null
+        });
+      }
+
+      return res.json({
+        success: true,
+        profile: profileSnap.data()
+      });
+    } catch (error: any) {
+      const classified = classifyFirestoreError(error);
+      console.error('[Firestore Error - GET /api/user/profile]', {
+        errorType: classified.errorType,
+        message: classified.message
+      });
+
+      return res.status(500).json({
+        success: false,
+        errorType: classified.errorType || 'profile_get_failed',
+        message: classified.message || 'Không thể lấy thông tin hồ sơ.'
+      });
+    }
+  });
+
+  app.post('/api/user/profile', async (req, res) => {
+    try {
+      const userId = await getUserIdFromRequest(req);
+      if (!userId) {
+        return res.status(401).json({
+          success: false,
+          errorType: 'unauthorized',
+          message: 'Vui lòng đăng nhập để lưu hồ sơ.'
+        });
+      }
+
+      if (!ensureFirestoreReady(res)) return;
+
+      const timestamp = Date.now();
+      const profileData = {
+        displayName: String(req.body?.displayName || '').trim(),
+        title: String(req.body?.title || '').trim(),
+        department: String(req.body?.department || '').trim(),
+        phone: String(req.body?.phone || '').trim(),
+        avatarText: String(req.body?.avatarText || '').trim(),
+        defaultAssigneeName: String(req.body?.defaultAssigneeName || '').trim(),
+        defaultTaskCategoryCode: String(req.body?.defaultTaskCategoryCode || 'LV_DH').trim(),
+        ownerId: userId,
+        updatedAt: timestamp
+      };
+
+      await db
+        .collection('users')
+        .doc(userId)
+        .collection('profile')
+        .doc('main')
+        .set(profileData, { merge: true });
+
+      return res.json({
+        success: true,
+        profile: profileData
+      });
+    } catch (error: any) {
+      const classified = classifyFirestoreError(error);
+      console.error('[Firestore Error - POST /api/user/profile]', {
+        errorType: classified.errorType,
+        message: classified.message
+      });
+
+      return res.status(500).json({
+        success: false,
+        errorType: classified.errorType || 'profile_save_failed',
+        message: classified.message || 'Không thể lưu thông tin hồ sơ.'
+      });
+    }
+  });
+
+  // --- AI CHATBOX ---
+  app.post('/api/ai/chat', async (req, res) => {
+    // Force JSON response
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+
+    try {
+      const userId = await getUserIdFromRequest(req);
+      if (!userId) {
+        return res.status(401).json({
+          success: false,
+          errorType: 'unauthorized',
+          message: 'Vui lòng đăng nhập để sử dụng chat AI.'
+        });
+      }
+      
+      const message = String(req.body?.message || '').trim();
+      if (!message) {
+        return res.status(400).json({
+          success: false,
+          errorType: 'empty_message',
+          message: 'Vui lòng nhập nội dung cần hỏi.'
+        });
+      }
+
+      if (message.length > 8000) {
+        return res.status(400).json({
+          success: false,
+          errorType: 'message_too_long',
+          message: 'Nội dung hỏi quá dài. Vui lòng rút gọn dưới 8.000 ký tự.'
+        });
+      }
+
+      const safeHistory = Array.isArray(req.body?.history)
+        ? req.body.history.slice(-10).filter((m: any) =>
+            (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string'
+          )
+        : [];
+
+      const safeContext = req.body?.context || {};
+
+      const aiConfig = await resolveActiveAIConfig(userId);
+      
+      if (!aiConfig?.apiKey) {
+        return res.status(503).json({
+          success: false,
+          errorType: 'missing_api_key',
+          message: 'Chưa cấu hình API key AI. Vui lòng kiểm tra Cài đặt/Tài khoản.'
+        });
+      }
+
+      const ai = getAI(aiConfig.apiKey);
+      const modelId = aiConfig.model || DEFAULT_TEXT_MODEL;
+
+      const systemInstruction = `Bạn là trợ lý AI nội bộ của Công ty TNHH MTV Hoa tiêu hàng hải miền Bắc (VMS-North AI).
+Luôn trả lời bằng tiếng Việt có dấu, trình bày sạch đẹp bằng Markdown.
+
+QUY TẮC PHỤC VỤ:
+1. Không bịa thông tin. Nếu không có trong ngữ cảnh, hãy nói rõ.
+2. Không dùng raw enum tiếng Anh (todo, doing, urgent...) trong văn bản trả lời.
+3. KHÔNG TẠO ẢNH.
+4. Khi người dùng yêu cầu tạo công việc hoặc trích xuất kế hoạch:
+   - Tách thành các 'taskDrafts' riêng nếu thuộc các nhóm việc khác nhau.
+   - Nếu là chuỗi việc cùng mục tiêu, hãy gom vào 1 task và dùng 'checklist'.
+   - 'categoryCode' phải thuộc: LV_DH|LV_AT|LV_KT|LV_TC|LV_TCCB|LV_PCTTra|LV_KHDN|LV_HTQT|LV_VPDT.
+   - 'priority' phải thuộc: low|medium|high|urgent.
+
+TRẢ VỀ JSON:
+{
+  "intent": "chat" | "create_tasks" | "summarize" | "editorial",
+  "reply": "Nội dung câu trả lời (Markdown tiếng Việt)",
+  "taskDrafts": [
+    {
+      "clientId": "string",
+      "title": "Tên công việc",
+      "description": "Mô tả",
+      "assignee": "Người thực hiện",
+      "dueDate": "YYYY-MM-DD",
+      "categoryCode": "LV_...",
+      "priority": "low|medium|high|urgent",
+      "isDeputy": false,
+      "checklist": [{ "title": "Để mục 1", "done": false }],
+      "reason": "Tại sao đề xuất task này"
+    }
+  ],
+  "suggestedActions": [
+    { "type": "review_task_drafts", "label": "Duyệt công việc" }
+  ]
+}`;
+
+      const contextText = buildSafeChatContext(safeContext);
+
+      const contents = [
+        ...safeHistory.map((m: any) => ({
+          role: m.role === 'assistant' ? 'model' : 'user',
+          parts: [{ text: String(m.content).slice(0, 4000) }]
+        })),
+        {
+          role: 'user',
+          parts: [{ text: `${message}${contextText}` }]
+        }
+      ];
+
+      // Ensure first message is user
+      while (contents.length > 0 && contents[0].role === 'model') {
+        contents.shift();
+      }
+
+      const { result, actualModel, triedModels } = await generateChatWithFallback(
+        ai,
+        modelId,
+        contents,
+        systemInstruction
+      );
+
+      const rawReply = result.response.text()?.trim() || '';
+      const aiData = extractJsonSafe(rawReply);
+
+      // Robust fallback if JSON parsing fails but we have text
+      if (!aiData) {
+        return res.json({
+          success: true,
+          intent: 'chat',
+          reply: rawReply || 'AI đã phản hồi nhưng không thể xử lý định dạng.',
+          taskDrafts: [],
+          suggestedActions: [],
+          model: actualModel,
+          actualModel,
+          triedModels,
+          provider: aiConfig.provider || 'gemini'
+        });
+      }
+
+      res.json({
+        success: true,
+        intent: aiData.intent || (aiData.taskDrafts?.length ? 'create_tasks' : 'chat'),
+        reply: aiData.reply || 'AI đã phản hồi rỗng.',
+        taskDrafts: Array.isArray(aiData.taskDrafts) ? aiData.taskDrafts : [],
+        suggestedActions: Array.isArray(aiData.suggestedActions) ? aiData.suggestedActions : [],
+        model: actualModel,
+        actualModel,
+        triedModels,
+        provider: aiConfig.provider || 'gemini'
+      });
+    } catch (error: any) {
+      console.error('AI Chat Error:', error);
+      const classified = classifyGeminiError(error);
+
+      res.status(classified.statusCode).json({
+        success: false,
+        errorType: classified.errorType,
+        message: classified.message
+      });
+    }
+  });
+
+const TASK_STATUS_LABELS_INTERNAL: Record<string, string> = {
+  todo: 'Cần làm',
+  doing: 'Đang làm',
+  review: 'Chờ rà soát',
+  done: 'Hoàn thành',
+  blocked: 'Đang vướng'
+};
+
+const TASK_PRIORITY_LABELS_INTERNAL: Record<string, string> = {
+  low: 'Thấp',
+  medium: 'Trung bình',
+  high: 'Cao',
+  urgent: 'Khẩn cấp'
+};
+
+function buildSafeChatContext(context: any) {
+  if (!context || typeof context !== 'object') return '';
+
+  let out = '\n\n[DỮ LIỆU NGỮ CẢNH HỆ THỐNG]\n';
+  out += `Tab hiện tại: ${context.activeTab || 'N/A'}\n`;
+
+  if (context.stats) {
+    out += `Thống kê nhanh: ${JSON.stringify(context.stats)}\n`;
+  }
+
+  if (Array.isArray(context.recentTasks)) {
+    const localizedTasks = context.recentTasks.map((t: any) => ({
+      title: t.title,
+      status: TASK_STATUS_LABELS_INTERNAL[t.status] || t.status,
+      priority: TASK_PRIORITY_LABELS_INTERNAL[t.priority] || t.priority,
+      assignee: t.assignee,
+      dueDate: t.dueDate,
+      category: t.categoryName || t.categoryCode
+    }));
+    out += `Công việc liên quan: ${JSON.stringify(localizedTasks.slice(0, 5))}\n`;
+  }
+
+  if (Array.isArray(context.selectedDocuments)) {
+    out += `Tài liệu đang chọn: ${JSON.stringify(context.selectedDocuments.slice(0, 5))}\n`;
+  }
+
+  if (context.previewingDocument) {
+    out += `Tài liệu đang xem chi tiết: ${JSON.stringify(context.previewingDocument)}\n`;
+  }
+
+  if (context.currentInputSnippet) {
+    out += `Đoạn văn bản nguồn (Editorial): ${context.currentInputSnippet.slice(0, 800)}\n`;
+  }
+
+  return out.slice(0, 4500);
+}
+
   app.get('/api/fetch-link', async (req, res) => {
     try {
+      const userId = await getUserIdFromRequest(req);
+      if (!userId) return res.status(401).json({ error: 'Vui lòng đăng nhập để fetch link.' });
+
       const inputUrl = String(req.query.url || '');
       if (!inputUrl) return res.status(400).json({ error: 'URL is required' });
       const safeUrl = await assertSafeUrl(inputUrl);
@@ -886,8 +1538,10 @@ TRẢ VỀ JSON:
 
   app.post('/api/ai/process', async (req, res) => {
     try {
-      const { taskType, content, style, format, sources } = req.body || {};
       const userId = await getUserIdFromRequest(req);
+      if (!userId) return res.status(401).json({ success: false, errorType: 'unauthorized', message: 'Vui lòng đăng nhập để sử dụng chức năng AI.' });
+      
+      const { taskType, content, style, format, sources } = req.body || {};
       const aiConfig = await resolveActiveAIConfig(userId);
       const ai = getAI(aiConfig.apiKey);
       
@@ -926,12 +1580,14 @@ TRẢ VỀ JSON:
 
   app.post('/api/ai/search', async (req, res) => {
     try {
-      const { query } = req.body || {};
       const userId = await getUserIdFromRequest(req);
+      if (!userId) return res.status(401).json({ success: false, errorType: 'unauthorized', message: 'Vui lòng đăng nhập để sử dụng chức năng tìm kiếm AI.' });
+
+      const { query } = req.body || {};
       const aiConfig = await resolveActiveAIConfig(userId);
       const ai = getAI(aiConfig.apiKey);
       
-      const textModel = aiConfig.model && aiConfig.provider === 'gemini' ? aiConfig.model : normalizeModelName(process.env.GEMINI_TEXT_MODEL, 'gemini-2.5-flash');
+      const textModel = aiConfig.model && aiConfig.provider === 'gemini' ? aiConfig.model : normalizeModelName(process.env.GEMINI_TEXT_MODEL, 'gemini-1.5-flash');
       const model = ai.getGenerativeModel({
         model: textModel,
         systemInstruction: "Bạn là chuyên gia nghiên cứu tư liệu báo chí cho VMS. Tìm kiếm thông tin chính xác và cập nhật.",
@@ -958,56 +1614,14 @@ TRẢ VỀ JSON:
     }
   });
 
-  app.get('/api/drive/sync-public-folder', async (req, res) => {
-    try {
-      const folderId = String(req.query.folderId || '');
-      const apiKey = process.env.GOOGLE_DRIVE_API_KEY;
-
-      if (!apiKey) {
-        return res.status(500).json({ error: 'Chưa cấu hình GOOGLE_DRIVE_API_KEY trên server.' });
-      }
-
-      if (!folderId) {
-        return res.status(400).json({ error: 'Thiếu folderId' });
-      }
-
-      // Call Google Drive API v3 to list files in folder
-      const response = await axios.get(`https://www.googleapis.com/drive/v3/files`, {
-        params: {
-          q: `'${folderId}' in parents and trashed = false`,
-          key: apiKey,
-          fields: 'nextPageToken, files(id, name, mimeType, webViewLink, webContentLink, iconLink, thumbnailLink, modifiedTime, size)',
-          pageSize: 100
-        },
-        timeout: 10000
-      });
-
-      res.json({ 
-        files: response.data.files || [],
-        nextPageToken: response.data.nextPageToken
-      });
-    } catch (error: any) {
-      console.error('Drive Sync Error:', error.response?.data || error.message);
-      const isAuthError = error.response?.status === 403 || error.response?.status === 401;
-      const isNotFoundError = error.response?.status === 404;
-
-      if (isAuthError) {
-        return res.status(403).json({ error: 'Không đọc được thư mục. Hãy kiểm tra thư mục đã bật chia sẻ công khai hoặc Drive API key.' });
-      }
-      if (isNotFoundError) {
-        return res.status(404).json({ error: 'Không tìm thấy thư mục. Vui lòng kiểm tra lại link.' });
-      }
-
-      res.status(500).json({ error: 'Lỗi đồng bộ Drive: ' + (error.response?.data?.error?.message || error.message) });
-    }
-  });
-
   app.post('/api/tasks/build', async (req, res) => {
     try {
+      const userId = await getUserIdFromRequest(req);
+      if (!userId) return res.status(401).json({ success: false, errorType: 'unauthorized', message: 'Vui lòng đăng nhập để trích xuất công việc.' });
+
       const { text, today, timezone } = req.body;
       if (!text) return res.status(400).json({ error: 'Thiếu nội dung mô tả công việc' });
 
-      const userId = await getUserIdFromRequest(req);
       const aiConfig = await resolveActiveAIConfig(userId);
       const ai = getAI(aiConfig.apiKey);
 
@@ -1044,7 +1658,7 @@ QUY ĐỊNH TRẢ VỀ:
         },
       });
 
-      const data = extractJson(result.response.text() || '{}');
+      const data = extractJsonSafe(result.response.text() || '{}');
       res.json(data);
     } catch (error: any) {
       const isQuotaError = error?.message?.includes('429') || error?.message?.includes('RESOURCE_EXHAUSTED');
@@ -1056,11 +1670,13 @@ QUY ĐỊNH TRẢ VỀ:
 
   app.post('/api/editorial-images/plan', async (req, res) => {
     try {
+      const userId = await getUserIdFromRequest(req);
+      if (!userId) return res.status(401).json({ success: false, errorType: 'unauthorized', message: 'Vui lòng đăng nhập để lập kế hoạch ảnh.' });
+
       // Planning is allowed even if generation is disabled
       const { content, existingAnalysis } = req.body || {};
       if (!content || typeof content !== 'string') return res.status(400).json({ error: 'Thiếu nội dung bài viết' });
       
-      const userId = await getUserIdFromRequest(req);
       const aiConfig = await resolveActiveAIConfig(userId);
       const ai = getAI(aiConfig.apiKey);
 
@@ -1096,7 +1712,7 @@ ${content.slice(0, 10000)}`;
         },
       });
 
-      const data = extractJson(result.response.text() || '{}');
+      const data = extractJsonSafe(result.response.text() || '{}');
       const plans = (data.plans || []).slice(0, 4).map((p: any, idx: number) => ({
         id: `plan-${Date.now()}-${idx}`,
         paragraphIndex: Number.isFinite(Number(p.paragraphIndex)) ? Number(p.paragraphIndex) : 0,
@@ -1124,6 +1740,39 @@ ${content.slice(0, 10000)}`;
     });
   });
 
+  // --- MORE API ROUTES ABOVE ---
+
+  // Catch-all for API 404s
+  app.use('/api', (req, res) => {
+    res.status(404).json({
+      success: false,
+      errorType: 'api_route_not_found',
+      message: `Không tìm thấy API route: ${req.method} ${req.originalUrl}`,
+      path: req.originalUrl,
+      method: req.method
+    });
+  });
+
+  // Global API error handler
+  app.use('/api', (err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    console.error('[API Error Boundary]', {
+      path: req.originalUrl,
+      method: req.method,
+      message: err?.message,
+      code: err?.code,
+      status: err?.status
+    });
+
+    if (res.headersSent) return next(err);
+
+    res.status(err?.status || 500).json({
+      success: false,
+      errorType: err?.errorType || 'api_server_error',
+      message: err?.publicMessage || err?.message || 'Máy chủ API gặp lỗi. Vui lòng thử lại.'
+    });
+  });
+
+  // Vite/Frontend serving
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({ server: { middlewareMode: true }, appType: 'spa' });
     app.use(vite.middlewares);

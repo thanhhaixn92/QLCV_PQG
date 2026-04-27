@@ -40,12 +40,31 @@
         "metadata": { "type": "object" }
       },
       "required": ["name", "content", "type", "category"]
+    },
+    "UserProfile": {
+      "title": "Hồ sơ chi tiết",
+      "description": "Thông tin cá nhân mở rộng của nhân viên",
+      "type": "object",
+      "properties": {
+        "displayName": { "type": "string" },
+        "title": { "type": "string" },
+        "department": { "type": "string" },
+        "phone": { "type": "string" },
+        "avatarText": { "type": "string" },
+        "defaultAssigneeName": { "type": "string" },
+        "defaultTaskCategoryCode": { "type": "string" },
+        "updatedAt": { "type": "number" }
+      }
     }
   },
   "firestore": {
     "/users/{userId}": {
       "schema": "User",
       "description": "Hồ sơ người dùng"
+    },
+    "/users/{userId}/profile/main": {
+      "schema": "UserProfile",
+      "description": "Thông tin chi tiết nhân viên"
     },
     "/users/{userId}/sessions/{sessionId}": {
       "schema": "ProjectSession",

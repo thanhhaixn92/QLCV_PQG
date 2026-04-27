@@ -97,6 +97,23 @@ service cloud.firestore {
         // Frontend will use /api/user-ai-key/status to check status.
         allow read, write: if false;
       }
+
+      // 7. Profile Sub-collection
+      match /profile/{docId} {
+        function isValidProfile(data) {
+          return (data.get('displayName', '') is string && data.get('displayName', '').size() <= 100)
+            && (data.get('title', '') is string && data.get('title', '').size() <= 100)
+            && (data.get('department', '') is string && data.get('department', '').size() <= 100)
+            && (data.get('phone', '') is string && data.get('phone', '').size() <= 20)
+            && (data.get('avatarText', '') is string && data.get('avatarText', '').size() <= 10)
+            && (data.get('defaultAssigneeName', '') is string && data.get('defaultAssigneeName', '').size() <= 100)
+            && (data.get('defaultTaskCategoryCode', '') is string && data.get('defaultTaskCategoryCode', '').size() <= 50);
+        }
+
+        allow read: if isOwner(userId);
+        allow create, update: if isOwner(userId) && isValidProfile(request.resource.data);
+        allow delete: if isOwner(userId);
+      }
     }
   }
 }

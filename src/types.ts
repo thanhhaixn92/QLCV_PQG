@@ -14,7 +14,6 @@ export type LibrarySourceType =
   | 'google_sheets'
   | 'google_slides'
   | 'google_pdf'
-  | 'google_image'
   | 'text';
 
 export type LibraryCollectionType = 'personal' | 'work' | 'editorial' | 'shared' | 'drive' | 'custom';
@@ -49,14 +48,16 @@ export interface DocumentSource {
   driveThumbnailUrl?: string;
   driveWebViewLink?: string;
   driveSize?: string;
-  contentStatus?: 'metadata_only' | 'full' | 'unavailable' | 'error';
+  contentStatus?: 'metadata_only' | 'extracting' | 'extracted' | 'summary_only' | 'unavailable' | 'error';
   
   // AI Classification & Summary
   documentKind?: 'van_ban_chi_dao' | 'quy_dinh_phap_ly' | 'bao_cao' | 'ke_hoach' | 'hop_dong' | 'tai_lieu_ky_thuat' | 'tai_lieu_an_toan' | 'tin_bai_truyen_thong' | 'tai_chinh_ke_toan' | 'nhan_su_lao_dong' | 'khac';
   taskCategoryCode?: string;
-  summary?: {
+  summary?: string | {
     short: string;
     mainPoints: string[];
+    keyPoints?: string[];
+    full?: string;
     entities: {
       people: string[];
       organizations: string[];
@@ -165,6 +166,14 @@ export interface EditorialImageAnalysis {
 export type WorkTaskStatus = 'todo' | 'doing' | 'review' | 'done' | 'blocked';
 export type WorkTaskPriority = 'low' | 'medium' | 'high' | 'urgent';
 
+export interface WorkTaskChecklistItem {
+  id: string;
+  title: string;
+  done: boolean;
+  createdAt: number;
+  updatedAt?: number;
+}
+
 export interface WorkTask {
   id: string;
   title: string;
@@ -181,6 +190,8 @@ export interface WorkTask {
   ownerId?: string; // UID người tạo
   selected?: boolean; // UI selection logic
   linkedDocumentIds?: string[]; // IDs of documents from the library
+  checklist?: WorkTaskChecklistItem[];
+  parentGroupTitle?: string;
   createdAt: number;
   updatedAt: number;
   completedAt?: number;
@@ -224,6 +235,52 @@ export interface ProjectSession {
   illustrations?: EditorialIllustration[];
   createdAt: number;
   updatedAt: number;
+}
+
+export interface UserProfile {
+  displayName: string;
+  title: string;
+  department: string;
+  phone: string;
+  avatarText: string;
+  defaultAssigneeName: string;
+  defaultTaskCategoryCode: string;
+  updatedAt: number;
+  ownerId: string;
+}
+
+export interface ChatTaskDraft {
+  clientId: string;
+  title: string;
+  description: string;
+  assignee: string;
+  dueDate: string;
+  categoryCode: string;
+  categoryName?: string;
+  priority: WorkTaskPriority;
+  status: WorkTaskStatus;
+  isDeputy: boolean;
+  checklist: WorkTaskChecklistItem[];
+  source: 'ai';
+  selected?: boolean;
+  reason?: string;
+  confidence?: number;
+}
+
+export interface ChatSuggestedAction {
+  type: 'review_task_drafts' | 'open_tasks' | 'open_library' | 'open_editor' | 'create_task' | 'search_library';
+  label: string;
+  payload?: any;
+  filter?: any;
+}
+
+export interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  createdAt: number;
+  taskDrafts?: ChatTaskDraft[];
+  suggestedActions?: ChatSuggestedAction[];
+  status?: 'normal' | 'error' | 'task_review';
 }
 
 export interface AssistantResponse {

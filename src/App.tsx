@@ -56,14 +56,35 @@ import {
   Briefcase,
   Users,
   ArrowRight,
-  EyeOff
+  EyeOff,
+  MessageCircle,
+  Shield,
+  Phone,
+  Tag,
+  Bot,
+  Home,
+  MessageSquare,
+  FileCode,
+  Monitor,
+  Cpu,
+  Fingerprint,
+  Eye,
+  FilePlus,
+  HardDrive,
+  FileType,
+  Code
 } from 'lucide-react';
+import { TaskEditModal } from './components/TaskEditModal';
+import { UserProfileSection } from './components/UserProfileSection';
+import { FloatingChatbox } from './components/FloatingChatbox';
+import { UserProfile } from './types';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
 import axios from 'axios';
 import toast, { Toaster } from 'react-hot-toast';
 import { cn } from './lib/utils';
 import { processTask, searchWebSources, checkHealth, planEditorialImages } from './services/geminiService';
+import { waitForBackendReady, apiFetchJson } from './services/apiClient';
 import { 
   TaskType, 
   WritingStyle, 
@@ -78,7 +99,10 @@ import {
   EditorialIllustrationPlan,
   IllustrationReviewStatus,
   LibraryCollection,
-  LibraryCollectionType
+  LibraryCollectionType,
+  ChatMessage,
+  ChatSuggestedAction as SuggestedAction,
+  ChatTaskDraft
 } from './types';
 import { parseFile } from './lib/fileParser';
 import { exportToPDF, exportToWord } from './lib/exportUtils';
@@ -117,9 +141,72 @@ import {
 } from './lib/editorialImageUtils';
 import { auditEditorialPublish } from './lib/editorialPublishUtils';
 
-// --- HELPERS ---
+const TASK_STATUS_LABELS: Record<string, string> = {
+  todo: 'Cần làm',
+  doing: 'Đang làm',
+  review: 'Chờ rà soát',
+  done: 'Hoàn thành',
+  blocked: 'Đang vướng'
+};
 
-function getUserDisplayName(user: FirebaseUser | null) {
+const TASK_PRIORITY_LABELS: Record<string, string> = {
+  low: 'Thấp',
+  medium: 'Trung bình',
+  high: 'Cao',
+  urgent: 'Khẩn cấp'
+};
+
+const HIGH_PRIORITY_FILTER = 'high_urgent';
+
+function getCategoryName(code: string) {
+  const cat = TASK_CATEGORIES.find(c => c.code === code);
+  return cat ? cat.name : code;
+}
+
+const localizeTaskForAI = (t: WorkTask) => ({
+  title: t.title,
+  status: t.status,
+  statusLabel: TASK_STATUS_LABELS[t.status] || t.status,
+  priority: t.priority,
+  priorityLabel: TASK_PRIORITY_LABELS[t.priority] || t.priority,
+  assignee: t.assignee || 'Chưa phân công',
+  dueDate: t.dueDate || 'Chưa có hạn',
+  categoryCode: t.categoryCode,
+  categoryName: getCategoryName(t.categoryCode),
+  description: String(t.description || '').slice(0, 800),
+  checklist: (t.checklist || []).slice(0, 10).map(item => ({
+    title: item.title,
+    done: item.done
+  }))
+});
+
+function getTaskDueEndTime(dueDate: string | undefined): number | null {
+  if (!dueDate) return null;
+  try {
+    const date = new Date(dueDate);
+    date.setHours(23, 59, 59, 999);
+    return date.getTime();
+  } catch (e) {
+    return null;
+  }
+}
+
+function isTaskOverdue(task: WorkTask): boolean {
+  if (task.status === 'done') return false;
+  const endTime = getTaskDueEndTime(task.dueDate);
+  return !!(endTime && endTime < Date.now());
+}
+
+function isTaskUpcoming(task: WorkTask, days: number = 3): boolean {
+  if (task.status === 'done' || isTaskOverdue(task)) return false;
+  const endTime = getTaskDueEndTime(task.dueDate);
+  if (!endTime) return false;
+  const now = Date.now();
+  return endTime > now && endTime < now + (days * 24 * 60 * 60 * 1000);
+}
+
+function getUserDisplayName(user: FirebaseUser | null, profile?: any) {
+  if (profile?.displayName) return profile.displayName;
   if (!user) return 'Khách';
   if (user.displayName?.trim()) return user.displayName.trim();
   const emailPrefix = user.email?.split('@')[0] || 'Người dùng';
@@ -234,26 +321,27 @@ function TaskStatusCell({ task, updateTaskStatus }: { task: any, updateTaskStatu
   );
 }
 
-function TaskActionsCell({ task, userUid }: { task: any, userUid: string }) {
+function TaskActionsCell({ task, onDelete }: { task: any, onDelete: (id: string) => void }) {
   return (
     <button 
-      onClick={async (e) => {
+      onClick={(e) => {
         e.stopPropagation();
-        if (confirm('Xác nhận xóa công việc này?')) {
-          try {
-            await deleteDoc(doc(db, 'users', userUid, 'tasks', task.id));
-            toast.success('Đã xóa công việc');
-          } catch (e) {
-            toast.error('Lỗi khi xóa công việc');
-          }
-        }
+        onDelete(task.id);
       }}
-      className="p-2 text-slate-300 hover:text-red-500 transition-colors shrink-0"
+      className="p-2 text-slate-300 hover:text-red-500 transition-colors opacity-100 sm:opacity-0 sm:group-hover:opacity-100 shrink-0"
     >
       <Trash2 className="w-4 h-4" />
     </button>
   );
 }
+
+const DEFAULT_LIBRARY_COLLECTIONS: LibraryCollection[] = [
+  { id: 'lib-personal', name: 'Cá nhân', type: 'personal', icon: 'User', color: 'blue', ownerId: 'default', createdAt: Date.now(), updatedAt: Date.now() },
+  { id: 'lib-work', name: 'Công việc', type: 'work', icon: 'Briefcase', color: 'indigo', ownerId: 'default', createdAt: Date.now(), updatedAt: Date.now() },
+  { id: 'lib-editorial', name: 'Viết báo / Biên tập', type: 'editorial', icon: 'Edit3', color: 'emerald', ownerId: 'default', createdAt: Date.now(), updatedAt: Date.now() },
+  { id: 'lib-shared', name: 'Dùng chung', type: 'shared', icon: 'Users', color: 'purple', ownerId: 'default', createdAt: Date.now(), updatedAt: Date.now() },
+  { id: 'lib-drive', name: 'Google Drive', type: 'drive', icon: 'Database', color: 'amber', ownerId: 'default', createdAt: Date.now(), updatedAt: Date.now() },
+];
 
 function App() {
   const [taskType, setTaskType] = useState<TaskType>('WRITE_NEW');
@@ -267,18 +355,28 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [copySuccess, setCopySuccess] = useState(false);
   const [activeTab, setActiveTab] = useState<'home' | 'tasks' | 'editor' | 'library' | 'history' | 'settings'>('home');
-  const [googleDriveLink, setGoogleDriveLink] = useState('');
-  const [isPreviewingDrive, setIsPreviewingDrive] = useState<string | null>(null);
-  const [isSyncingDrive, setIsSyncingDrive] = useState<string | null>(null);
-  
-  // Sidebar State
-  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
-  const [selectingParagraphForImage, setSelectingParagraphForImage] = useState<{file: File} | null>(null);
-  
-  // Auth State
+
+  const [backendReady, setBackendReady] = useState(false);
+  const [backendError, setBackendError] = useState<string | null>(null);
+
+  // Authentication & Global User State
   const [user, setUser] = useState<FirebaseUser | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
   const [activeModal, setActiveModal] = useState<'auth' | 'account' | 'settings' | 'task-edit' | null>(null);
+
+  // Document & Library State
+  const [documents, setDocuments] = useState<DocumentSource[]>([]);
+  const [libraryCollections, setLibraryCollections] = useState<LibraryCollection[]>(DEFAULT_LIBRARY_COLLECTIONS);
+  const [activeLibraryId, setActiveLibraryId] = useState<string>('lib-personal');
+  const [selectedDocIds, setSelectedDocIds] = useState<string[]>([]);
+  const [previewDocument, setPreviewDocument] = useState<DocumentSource | null>(null);
+  const [documentDetailTab, setDocumentDetailTab] = useState<'overview' | 'preview' | 'ai' | 'metadata'>('overview');
+  const [isSyncingDrive, setIsSyncingDrive] = useState<string | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState<string | null>(null);
+
+  // Task & Work Management State
+  const [allTasks, setAllTasks] = useState<WorkTask[]>([]);
   const [editingTask, setEditingTask] = useState<WorkTask | null>(null);
   const [taskFilters, setTaskFilters] = useState({
     status: 'all',
@@ -286,20 +384,533 @@ function App() {
     category: 'all',
     search: ''
   });
-  
-  // Document Management
-  const [documents, setDocuments] = useState<DocumentSource[]>([]);
-  const [selectedDocIds, setSelectedDocIds] = useState<string[]>([]);
+  const [builtTasks, setBuiltTasks] = useState<WorkTask[]>([]);
+  const [isBuildingTasks, setIsBuildingTasks] = useState(false);
 
-  // Library Management State
-  const [libraryCollections, setLibraryCollections] = useState<LibraryCollection[]>([
-    { id: 'lib-personal', name: 'Cá nhân', type: 'personal', icon: 'User', color: 'blue', ownerId: 'default', createdAt: Date.now(), updatedAt: Date.now() },
-    { id: 'lib-work', name: 'Công việc', type: 'work', icon: 'Briefcase', color: 'indigo', ownerId: 'default', createdAt: Date.now(), updatedAt: Date.now() },
-    { id: 'lib-editorial', name: 'Viết báo / Biên tập', type: 'editorial', icon: 'Edit3', color: 'emerald', ownerId: 'default', createdAt: Date.now(), updatedAt: Date.now() },
-    { id: 'lib-shared', name: 'Dùng chung', type: 'shared', icon: 'Users', color: 'purple', ownerId: 'default', createdAt: Date.now(), updatedAt: Date.now() },
-    { id: 'lib-drive', name: 'Google Drive', type: 'drive', icon: 'Database', color: 'amber', ownerId: 'default', createdAt: Date.now(), updatedAt: Date.now() },
-  ]);
-  const [activeLibraryId, setActiveLibraryId] = useState<string>('lib-personal');
+  // Chat/AI State
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>(() => {
+    try {
+      const saved = localStorage.getItem(`vms_chat_messages_${auth.currentUser?.uid || 'temp'}`);
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [chatInput, setChatInput] = useState('');
+  const [isChatLoading, setIsChatLoading] = useState(false);
+
+  // Persistence for chat
+  useEffect(() => {
+    if (user) {
+      const key = `vms_chat_messages_${user.uid}`;
+      localStorage.setItem(key, JSON.stringify(chatMessages.slice(-50)));
+    }
+  }, [chatMessages, user]);
+
+  // Auto-close chat when modal opens
+  useEffect(() => {
+    if (activeModal && isChatOpen) {
+      setIsChatOpen(false);
+    }
+  }, [activeModal]);
+
+  const closeMobileDrawer = () => {
+    setIsSidebarOpen(false);
+  };
+
+  const openTaskOverview = (filters?: Partial<typeof taskFilters>) => {
+    setTaskFilters({
+      status: 'all',
+      priority: 'all',
+      category: 'all',
+      search: '',
+      ...filters
+    });
+    setActiveTab('tasks');
+    closeMobileDrawer();
+  };
+  const repairLegacyDriveLinks = async () => {
+    if (!user) return;
+    const legacyDocs = documents.filter(d => 
+      (d.type as string) === 'link' && 
+      (d.metadata?.url?.includes('drive.google.com') || d.metadata?.url?.includes('docs.google.com'))
+    );
+
+    if (legacyDocs.length === 0) {
+      toast.success('Không tìm thấy link Drive cũ cần sửa.');
+      return;
+    }
+
+    if (!confirm(`Tìm thấy ${legacyDocs.length} link Drive cũ. Bạn có muốn nâng cấp toàn bộ sang định dạng tài liệu chuẩn để AI có thể đọc nội dung?`)) return;
+
+    setIsParsing(true);
+    let successCount = 0;
+    try {
+      const token = await user.getIdToken();
+      for (const docObj of legacyDocs) {
+        try {
+          const response = await fetch('/api/drive/import-public-link', {
+            method: 'POST',
+            headers: { 
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({ 
+              url: docObj.metadata?.url, 
+              collectionId: docObj.collectionId || 'lib-personal',
+              legacyId: docObj.id 
+            })
+          });
+          if (response.ok) successCount++;
+        } catch (e) {
+          console.error(`Repair error for ${docObj.id}:`, e);
+        }
+      }
+      toast.success(`Đã nâng cấp xong ${successCount}/${legacyDocs.length} tài liệu.`);
+    } catch (err: any) {
+      toast.error('Lỗi khi sửa link: ' + err.message);
+    } finally {
+      setIsParsing(false);
+    }
+  };
+
+  const openDocumentPreview = (docObj: DocumentSource) => {
+    setPreviewDocument(docObj);
+    setDocumentDetailTab('preview');
+  };
+
+  const handleImportDriveLink = async (url: string) => {
+    if (!user) return;
+    setIsParsing(true);
+    try {
+      const token = await user.getIdToken();
+      const response = await fetch('/api/drive/import-public-link', {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ url, collectionId: activeLibraryId })
+      });
+      
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Lỗi khi import Drive');
+      
+      if (data.document) {
+        setDocuments(prev => {
+          const exists = prev.some(d => d.id === data.document.id);
+          if (exists) return prev.map(d => d.id === data.document.id ? data.document : d);
+          return [data.document, ...prev];
+        });
+      }
+      
+      toast.success('Đã import tài liệu từ Google Drive thành công');
+      setNewLinkUrl('');
+      setIsAddingLink(false);
+    } catch (err: any) {
+      console.error('Import Drive Error:', err);
+      toast.error('Lỗi import: ' + err.message);
+    } finally {
+      setIsParsing(false);
+    }
+  };
+  
+  // Sidebar State
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [showMobileHeader, setShowMobileHeader] = useState(true);
+  const lastScrollY = useRef(0);
+
+  // Auth Observer & Backend Readiness
+  useEffect(() => {
+    let cancelled = false;
+
+    waitForBackendReady()
+      .then((healthData) => {
+        if (cancelled) return;
+        setHealth(healthData);
+        setBackendReady(true);
+        setBackendError(null);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setBackendReady(false);
+        setBackendError(err?.message || 'Backend chưa sẵn sàng.');
+        console.error('[Backend Ready]', err);
+      });
+
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+      setUser(firebaseUser);
+      setAuthReady(true);
+    });
+
+    const onScroll = () => {
+      const currentY = window.scrollY;
+      if (currentY < 10) {
+        setShowMobileHeader(true);
+      } else if (currentY > lastScrollY.current + 10) {
+        setShowMobileHeader(false); // Scrolling down
+      } else if (currentY < lastScrollY.current - 10) {
+        setShowMobileHeader(true); // Scrolling up
+      }
+      lastScrollY.current = currentY;
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+      window.removeEventListener('scroll', onScroll);
+    };
+  }, []);
+
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [selectingParagraphForImage, setSelectingParagraphForImage] = useState<{file: File} | null>(null);
+  
+  // Auth State
+
+  // --- PROFILE LOGIC ---
+  const fetchProfile = async () => {
+    const currentUser = auth.currentUser || user;
+    if (!backendReady || !authReady || !currentUser) return;
+    try {
+      const token = await currentUser.getIdToken(true);
+      const data = await apiFetchJson('/api/user/profile', {
+        headers: { 'Authorization': `Bearer ${token}` },
+        retries: 3,
+        retryDelayMs: 800,
+        allowHtmlRetry: true
+      });
+      
+      if (data.success) {
+        setProfile(data.profile as UserProfile | null);
+      }
+    } catch (err: any) {
+      if (err?.errorType === 'firestore_database_not_found' || err?.errorType === 'firestore_unavailable' || err?.errorType === 'firestore_init_failed') {
+        console.warn('[Profile] Firestore chưa sẵn sàng:', err.message);
+        setProfile(null);
+        return;
+      }
+      console.error('[Profile] Failed:', err);
+    }
+  };
+
+  const handleSaveProfile = async (data: Partial<UserProfile>) => {
+    const currentUser = auth.currentUser || user;
+    if (!currentUser) {
+      toast.error('Vui lòng đăng nhập để thực hiện.');
+      return;
+    }
+    try {
+      const token = await currentUser.getIdToken(true);
+      const res = await fetch('/api/user/profile', {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(data)
+      });
+      if (!res.ok) throw new Error('Cập nhật thất bại');
+      await fetchProfile();
+    } catch (err: any) {
+      toast.error(err.message || 'Lỗi lưu hồ sơ');
+    }
+  };
+
+  useEffect(() => {
+    if (backendReady && authReady && user) {
+      fetchProfile();
+    }
+  }, [backendReady, authReady, user?.uid]);
+
+  // --- FLOATING CHAT LOGIC ---
+  const getChatAuthToken = async () => {
+    if (!authReady) {
+      throw new Error('Đang kiểm tra trạng thái đăng nhập. Vui lòng thử lại sau vài giây.');
+    }
+    const currentUser = auth.currentUser || user;
+    if (!currentUser) {
+      throw new Error('Bạn chưa đăng nhập hoặc phiên làm việc đã hết hạn. Vui lòng đăng nhập lại.');
+    }
+    try {
+      return await currentUser.getIdToken(false);
+    } catch (err) {
+      throw new Error('Không thể xác thực người dùng. Vui lòng thử đăng nhập lại.');
+    }
+  };
+
+  const toggleChatTaskDraft = (messageIndex: number, clientId: string) => {
+    setChatMessages(prev => prev.map((m, idx) => {
+      if (idx !== messageIndex) return m;
+      const updatedDrafts = (m.taskDrafts || []).map(d =>
+        d.clientId === clientId ? { ...d, selected: !(d.selected !== false) } : d
+      );
+      return {
+        ...m,
+        taskDrafts: updatedDrafts
+      };
+    }));
+  };
+
+  const normalizeChatTaskDraft = (draft: any): ChatTaskDraft => {
+    const now = Date.now();
+    const categoryCode = TASK_CATEGORIES.some(c => c.code === draft.categoryCode)
+      ? draft.categoryCode
+      : profile?.defaultTaskCategoryCode || 'LV_DH';
+
+    return {
+      clientId: draft.clientId || `chat-task-${now}-${Math.random().toString(36).slice(2)}`,
+      title: String(draft.title || 'Công việc mới').trim(),
+      description: String(draft.description || '').trim(),
+      assignee: String(draft.assignee || profile?.defaultAssigneeName || (user?.displayName || user?.email || 'Người dùng')).trim(),
+      dueDate: String(draft.dueDate || '').trim(),
+      categoryCode,
+      categoryName: getCategoryName(categoryCode),
+      priority: ['low', 'medium', 'high', 'urgent'].includes(draft.priority) ? draft.priority : 'medium',
+      status: 'todo',
+      isDeputy: !!draft.isDeputy,
+      source: 'ai',
+      selected: true,
+      checklist: Array.isArray(draft.checklist)
+        ? draft.checklist.slice(0, 20).map((item: any, idx: number) => ({
+            id: item.id || `check-${now}-${idx}`,
+            title: String(item.title || item || '').trim(),
+            done: !!item.done,
+            createdAt: now
+          })).filter((item: any) => item.title)
+        : [],
+      reason: String(draft.reason || '').slice(0, 500),
+      confidence: typeof draft.confidence === 'number' ? draft.confidence : undefined
+    };
+  };
+
+  async function createTasksFromChatDrafts(messageIndex: number, selectedOnly = true) {
+    if (!user) {
+      toast.error('Vui lòng đăng nhập để tạo công việc.');
+      return;
+    }
+
+    const msg = chatMessages[messageIndex];
+    const drafts = (msg?.taskDrafts || []).filter(d => !selectedOnly || d.selected !== false);
+
+    if (!drafts.length) {
+      toast.error('Chưa có công việc nào được chọn.');
+      return;
+    }
+
+    setIsChatLoading(true);
+    try {
+      let savedCount = 0;
+
+      for (const draft of drafts) {
+        const taskToSave: Partial<WorkTask> = {
+          ...draft,
+          assignee: draft.assignee,
+          linkedDocumentIds: selectedDocIds,
+          parentGroupTitle: draft.categoryName || ''
+        };
+
+        const docId = await persistTask(taskToSave);
+        if (docId) savedCount++;
+      }
+
+      toast.success(`Đã tạo ${savedCount} công việc từ chat AI.`);
+
+      setChatMessages(prev => prev.map((m, idx) => {
+        if (idx !== messageIndex) return m;
+        return {
+          ...m,
+          content: `${m.content}\n\n✅ Đã tạo ${savedCount} công việc vào Bảng công việc.`,
+          taskDrafts: [],
+          status: 'normal'
+        };
+      }));
+
+      setActiveTab('tasks');
+    } catch (err: any) {
+      toast.error('Không thể tạo công việc: ' + (err.message || 'Lỗi không xác định'));
+    } finally {
+      setIsChatLoading(false);
+    }
+  }
+
+  const handleSendChat = async (retryMessage?: string) => {
+    const message = retryMessage || chatInput.trim();
+    if (!message || isChatLoading) return;
+
+    if (!backendReady) {
+      toast.error('Máy chủ đang khởi động. Vui lòng thử lại sau vài giây.');
+      return;
+    }
+
+    if (!isAiCoreActive) {
+      toast.error('AI chưa sẵn sàng. Vui lòng kiểm tra API key trong Cài đặt/Tài khoản.');
+      return;
+    }
+
+    let token = '';
+    try {
+      token = await getChatAuthToken();
+    } catch (err: any) {
+      toast.error(err.message || 'Vui lòng đăng nhập để sử dụng chat AI.');
+      setActiveModal('auth');
+      return;
+    }
+
+    if (!retryMessage) {
+      const userMsg: ChatMessage = {
+        role: 'user',
+        content: message,
+        createdAt: Date.now()
+      };
+      setChatMessages(prev => [...prev, userMsg]);
+      setChatInput('');
+    }
+
+    setIsChatLoading(true);
+
+    const callChatApi = async (authToken: string): Promise<any> => {
+      const historyForRequest = chatMessages.slice(-12).map(m => ({
+        role: m.role,
+        content: String(m.content || '').slice(0, 4000)
+      }));
+
+      const getContextByTab = (tab: string) => {
+        switch(tab) {
+          case 'home':
+            return {
+              stats: taskStats,
+              recentTasks: allTasks.slice(0, 5).map(localizeTaskForAI)
+            };
+          case 'tasks':
+            const filtered = allTasks.filter(t => {
+              if (taskFilters.status !== 'all' && t.status !== taskFilters.status) return false;
+              if (taskFilters.priority !== 'all' && t.priority !== taskFilters.priority) return false;
+              return true;
+            });
+            return {
+              filters: taskFilters,
+              recentTasks: filtered.slice(0, 10).map(localizeTaskForAI)
+            };
+          default:
+            return {
+              activeTab: tab,
+              recentTasks: allTasks.slice(0, 5).map(localizeTaskForAI)
+            };
+        }
+      };
+
+      const context = getContextByTab(activeTab);
+
+      try {
+        return await apiFetchJson('/api/ai/chat', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${authToken}`
+          },
+          body: JSON.stringify({
+            message,
+            history: historyForRequest,
+            context
+          }),
+          retries: 2,
+          timeoutMs: 60000
+        });
+      } catch (err: any) {
+        throw err;
+      }
+    };
+
+    try {
+      let aiResponse: any;
+
+      try {
+        aiResponse = await callChatApi(token);
+      } catch (err: any) {
+        // Retry once on 401
+        if (err.status === 401 && user) {
+          token = await user.getIdToken(true);
+          aiResponse = await callChatApi(token);
+        } else {
+          throw err;
+        }
+      }
+
+      const assistantMessage: ChatMessage = {
+        role: 'assistant',
+        content: aiResponse.reply || 'AI không có nội dung phản hồi.',
+        taskDrafts: Array.isArray(aiResponse.taskDrafts)
+          ? aiResponse.taskDrafts.map(normalizeChatTaskDraft)
+          : [],
+        suggestedActions: Array.isArray(aiResponse.suggestedActions) ? aiResponse.suggestedActions : [],
+        status: (aiResponse.taskDrafts?.length > 0) ? 'task_review' : 'normal',
+        createdAt: Date.now()
+      };
+
+      setChatMessages(prev => [...prev, assistantMessage]);
+    } catch (err: any) {
+      console.error('AI Chat Error:', err);
+      const msg = err?.name === 'AbortError'
+        ? 'AI phản hồi quá lâu (hết thời gian chờ). Vui lòng thử lại.'
+        : (err?.message || 'Không thể kết nối với máy chủ AI.');
+
+      setChatMessages(prev => [
+        ...prev,
+        {
+          role: 'assistant',
+          content: `⚠️ **Lỗi:** ${msg}`,
+          createdAt: Date.now()
+        }
+      ]);
+      
+      toast.error(msg);
+    } finally {
+      setIsChatLoading(false);
+    }
+  };
+
+  const handleExecuteAction = (action: SuggestedAction) => {
+    switch(action.type) {
+      case 'open_tasks':
+        if (action.filter) {
+          setTaskFilters(prev => ({ ...prev, ...action.filter }));
+        }
+        setActiveTab('tasks');
+        break;
+      case 'create_task':
+        setEditingTask({
+          id: `new-${Date.now()}`,
+          title: action.payload?.title || 'Công việc mới từ Chat',
+          description: action.payload?.description || '',
+          assignee: profile?.displayName || '',
+          dueDate: new Date().toISOString().split('T')[0],
+          categoryCode: profile?.defaultTaskCategoryCode || 'LV_DH',
+          status: 'todo',
+          priority: 'medium',
+          source: 'manual',
+          checklist: [],
+          createdAt: Date.now(),
+          updatedAt: Date.now()
+        });
+        setActiveModal('task-edit');
+        break;
+      case 'open_library':
+        setActiveTab('library');
+        break;
+      case 'open_editor':
+        setActiveTab('editor');
+        break;
+      case 'search_library':
+        setActiveTab('library');
+        // We could add a library search state if it existed
+        break;
+      default:
+        toast(action.label, { icon: 'ℹ️' });
+    }
+    setIsChatOpen(false);
+  };
   const [isAddingLibrary, setIsAddingLibrary] = useState(false);
   const [editingCollection, setEditingCollection] = useState<LibraryCollection | null>(null);
   const [newLibName, setNewLibName] = useState('');
@@ -309,8 +920,6 @@ function App() {
   const [pickingMode, setPickingMode] = useState<'ai' | 'task'>('ai');
   const [isPickingTaskForDoc, setIsPickingTaskForDoc] = useState<DocumentSource | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [previewDocument, setPreviewDocument] = useState<DocumentSource | null>(null);
-  const [isAnalyzing, setIsAnalyzing] = useState<string | null>(null);
   const [librarySearchQuery, setLibrarySearchQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
   const [searchResults, setSearchResults] = useState<{text: string, groundingMetadata?: any} | null>(null);
@@ -336,18 +945,45 @@ function App() {
   const [lastAiOutput, setLastAiOutput] = useState<string>('');
 
   const limitSourceContent = (sources: DocumentSource[]) => {
-    return sources.map(s => ({
-      ...s,
-      content: s.content.length > 4000 ? s.content.substring(0, 4000) + '... (Nội dung đã được thu gọn để tối ưu hạn mức AI)' : s.content
-    }));
+    return sources.map(s => {
+      const hasRealContent = s.content && s.content.trim().length > 50;
+      let displayContent = s.content;
+      
+      if (!hasRealContent) {
+        displayContent = `[CẢNH BÁO: Tài liệu này hiện chỉ có metadata. KHÔNG ĐƯỢC BỊA ĐẶT NỘI DUNG NẾU KHÔNG CÓ TRONG THÔNG TIN DƯỚI ĐÂY]
+        - Tên: ${s.name}
+        - Loại: ${s.type}
+        - Nguồn: ${s.sourceType || 'Không xác định'}
+        - Mô tả: ${s.metadata?.description || 'Không có mô tả'}`;
+      } else if (s.content.length > 6000) {
+        displayContent = s.content.substring(0, 6000) + '... (Nội dung đã được thu gọn để tối ưu hạn mức AI)';
+      }
+
+      return {
+        ...s,
+        content: displayContent
+      };
+    });
   };
   
   // Session & History Management
   const [sessions, setSessions] = useState<ProjectSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
 
-  // Work Management State
-  const [allTasks, setAllTasks] = useState<WorkTask[]>([]);
+
+  const taskStats = useMemo(() => {
+    return {
+      total: allTasks.length,
+      todo: allTasks.filter(t => t.status === 'todo').length,
+      doing: allTasks.filter(t => t.status === 'doing').length,
+      review: allTasks.filter(t => t.status === 'review').length,
+      blocked: allTasks.filter(t => t.status === 'blocked').length,
+      done: allTasks.filter(t => t.status === 'done').length,
+      overdue: allTasks.filter(t => isTaskOverdue(t)).length,
+      upcoming: allTasks.filter(t => isTaskUpcoming(t)).length,
+      highPriority: allTasks.filter(t => t.priority === 'urgent' || t.priority === 'high').length
+    };
+  }, [allTasks]);
 
   const filteredTasks = useMemo(() => {
     return allTasks.filter(t => {
@@ -357,23 +993,26 @@ function App() {
         t.assignee.toLowerCase().includes(taskFilters.search.toLowerCase());
       
       let matchesStatus = taskFilters.status === 'all' || t.status === taskFilters.status;
-      const matchesPriority = taskFilters.priority === 'all' || t.priority === taskFilters.priority;
+      
+      const priorityFilterValue = taskFilters.priority;
+      let matchesPriority = true;
+      if (priorityFilterValue === 'all') {
+         matchesPriority = true;
+      } else if (priorityFilterValue === HIGH_PRIORITY_FILTER) {
+         matchesPriority = t.priority === 'urgent' || t.priority === 'high';
+      } else {
+         matchesPriority = t.priority === priorityFilterValue;
+      }
+
       const matchesCategory = taskFilters.category === 'all' || t.categoryCode === taskFilters.category;
       
-      const isOverdue = t.status !== 'done' && t.dueDate && new Date(t.dueDate).setHours(23, 59, 59) < Date.now();
-      const isUpcoming = t.status !== 'done' && t.dueDate && 
-        new Date(t.dueDate).getTime() > Date.now() && 
-        new Date(t.dueDate).getTime() < Date.now() + 3 * 24 * 60 * 60 * 1000;
-
-      if (taskFilters.status === 'overdue') matchesStatus = !!isOverdue;
-      if (taskFilters.status === 'upcoming') matchesStatus = !!isUpcoming;
+      if (taskFilters.status === 'overdue') matchesStatus = isTaskOverdue(t);
+      if (taskFilters.status === 'upcoming') matchesStatus = isTaskUpcoming(t);
 
       return matchesSearch && matchesStatus && matchesPriority && matchesCategory;
     });
   }, [allTasks, taskFilters]);
 
-  const [builtTasks, setBuiltTasks] = useState<WorkTask[]>([]);
-  const [isBuildingTasks, setIsBuildingTasks] = useState(false);
 
   const filteredDocs = useMemo(() => {
     return documents.filter(d => {
@@ -399,7 +1038,7 @@ function App() {
   const [aiKeyForm, setAiKeyForm] = useState({
     provider: 'gemini',
     apiKey: '',
-    modelPreset: 'gemini-2.5-flash',
+    modelPreset: 'gemini-2.0-flash',
     customModel: ''
   });
   const [isTestingKey, setIsTestingKey] = useState(false);
@@ -417,24 +1056,38 @@ function App() {
   };
 
   const fetchAIKeyStatus = async () => {
-    if (!user) return;
+    const currentUser = auth.currentUser || user;
+    if (!backendReady || !authReady || !currentUser) return;
     try {
-      const token = await user.getIdToken();
-      const response = await fetch('/api/user-ai-key/status', {
-        headers: { 'Authorization': `Bearer ${token}` }
+      const token = await currentUser.getIdToken(true);
+      const data = await apiFetchJson('/api/user-ai-key/status', {
+        headers: { 'Authorization': `Bearer ${token}` },
+        retries: 3,
+        retryDelayMs: 800,
+        allowHtmlRetry: true
       });
-      if (response.ok) {
-        const data = await response.json();
-        setPersonalAIStatus(data);
+      
+      setPersonalAIStatus(data);
+    } catch (err: any) {
+      if (err?.errorType === 'firestore_database_not_found' || err?.errorType === 'firestore_unavailable' || err?.errorType === 'firestore_init_failed') {
+        console.warn('[AI Key Status] Firestore chưa sẵn sàng:', err.message);
+        setPersonalAIStatus({
+          hasKey: false,
+          useSystem: true,
+          status: 'none'
+        } as any);
+        return;
       }
-    } catch (err) {
-      console.error('Error fetching AI key status:', err);
+      console.error('[AI Key Status] Failed:', err);
+      setPersonalAIStatus({ hasKey: false, useSystem: true } as any);
     }
   };
 
   useEffect(() => {
-    if (user) fetchAIKeyStatus();
-  }, [user]);
+    if (backendReady && authReady && user) {
+      fetchAIKeyStatus();
+    }
+  }, [backendReady, authReady, user?.uid]);
 
   const testPersonalKey = async () => {
     if (!aiKeyForm.apiKey) {
@@ -447,10 +1100,17 @@ function App() {
       return;
     }
 
+    const currentUser = auth.currentUser || user;
+    if (!currentUser) {
+      toast.error('Không xác định được người dùng. Vui lòng thử đăng nhập lại.');
+      setActiveModal('auth');
+      return;
+    }
+
     setIsTestingKey(true);
     setKeyTestResult(null);
     try {
-      const token = user ? await user.getIdToken() : '';
+      const token = await currentUser.getIdToken(true);
       const response = await fetch('/api/user-ai-key/test', {
         method: 'POST',
         headers: { 
@@ -484,11 +1144,15 @@ function App() {
   };
 
   const savePersonalKey = async () => {
-    if (!user || !keyTestResult?.success) return;
+    const currentUser = auth.currentUser || user;
+    if (!currentUser || !keyTestResult?.success) {
+      if (!currentUser) toast.error('Vui lòng đăng nhập để thực hiện.');
+      return;
+    }
     const model = getEffectiveModel();
     setIsSavingKey(true);
     try {
-      const token = await user.getIdToken();
+      const token = await currentUser.getIdToken(true);
       const response = await fetch('/api/user-ai-key/save', {
         method: 'POST',
         headers: { 
@@ -509,7 +1173,7 @@ function App() {
         setAiKeyForm({ 
           provider: 'gemini',
           apiKey: '',
-          modelPreset: 'gemini-2.5-flash',
+          modelPreset: 'gemini-2.0-flash',
           customModel: ''
         });
         setKeyTestResult(null);
@@ -524,9 +1188,14 @@ function App() {
   };
 
   const deletePersonalKey = async () => {
-    if (!user || !window.confirm('Bạn có chắc chắn muốn xóa API Key cá nhân và quay về dùng key hệ thống?')) return;
+    const currentUser = auth.currentUser || user;
+    if (!currentUser) {
+      toast.error('Vui lòng đăng nhập để thực hiện.');
+      return;
+    }
+    if (!window.confirm('Bạn có chắc chắn muốn xóa API Key cá nhân và quay về dùng key hệ thống?')) return;
     try {
-      const token = await user.getIdToken();
+      const token = await currentUser.getIdToken(true);
       const response = await fetch('/api/user-ai-key', {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${token}` }
@@ -541,23 +1210,84 @@ function App() {
   };
   const [health, setHealth] = useState<any>(null);
 
-  // Auth Observer and Data Sync
-  useEffect(() => {
-    checkHealth().then(setHealth).catch(console.error);
-    let unsubscribeTasks: () => void = () => {};
+  const isSystemAiActive = Boolean(health?.hasGeminiKey || health?.hasSystemGeminiKey);
+  const isPersonalAiActive = personalAIStatus?.status === 'active';
+  const isAiCoreActive = isSystemAiActive || isPersonalAiActive;
 
-    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
-      setUser(firebaseUser);
-      if (firebaseUser) {
-        syncDataFromFirestore(firebaseUser.uid);
+  const aiCoreLabel = isPersonalAiActive
+    ? 'Key cá nhân đang hoạt động'
+    : isAiCoreActive
+      ? 'AI đang sẵn sàng'
+      : 'AI ngoại tuyến';
+
+  // Sync Profile
+  useEffect(() => {
+    if (!user || !db) {
+      setProfile(null);
+      return;
+    }
+    const profileRef = doc(db, 'users', user.uid, 'profile', 'main');
+    const unsub = onSnapshot(profileRef, (docSnap) => {
+      if (docSnap.exists()) {
+        setProfile(docSnap.data() as UserProfile);
       } else {
-        setDocuments([]);
-        setSessions([]);
-        setAllTasks([]);
+        setProfile(null);
       }
+    }, (error) => {
+       console.warn('[Profile Snapshot Error]', error);
     });
-    return () => unsubscribe();
-  }, []);
+    return () => unsub();
+  }, [user, db]);
+
+  // Sync Library Collections
+  useEffect(() => {
+    if (!user || !db) return;
+    const collsRef = collection(db, 'users', user.uid, 'libraryCollections');
+    const unsub = onSnapshot(collsRef, (snapshot) => {
+      const fbColls: LibraryCollection[] = [];
+      snapshot.forEach(d => fbColls.push({ id: d.id, ...d.data() } as LibraryCollection));
+      
+      // Merge with default collections
+      setLibraryCollections(prev => {
+        const merged = [...DEFAULT_LIBRARY_COLLECTIONS];
+        fbColls.forEach(fc => {
+          const idx = merged.findIndex(m => m.id === fc.id);
+          if (idx >= 0) merged[idx] = fc;
+          else merged.push(fc);
+        });
+        return merged;
+      });
+    });
+    return () => unsub();
+  }, [user?.uid, db]);
+
+  // Sync Documents
+  useEffect(() => {
+    if (activeModal && isChatOpen) setIsChatOpen(false);
+  }, [activeModal, isChatOpen]);
+
+  useEffect(() => {
+    if (!user || !db) return;
+    const docsRef = collection(db, 'users', user.uid, 'documents');
+    const unsub = onSnapshot(docsRef, (snapshot) => {
+      const fbDocs: DocumentSource[] = [];
+      snapshot.forEach(d => fbDocs.push({ id: d.id, ...d.data() } as DocumentSource));
+      setDocuments(fbDocs);
+    });
+    return () => unsub();
+  }, [user?.uid, db]);
+
+  // Sync Sessions
+  useEffect(() => {
+     if (!user || !db) return;
+     const sessionsRef = query(collection(db, 'users', user.uid, 'sessions'), orderBy('updatedAt', 'desc'));
+     const unsub = onSnapshot(sessionsRef, (snapshot) => {
+       const fbSessions: ProjectSession[] = [];
+       snapshot.forEach(s => fbSessions.push({ id: s.id, ...s.data() } as ProjectSession));
+       setSessions(fbSessions);
+     });
+     return () => unsub();
+  }, [user?.uid, db]);
 
   // Separate effect for real-time tasks to properly manage subscription lifecycle
   useEffect(() => {
@@ -590,50 +1320,7 @@ function App() {
   }, [user?.uid, db]);
 
   const syncDataFromFirestore = async (userId: string) => {
-    if (!db) {
-      console.warn("Firestore db not initialized, skipping sync");
-      return;
-    }
-    try {
-      const docsQuery = collection(db, 'users', userId, 'documents');
-      onSnapshot(docsQuery, (snapshot) => {
-        const fbDocs: DocumentSource[] = [];
-        snapshot.forEach(d => fbDocs.push({ id: d.id, ...d.data() } as DocumentSource));
-        setDocuments(fbDocs);
-      }, (err) => {
-        handleFirestoreError(err, 'list', `users/${userId}/documents`);
-      });
-    } catch (e) {
-      console.error("Document Sync Error:", e);
-    }
-
-    try {
-      // Sync Collections
-      const collsSnap = await getDocs(collection(db, 'users', userId, 'libraryCollections'));
-      if (!collsSnap.empty) {
-        const fbColls: LibraryCollection[] = [];
-        collsSnap.forEach(d => fbColls.push({ id: d.id, ...d.data() } as LibraryCollection));
-        setLibraryCollections(fbColls);
-      }
-
-      // Sync Documents
-      const docsSnap = await getDocs(collection(db, 'users', userId, 'documents'));
-      const fbDocs: DocumentSource[] = [];
-      docsSnap.forEach(d => fbDocs.push({ id: d.id, ...d.data() } as DocumentSource));
-      setDocuments(fbDocs);
-
-      // Sync Sessions
-      const sessionsSnap = await getDocs(query(collection(db, 'users', userId, 'sessions'), orderBy('updatedAt', 'desc')));
-      const fbSessions: ProjectSession[] = [];
-      sessionsSnap.forEach(s => fbSessions.push({ id: s.id, ...s.data() } as ProjectSession));
-      setSessions(fbSessions);
-    } catch (err: any) {
-      if (err.code === 'permission-denied') {
-        const path = err.path || `users/${userId}/...`;
-        handleFirestoreError(err, 'list', path);
-      }
-      console.error("Firestore Sync Error:", err);
-    }
+    // legacy function left empty since we use separate effects now
   };
 
   // Library Helpers
@@ -710,17 +1397,27 @@ function App() {
       ownerId: user?.uid || 'default'
     };
 
+    let finalData: any = { ...finalDocData };
+    if (docData.type === 'link' || docData.type === 'drive') {
+      const gLink = docData.metadata?.url || docData.content;
+      const driveInfo = parseGoogleDriveUrl(gLink);
+      if (driveInfo.isGoogleDrive) {
+        finalData.type = 'drive';
+        finalData.sourceType = (driveInfo as any).sourceType;
+        finalData.metadata = { 
+          ...docData.metadata, 
+          ...driveInfo,
+          isGoogleDrive: true,
+          driveId: (driveInfo as any).driveId
+        };
+        if (!finalData.name || finalData.name === 'Web Link') {
+          finalData.name = driveInfo.title;
+        }
+      }
+    }
+
     if (user && db) {
       try {
-        let finalData = { ...finalDocData };
-        if (docData.type === 'link' || docData.type === 'drive') {
-          const driveInfo = parseGoogleDriveUrl(docData.metadata?.url || docData.content);
-          if (driveInfo.isGoogleDrive) {
-            finalData.metadata = { ...docData.metadata, ...driveInfo };
-            if (finalData.name === 'Web Link') finalData.name = driveInfo.title;
-          }
-        }
-
         const docRef = await addDoc(collection(db, 'users', user.uid, 'documents'), finalData);
         const newDoc = { id: docRef.id, ...finalData } as DocumentSource;
         setDocuments(prev => [...prev, newDoc]);
@@ -730,14 +1427,6 @@ function App() {
         return null;
       }
     } else {
-      let finalData = { ...finalDocData };
-      if (docData.type === 'link' || docData.type === 'drive') {
-        const driveInfo = parseGoogleDriveUrl(docData.metadata?.url || docData.content);
-        if (driveInfo.isGoogleDrive) {
-          finalData.metadata = { ...docData.metadata, ...driveInfo };
-          if (finalData.name === 'Web Link') finalData.name = driveInfo.title;
-        }
-      }
       const newDoc = { id: Math.random().toString(36).substr(2, 9), ...finalData } as DocumentSource;
       setDocuments(prev => {
         const updated = [...prev, newDoc];
@@ -979,6 +1668,7 @@ const handleAnalyzeDocument = async (docId: string) => {
   };
 
   const createNewSession = () => {
+    closeMobileDrawer();
     setCurrentSessionId(null);
     setInput('');
     setOutput('');
@@ -1042,18 +1732,49 @@ const handleAnalyzeDocument = async (docId: string) => {
     }
   };
 
-  const persistTask = async (taskData: Omit<WorkTask, 'id'>) => {
+  const persistTask = async (taskDataOrPartial: Omit<WorkTask, 'id'> | Partial<WorkTask>) => {
     if (!user) {
       toast.error('Chỉ người dùng đã đăng nhập mới có thể lưu công việc.');
       return null;
     }
     try {
-      const docRef = await addDoc(collection(db, 'users', user.uid, 'tasks'), {
-        ...taskData,
+      // In TS context inside handleSendChat we defined sanitizeTaskForSave, 
+      // but persistTask is out of that scope. I should move it or redefine.
+      // Re-defining inside or using a global one.
+      
+      const categoryCode = (taskDataOrPartial.categoryCode && TASK_CATEGORIES.some(c => c.code === taskDataOrPartial.categoryCode)) 
+        ? taskDataOrPartial.categoryCode 
+        : 'LV_DH';
+
+      const finalData = {
+        title: String(taskDataOrPartial.title || '').trim(),
+        assignee: String(taskDataOrPartial.assignee || '').trim(),
+        dueDate: String(taskDataOrPartial.dueDate || ''),
+        categoryCode,
+        isDeputy: !!taskDataOrPartial.isDeputy,
+        assignmentCode: taskDataOrPartial.assignmentCode || '',
+        assignmentName: taskDataOrPartial.assignmentName || '',
+        description: String(taskDataOrPartial.description || '').trim(),
+        status: ['todo', 'doing', 'review', 'done', 'blocked'].includes(taskDataOrPartial.status as string) ? taskDataOrPartial.status as any : 'todo',
+        priority: ['low', 'medium', 'high', 'urgent'].includes(taskDataOrPartial.priority as string) ? taskDataOrPartial.priority as any : 'medium',
+        source: taskDataOrPartial.source === 'ai' ? 'ai' : 'manual',
         ownerId: user.uid,
-        createdAt: taskData.createdAt || Date.now(),
+        linkedDocumentIds: Array.isArray(taskDataOrPartial.linkedDocumentIds) ? taskDataOrPartial.linkedDocumentIds : [],
+        checklist: Array.isArray(taskDataOrPartial.checklist)
+          ? taskDataOrPartial.checklist.map(item => ({
+              id: item.id || `check-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+              title: item.title,
+              done: !!item.done,
+              createdAt: item.createdAt || Date.now(),
+              updatedAt: Date.now()
+            }))
+          : [],
+        parentGroupTitle: taskDataOrPartial.parentGroupTitle || '',
+        createdAt: taskDataOrPartial.createdAt || Date.now(),
         updatedAt: Date.now()
-      });
+      };
+
+      const docRef = await addDoc(collection(db, 'users', user.uid, 'tasks'), finalData);
       return docRef.id;
     } catch (err: any) {
       handleFirestoreError(err, 'create', 'tasks');
@@ -1323,56 +2044,41 @@ const handleAnalyzeDocument = async (docId: string) => {
     const url = newLinkUrl.trim();
     if (!url || (!url.startsWith('http') && !url.startsWith('www'))) return;
 
+    // Check if it's a Google Drive link
+    const isDrive = url.includes('drive.google.com') || url.includes('docs.google.com');
+
+    if (isDrive) {
+       await handleImportDriveLink(url);
+       return;
+    }
+
     setIsParsing(true);
     setError(null);
     try {
-      const token = user ? await user.getIdToken() : '';
+      // Standard link fetch
+      const response = await fetch(`/api/fetch-link?url=${encodeURIComponent(url)}`);
+      if (!response.ok) throw new Error('Không thể lấy dữ liệu từ link này');
       
-      // Check if it's a Google Drive link
-      const isDrive = url.includes('drive.google.com') || url.includes('docs.google.com');
-
-      if (isDrive) {
-        const response = await fetch('/api/drive/import-public-link', {
-          method: 'POST',
-          headers: { 
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          },
-          body: JSON.stringify({ url, collectionId: activeLibraryId })
-        });
-        
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || 'Lỗi khi import Drive');
-        
-        toast.success('Đã import tài liệu từ Google Drive');
+      const data = await response.json();
+      
+      const docData: Omit<DocumentSource, 'id'> = {
+        name: data.title || url,
+        content: data.content || `Nguồn Link: ${url}`, 
+        type: 'link',
+        category: 'PROJECT',
+        collectionId: activeLibraryId,
+        metadata: {
+          title: data.title,
+          description: data.description,
+          favicon: data.favicon,
+          url: url
+        }
+      };
+      const newDoc = await persistDocument(docData);
+      if (newDoc) {
+        toast.success('Đã lưu liên kết');
         setNewLinkUrl('');
         setIsAddingLink(false);
-      } else {
-        // Standard link fetch
-        const response = await fetch(`/api/fetch-link?url=${encodeURIComponent(url)}`);
-        if (!response.ok) throw new Error('Không thể lấy dữ liệu từ link này');
-        
-        const data = await response.json();
-        
-        const docData: Omit<DocumentSource, 'id'> = {
-          name: data.title || url,
-          content: data.content || `Nguồn Link: ${url}`, 
-          type: 'link',
-          category: 'PROJECT',
-          collectionId: activeLibraryId,
-          metadata: {
-            title: data.title,
-            description: data.description,
-            favicon: data.favicon,
-            url: url
-          }
-        };
-        const newDoc = await persistDocument(docData);
-        if (newDoc) {
-          toast.success('Đã lưu liên kết');
-          setNewLinkUrl('');
-          setIsAddingLink(false);
-        }
       }
     } catch (err: any) {
       console.error('Add Link Error:', err);
@@ -1382,6 +2088,91 @@ const handleAnalyzeDocument = async (docId: string) => {
       setIsParsing(false);
     }
   };
+
+  // Quick Action Helpers
+  const openCreateTask = () => {
+    closeMobileDrawer();
+    setEditingTask({
+      id: '',
+      title: '',
+      assignee: profile?.defaultAssigneeName || getUserDisplayName(user, profile),
+      dueDate: new Date().toISOString().split('T')[0],
+      categoryCode: profile?.defaultTaskCategoryCode || 'LV_DH',
+      isDeputy: false,
+      assignmentCode: '',
+      assignmentName: '',
+      description: '',
+      status: 'todo',
+      priority: 'medium',
+      source: 'manual',
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    });
+    setActiveModal('task-edit');
+  };
+
+  const openAiTaskBuilder = () => {
+    closeMobileDrawer();
+    setActiveTab('editor');
+    setTaskType('TASK_BUILDER');
+    setInput('');
+    setOutput('');
+    toast.success('Đã mở AI Task Builder.');
+  };
+
+  const openLibrary = () => {
+    closeMobileDrawer();
+    setActiveTab('library');
+  };
+
+  const openSettings = () => {
+    closeMobileDrawer();
+    setActiveTab('settings');
+  };
+
+  const handleDeleteTask = async (taskId: string) => {
+    if (!user) {
+      toast.error('Vui lòng đăng nhập để xóa công việc.');
+      return;
+    }
+
+    const task = allTasks.find(t => t.id === taskId);
+    if (!confirm('Bạn có chắc chắn muốn xóa công việc này? Dữ liệu không thể khôi phục.')) return;
+
+    try {
+      await deleteDoc(doc(db, 'users', user.uid, 'tasks', taskId));
+      setAllTasks(prev => prev.filter(t => t.id !== taskId));
+      if (editingTask?.id === taskId) {
+        setActiveModal(null);
+        setEditingTask(null);
+      }
+      toast.success('Đã xóa công việc.');
+    } catch (err: any) {
+      handleFirestoreError(err, 'delete' as any, `tasks/${taskId}`);
+      toast.error('Không thể xóa công việc: ' + (err.message || 'Lỗi không xác định'));
+    }
+  };
+   
+  const removeDocument = async (id: string) => {
+    if (!confirm('Xác nhận xóa tài liệu này?')) return;
+    try {
+      if (user) {
+        await deleteDoc(doc(db, 'users', user.uid, 'documents', id));
+      }
+      setDocuments(prev => {
+        const updated = prev.filter(d => d.id !== id);
+        if (!user) localStorage.setItem('vms_documents', JSON.stringify(updated));
+        return updated;
+      });
+      setSelectedDocIds(prev => prev.filter(did => did !== id));
+      toast.success('Đã xóa tài liệu.');
+    } catch (err: any) {
+      handleFirestoreError(err, 'delete' as any, `documents/${id}`);
+      toast.error('Không thể xóa tài liệu: ' + (err.message || 'Lỗi không xác định'));
+    }
+  };
+
+
 
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
 
@@ -1462,22 +2253,6 @@ const handleAnalyzeDocument = async (docId: string) => {
     }
   };
 
-  const removeDocument = async (id: string) => {
-    if (user) {
-      try {
-        await deleteDoc(doc(db, 'users', user.uid, 'documents', id))
-          .catch(e => handleFirestoreError(e, 'delete', `documents/${id}`));
-      } catch (err) {}
-    }
-    setDocuments(prev => {
-      const updated = prev.filter(d => d.id !== id);
-      if (!user) {
-        localStorage.setItem('vms_documents', JSON.stringify(updated));
-      }
-      return updated;
-    });
-    setSelectedDocIds(prev => prev.filter(did => did !== id));
-  };
 
   const toggleDocSelection = (id: string) => {
     setSelectedDocIds(prev => 
@@ -1846,7 +2621,7 @@ const handleAnalyzeDocument = async (docId: string) => {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             onClick={() => setIsSidebarOpen(false)}
-            className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[60] md:hidden"
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[45] md:hidden"
           />
         )}
       </AnimatePresence>
@@ -1854,7 +2629,7 @@ const handleAnalyzeDocument = async (docId: string) => {
       {/* Sidebar Navigation */}
       <aside 
         className={cn(
-          "fixed inset-y-0 left-0 z-[70] bg-[#002D56] text-white transition-all duration-300 ease-in-out shadow-2xl flex flex-col",
+          "fixed inset-y-0 left-0 z-[50] bg-[#002D56] text-white transition-all duration-300 ease-in-out shadow-2xl flex flex-col",
           isSidebarCollapsed ? "md:w-20" : "md:w-72",
           isSidebarOpen ? "translate-x-0 w-[280px]" : "-translate-x-full md:translate-x-0"
         )}
@@ -1907,8 +2682,12 @@ const handleAnalyzeDocument = async (docId: string) => {
             <button
               key={item.id}
               onClick={() => {
-                setActiveTab(item.id as any);
-                if (window.innerWidth < 768) setIsSidebarOpen(false);
+                if (item.id === 'tasks') {
+                  openTaskOverview();
+                } else {
+                  setActiveTab(item.id as any);
+                  closeMobileDrawer();
+                }
               }}
               className={cn(
                 "w-full flex items-center gap-3 px-4 py-3.5 rounded-2xl transition-all relative group",
@@ -1952,8 +2731,41 @@ const handleAnalyzeDocument = async (docId: string) => {
               )}
               title={isSidebarCollapsed ? "Bài viết mới" : ""}
             >
-              <Plus className="w-5 h-5 shrink-0" />
+              <FilePlus className="w-5 h-5 shrink-0" />
               {!isSidebarCollapsed && <span className="text-sm font-bold">Bài viết mới</span>}
+            </button>
+            <button 
+              onClick={openCreateTask}
+              className={cn(
+                "w-full flex items-center gap-3 px-4 py-3.5 rounded-2xl bg-blue-500/10 text-blue-400 hover:bg-blue-500 hover:text-white transition-all group",
+                isSidebarCollapsed ? "justify-center" : ""
+              )}
+              title={isSidebarCollapsed ? "Thêm việc" : ""}
+            >
+              <CheckSquare className="w-5 h-5 shrink-0" />
+              {!isSidebarCollapsed && <span className="text-sm font-bold">Thêm việc</span>}
+            </button>
+            <button 
+              onClick={openAiTaskBuilder}
+              className={cn(
+                "w-full flex items-center gap-3 px-4 py-3.5 rounded-2xl bg-orange-500/10 text-orange-400 hover:bg-orange-500 hover:text-white transition-all group",
+                isSidebarCollapsed ? "justify-center" : ""
+              )}
+              title={isSidebarCollapsed ? "AI Task Builder" : ""}
+            >
+              <Bot className="w-5 h-5 shrink-0" />
+              {!isSidebarCollapsed && <span className="text-sm font-bold">AI Task Builder</span>}
+            </button>
+            <button 
+              onClick={openLibrary}
+              className={cn(
+                "w-full flex items-center gap-3 px-4 py-3.5 rounded-2xl bg-indigo-500/10 text-indigo-400 hover:bg-indigo-500 hover:text-white transition-all group",
+                isSidebarCollapsed ? "justify-center" : ""
+              )}
+              title={isSidebarCollapsed ? "Kho tư liệu" : ""}
+            >
+              <Database className="w-5 h-5 shrink-0" />
+              {!isSidebarCollapsed && <span className="text-sm font-bold">Kho tư liệu</span>}
             </button>
           </div>
         </nav>
@@ -1962,18 +2774,18 @@ const handleAnalyzeDocument = async (docId: string) => {
         <div className="p-4 border-t border-white/10 shrink-0">
           {user ? (
             <div className={cn("flex items-center gap-3 p-2 rounded-2xl bg-white/5 border border-white/10", isSidebarCollapsed ? "justify-center" : "")}>
-              <div className="w-8 h-8 rounded-xl bg-white/10 flex items-center justify-center text-xs font-black text-white shrink-0 border border-white/10">
-                {user.email?.[0].toUpperCase()}
+              <div className="w-8 h-8 rounded-xl bg-white/10 flex items-center justify-center text-xs font-black text-white shrink-0 border border-white/10 uppercase">
+                {profile?.avatarText || user.email?.[0]}
               </div>
               {!isSidebarCollapsed && (
                 <div className="flex-1 min-w-0">
                   <p className="text-[10px] font-black text-white/40 uppercase tracking-widest leading-none mb-1">Thành viên</p>
-                  <p className="text-xs font-bold text-white truncate">{user.email}</p>
+                  <p className="text-xs font-bold text-white truncate">{getUserDisplayName(user, profile)}</p>
                 </div>
               )}
               {!isSidebarCollapsed && (
                 <button 
-                  onClick={() => setActiveModal('account')}
+                  onClick={() => { closeMobileDrawer(); setActiveModal('account'); }}
                   className="p-1.5 text-white/40 hover:text-white transition-colors"
                 >
                   <Settings className="w-4 h-4" />
@@ -1996,11 +2808,11 @@ const handleAnalyzeDocument = async (docId: string) => {
           {!isSidebarCollapsed && (
             <div className="mt-4 flex items-center justify-between px-2">
                <div className="flex items-center gap-2">
-                  <div className={cn("w-2 h-2 rounded-full shadow-[0_0_8px_rgba(52,211,153,0.5)]", health?.hasGeminiKey ? "bg-emerald-400" : "bg-red-400")} />
-                  <span className="text-[10px] font-black text-white/40 uppercase tracking-widest">AI Core Active</span>
+                  <div className={cn("w-2 h-2 rounded-full shadow-[0_0_8px_rgba(52,211,153,0.5)]", isAiCoreActive ? "bg-emerald-400" : "bg-red-400")} />
+                  <span className="text-[10px] font-black text-white/40 uppercase tracking-widest leading-none">AI Core {aiCoreLabel}</span>
                </div>
                <button 
-                onClick={() => setActiveModal('settings')}
+                onClick={() => { closeMobileDrawer(); setActiveModal('settings'); }}
                 className="p-1.5 text-white/40 hover:text-white transition-colors"
                 title="Cài đặt hệ thống"
                >
@@ -2011,41 +2823,47 @@ const handleAnalyzeDocument = async (docId: string) => {
         </div>
       </aside>
 
-      {/* Main Content Area */}
-      <div 
-        className={cn(
-          "flex-1 flex flex-col min-h-screen transition-all duration-300 ease-in-out min-w-0 overflow-x-hidden",
-          isSidebarCollapsed ? "md:ml-20" : "md:ml-72"
-        )}
-      >
-        {/* Mobile Header */}
-        <header className="md:hidden h-16 bg-[#002D56] text-white flex items-center px-4 sticky top-0 z-50 shrink-0 shadow-lg w-full">
+      {/* Mobile Header */}
+      <header className={cn(
+        "md:hidden fixed top-0 left-0 right-0 z-[40] bg-[#002D56] text-white transition-all duration-300 shadow-lg pt-[env(safe-area-inset-top)]",
+        showMobileHeader ? "translate-y-0" : "-translate-y-full"
+      )}>
+        <div className="h-16 flex items-center px-4">
           <button 
             onClick={() => setIsSidebarOpen(true)}
-            className="p-2 hover:bg-white/10 rounded-xl transition-colors"
+            className="p-2 hover:bg-white/10 rounded-xl transition-colors active:scale-95"
           >
             <Menu className="w-6 h-6" />
           </button>
           <div className="flex items-center gap-3 ml-2 min-w-0">
              <Ship className="w-5 h-5 text-emerald-400 shrink-0" />
-             <span className="font-black text-sm uppercase tracking-tighter italic truncate">Hoa Tiêu Miền Bắc</span>
+             <span className="font-black text-sm uppercase tracking-tighter italic truncate text-white">Hoa Tiêu Miền Bắc</span>
           </div>
           {user ? (
             <button 
-              onClick={() => setActiveModal('account')}
+              onClick={() => { closeMobileDrawer(); setActiveModal('account'); }}
               className="ml-auto w-8 h-8 rounded-xl bg-white/10 flex items-center justify-center border border-white/20 shrink-0"
             >
               <User className="w-4 h-4" />
             </button>
           ) : (
             <button 
-              onClick={() => setActiveModal('auth')}
+              onClick={() => { closeMobileDrawer(); setActiveModal('auth'); }}
               className="ml-auto p-2"
             >
               <User className="w-5 h-5 shrink-0" />
             </button>
           )}
-        </header>
+        </div>
+      </header>
+
+      {/* Main Content Area */}
+      <div 
+        className={cn(
+          "flex-1 flex flex-col min-h-screen transition-all duration-300 ease-in-out min-w-0 overflow-x-hidden pt-16 md:pt-0",
+          isSidebarCollapsed ? "md:ml-20" : "md:ml-72"
+        )}
+      >
 
         {/* Global Action Bar (Desktop only) */}
         <div className="hidden md:flex h-16 bg-white/80 backdrop-blur-md border-b border-slate-200 items-center justify-between px-8 sticky top-0 z-30 shrink-0">
@@ -2091,19 +2909,19 @@ const handleAnalyzeDocument = async (docId: string) => {
                     <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
                       <div>
                         <h2 className="text-xl sm:text-3xl font-black text-[#002D56] tracking-tight mb-1 sm:mb-2 uppercase truncate">
-                          Chào buổi sáng, {getUserDisplayName(user)}!
+                          Chào buổi sáng, {getUserDisplayName(user, profile)}!
                         </h2>
                         <p className="text-slate-500 font-medium text-xs sm:text-base">Hệ thống sẵn sàng hỗ trợ bạn hoàn thành công việc.</p>
                       </div>
                       <div className={cn(
                         "flex items-center gap-3 px-4 py-2 sm:px-6 sm:py-3 rounded-[20px] sm:rounded-[24px] border-2 transition-all w-fit self-start md:self-auto shrink-0",
-                        health?.hasGeminiKey ? "bg-emerald-50 border-emerald-100" : "bg-red-50 border-red-100"
+                        isAiCoreActive ? "bg-emerald-50 border-emerald-100" : "bg-red-50 border-red-100"
                       )}>
-                        <div className={cn("w-2 h-2 sm:w-3 sm:h-3 rounded-full animate-pulse", health?.hasGeminiKey ? "bg-emerald-500" : "bg-red-500")} />
+                        <div className={cn("w-2 h-2 sm:w-3 sm:h-3 rounded-full animate-pulse", isAiCoreActive ? "bg-emerald-500" : "bg-red-500")} />
                         <div>
                           <p className="text-[8px] sm:text-[10px] font-black uppercase text-slate-400 tracking-widest leading-none mb-0.5 sm:mb-1">AI Core</p>
-                          <p className={cn("text-[10px] sm:text-xs font-bold leading-none", health?.hasGeminiKey ? "text-emerald-700" : "text-red-700")}>
-                            {health?.hasGeminiKey ? 'ACTIVE' : 'OFFLINE'}
+                          <p className={cn("text-[10px] sm:text-xs font-bold leading-none", isAiCoreActive ? "text-emerald-700" : "text-red-700")}>
+                            {aiCoreLabel}
                           </p>
                         </div>
                       </div>
@@ -2112,14 +2930,18 @@ const handleAnalyzeDocument = async (docId: string) => {
                     {/* Stats Grid */}
                     <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3 sm:gap-4">
                       {[
-                        { label: 'Tổng việc', value: allTasks.length, icon: ListTodo, color: 'text-slate-600', bg: 'bg-slate-100' },
-                        { label: 'Đang làm', value: allTasks.filter(t => t.status === 'doing').length, icon: Clock, color: 'text-blue-600', bg: 'bg-blue-100' },
-                        { label: 'Quá hạn', value: allTasks.filter(t => t.status !== 'done' && t.dueDate && new Date(t.dueDate).setHours(23, 59, 59) < Date.now()).length, icon: AlertCircle, color: 'text-red-700', bg: 'bg-red-100' },
-                        { label: 'Ưu tiên', value: allTasks.filter(t => t.priority === 'urgent' || t.priority === 'high').length, icon: AlertTriangle, color: 'text-orange-600', bg: 'bg-orange-100' },
-                        { label: 'Biên tập', value: sessions.length, icon: FileText, color: 'text-indigo-600', bg: 'bg-indigo-100' },
-                        { label: 'Tư liệu', value: documents.length, icon: Database, color: 'text-emerald-600', bg: 'bg-emerald-100' },
+                        { label: 'Tổng việc', value: taskStats.total, icon: ListTodo, color: 'text-slate-600', bg: 'bg-slate-100', onClick: () => openTaskOverview() },
+                        { label: 'Cần làm', value: taskStats.todo, icon: Target, color: 'text-blue-600', bg: 'bg-blue-100', onClick: () => openTaskOverview({ status: 'todo' }) },
+                        { label: 'Đang làm', value: taskStats.doing, icon: Clock, color: 'text-orange-600', bg: 'bg-orange-100', onClick: () => openTaskOverview({ status: 'doing' }) },
+                        { label: 'Quá hạn', value: taskStats.overdue, icon: AlertCircle, color: 'text-red-700', bg: 'bg-red-100', onClick: () => openTaskOverview({ status: 'overdue' }) },
+                        { label: 'Gần hạn', value: taskStats.upcoming, icon: Calendar, color: 'text-amber-600', bg: 'bg-amber-100', onClick: () => openTaskOverview({ status: 'upcoming' }) },
+                        { label: 'Ưu tiên', value: taskStats.highPriority, icon: AlertTriangle, color: 'text-orange-600', bg: 'bg-orange-100', onClick: () => openTaskOverview({ priority: HIGH_PRIORITY_FILTER }) },
                       ].map((stat, i) => (
-                        <div key={i} className="bg-white p-3 sm:p-5 rounded-[20px] sm:rounded-[24px] border border-slate-200 flex flex-col gap-2 shadow-sm hover:shadow-md transition-all group min-w-0">
+                        <button 
+                          key={i} 
+                          onClick={stat.onClick}
+                          className="bg-white p-3 sm:p-5 rounded-[20px] sm:rounded-[24px] border border-slate-200 flex flex-col gap-2 shadow-sm hover:shadow-md transition-all group min-w-0 text-left cursor-pointer active:scale-95"
+                        >
                           <div className={cn("p-1.5 sm:p-2 rounded-lg w-fit group-hover:scale-110 transition-transform shrink-0", stat.bg)}>
                             <stat.icon className={cn("w-3.5 h-3.5 sm:w-5 sm:h-5", stat.color)} />
                           </div>
@@ -2127,36 +2949,45 @@ const handleAnalyzeDocument = async (docId: string) => {
                             <p className="text-[7px] sm:text-[9px] font-black uppercase text-slate-400 tracking-wider mb-0.5 leading-none truncate">{stat.label}</p>
                             <p className="text-base sm:text-2xl font-black text-slate-800 leading-none">{stat.value}</p>
                           </div>
-                        </div>
+                        </button>
                       ))}
+                    </div>
+                    {/* Additional Home Stats (Partial) */}
+                    <div className="grid grid-cols-2 gap-4">
+                       <button 
+                        onClick={() => setActiveTab('history')}
+                        className="bg-white p-4 rounded-[24px] border border-slate-200 flex items-center justify-between shadow-sm hover:shadow-md transition-all active:scale-[0.98]"
+                       >
+                          <div className="flex items-center gap-3">
+                            <div className="p-2 bg-indigo-50 rounded-lg">
+                              <FileText className="w-4 h-4 text-indigo-600" />
+                            </div>
+                            <span className="text-[10px] font-black uppercase text-slate-500">Biên tập</span>
+                          </div>
+                          <span className="text-xl font-black text-slate-800">{sessions.length}</span>
+                       </button>
+                       <button 
+                        onClick={() => setActiveTab('library')}
+                        className="bg-white p-4 rounded-[24px] border border-slate-200 flex items-center justify-between shadow-sm hover:shadow-md transition-all active:scale-[0.98]"
+                       >
+                          <div className="flex items-center gap-3">
+                            <div className="p-2 bg-emerald-50 rounded-lg">
+                              <Database className="w-4 h-4 text-emerald-600" />
+                            </div>
+                            <span className="text-[10px] font-black uppercase text-slate-500">Tư liệu</span>
+                          </div>
+                          <span className="text-xl font-black text-slate-800">{documents.length}</span>
+                       </button>
                     </div>
 
                     {/* Quick Actions */}
                     <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
                       <button 
-                        onClick={() => {
-                          setEditingTask({
-                            id: '',
-                            title: '',
-                            assignee: '',
-                            dueDate: new Date().toISOString().split('T')[0],
-                            categoryCode: 'LV_DH',
-                            isDeputy: false,
-                            assignmentCode: '',
-                            assignmentName: '',
-                            description: '',
-                            status: 'todo',
-                            priority: 'medium',
-                            source: 'manual',
-                            createdAt: Date.now(),
-                            updatedAt: Date.now()
-                          });
-                          setActiveModal('task-edit');
-                        }}
+                        onClick={openCreateTask}
                         className="p-4 sm:p-6 bg-[#002D56] text-white rounded-[24px] flex flex-col sm:flex-row items-center sm:items-start text-center sm:text-left gap-3 sm:gap-4 hover:shadow-xl transition-all group active:scale-95"
                       >
                         <div className="p-2 sm:p-3 bg-white/10 rounded-xl sm:rounded-2xl group-hover:bg-white/20 transition-colors shrink-0">
-                          <Plus className="w-5 h-5 sm:w-6 sm:h-6" />
+                          <CheckSquare className="w-5 h-5 sm:w-6 sm:h-6" />
                         </div>
                         <div className="min-w-0">
                           <p className="font-extrabold text-[10px] sm:text-sm uppercase tracking-tight truncate">Thêm việc</p>
@@ -2165,7 +2996,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                       </button>
 
                       <button 
-                        onClick={() => setActiveTab('editor')}
+                        onClick={createNewSession}
                         className="p-4 sm:p-6 bg-white border border-slate-200 rounded-[24px] flex flex-col sm:flex-row items-center sm:items-start text-center sm:text-left gap-3 sm:gap-4 hover:shadow-xl transition-all group active:scale-95"
                       >
                         <div className="p-2 sm:p-3 bg-emerald-100 rounded-xl sm:rounded-2xl group-hover:bg-emerald-200 transition-colors shrink-0">
@@ -2178,7 +3009,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                       </button>
 
                       <button 
-                        onClick={() => setActiveTab('library')}
+                        onClick={openLibrary}
                         className="p-4 sm:p-6 bg-white border border-slate-200 rounded-[24px] flex flex-col sm:flex-row items-center sm:items-start text-center sm:text-left gap-3 sm:gap-4 hover:shadow-xl transition-all group active:scale-95"
                       >
                         <div className="p-2 sm:p-3 bg-blue-100 rounded-xl sm:rounded-2xl group-hover:bg-blue-200 transition-colors shrink-0">
@@ -2191,10 +3022,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                       </button>
 
                       <button 
-                        onClick={() => {
-                          setActiveTab('editor');
-                          setTaskType('TASK_BUILDER');
-                        }}
+                        onClick={openAiTaskBuilder}
                         className="p-4 sm:p-6 bg-white border border-slate-200 rounded-[24px] flex flex-col sm:flex-row items-center sm:items-start text-center sm:text-left gap-3 sm:gap-4 hover:shadow-xl transition-all group active:scale-95"
                       >
                         <div className="p-2 sm:p-3 bg-orange-100 rounded-xl sm:rounded-2xl group-hover:bg-orange-200 transition-colors shrink-0">
@@ -2247,7 +3075,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                                   </div>
                                 </div>
                                 <button 
-                                  onClick={() => { setEditingTask(task); setActiveModal('task-edit'); }}
+                                  onClick={() => { closeMobileDrawer(); setEditingTask(task); setActiveModal('task-edit'); }}
                                   className="p-2.5 rounded-xl border border-slate-200 text-slate-400 group-hover:border-[#002D56] group-hover:text-[#002D56] transition-all"
                                 >
                                   <ArrowLeft className="w-4 h-4 rotate-180" />
@@ -2319,21 +3147,25 @@ const handleAnalyzeDocument = async (docId: string) => {
              {/* Dashboard Summary */}
              <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
                 {[
-                  { label: 'Tổng số', value: allTasks.length, icon: ListTodo, color: 'text-slate-600', bg: 'bg-slate-100' },
-                  { label: 'Quá hạn', value: allTasks.filter(t => t.status !== 'done' && t.dueDate && new Date(t.dueDate).setHours(23, 59, 59) < Date.now()).length, icon: AlertCircle, color: 'text-red-700', bg: 'bg-red-100' },
-                  { label: 'Gần hạn', value: allTasks.filter(t => t.status !== 'done' && t.dueDate && new Date(t.dueDate).getTime() > Date.now() && new Date(t.dueDate).getTime() < Date.now() + 2 * 24 * 60 * 60 * 1000).length, icon: Clock, color: 'text-orange-600', bg: 'bg-orange-100' },
-                  { label: 'Đang làm', value: allTasks.filter(t => t.status === 'doing').length, icon: Target, color: 'text-blue-600', bg: 'bg-blue-100' },
-                  { label: 'Hoàn thành', value: allTasks.filter(t => t.status === 'done').length, icon: CheckCircle, color: 'text-emerald-600', bg: 'bg-emerald-100' },
+                  { label: 'Tổng số', value: taskStats.total, icon: ListTodo, color: 'text-slate-600', bg: 'bg-slate-100', onClick: () => setTaskFilters({ status: 'all', priority: 'all', category: 'all', search: '' }) },
+                  { label: 'Quá hạn', value: taskStats.overdue, icon: AlertCircle, color: 'text-red-700', bg: 'bg-red-100', onClick: () => setTaskFilters({ status: 'overdue', priority: 'all', category: 'all', search: '' }) },
+                  { label: 'Gần hạn', value: taskStats.upcoming, icon: Clock, color: 'text-orange-600', bg: 'bg-orange-100', onClick: () => setTaskFilters({ status: 'upcoming', priority: 'all', category: 'all', search: '' }) },
+                  { label: 'Đang làm', value: taskStats.doing, icon: Target, color: 'text-blue-600', bg: 'bg-blue-100', onClick: () => setTaskFilters({ status: 'doing', priority: 'all', category: 'all', search: '' }) },
+                  { label: 'Thanh toán/Xong', value: taskStats.done, icon: CheckCircle, color: 'text-emerald-600', bg: 'bg-emerald-100', onClick: () => setTaskFilters({ status: 'done', priority: 'all', category: 'all', search: '' }) },
                 ].map((stat, i) => (
-                  <div key={i} className="bg-white p-5 rounded-[24px] border border-slate-200 flex flex-col gap-2 shadow-sm">
+                  <button 
+                    key={i} 
+                    onClick={stat.onClick}
+                    className="bg-white p-5 rounded-[24px] border border-slate-200 flex flex-col gap-2 shadow-sm hover:shadow-md transition-all active:scale-[0.98] text-left"
+                  >
                     <div className={cn("p-2 rounded-lg w-fit", stat.bg)}>
                       <stat.icon className={cn("w-4 h-4", stat.color)} />
                     </div>
                     <div>
-                      <p className="text-[9px] font-black uppercase text-slate-400 tracking-wider mb-0.5">{stat.label}</p>
-                      <p className="text-xl font-black text-slate-800">{stat.value}</p>
+                      <p className="text-[9px] font-black uppercase text-slate-400 tracking-wider mb-0.5 leading-none">{stat.label}</p>
+                      <p className="text-xl font-black text-slate-800 leading-none">{stat.value}</p>
                     </div>
-                  </div>
+                  </button>
                 ))}
              </div>
 
@@ -2346,6 +3178,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                     </div>
                     <button 
                       onClick={() => {
+                         closeMobileDrawer();
                          setEditingTask({
                            id: '',
                            title: '',
@@ -2403,6 +3236,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                         className="px-3 py-2 bg-white border border-slate-200 rounded-xl text-[10px] font-black uppercase tracking-tight shrink-0 focus:border-[#002D56] outline-none"
                       >
                         <option value="all">Ưu tiên</option>
+                        <option value={HIGH_PRIORITY_FILTER}>Cao/khẩn</option>
                         <option value="urgent">Khẩn</option>
                         <option value="high">Cao</option>
                         <option value="medium">Vừa</option>
@@ -2449,7 +3283,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                          ) : (
                            filteredTasks.map(t => (
                               <tr key={t.id} className="hover:bg-slate-50/50 transition-colors group">
-                                 <td className="px-6 py-5 cursor-pointer" onClick={() => { setEditingTask(t); setActiveModal('task-edit'); }}>
+                                 <td className="px-6 py-5 cursor-pointer" onClick={() => { closeMobileDrawer(); setEditingTask(t); setActiveModal('task-edit'); }}>
                                     <TaskTitleCell task={t} documents={documents} />
                                  </td>
                                  <td className="px-6 py-5">
@@ -2473,7 +3307,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                                     <TaskStatusCell task={t} updateTaskStatus={updateTaskStatus} />
                                  </td>
                                  <td className="px-6 py-5 text-right">
-                                    <TaskActionsCell task={t} userUid={user?.uid!} />
+                                    <TaskActionsCell task={t} onDelete={handleDeleteTask} />
                                  </td>
                               </tr>
                            ))
@@ -2490,7 +3324,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                     filteredTasks.map(t => (
                       <div key={t.id} className="bg-white border border-slate-200 rounded-3xl p-5 space-y-4 shadow-sm active:scale-[0.98] transition-all">
                         <div className="flex items-start justify-between gap-4">
-                          <div className="flex-1 min-w-0" onClick={() => { setEditingTask(t); setActiveModal('task-edit'); }}>
+                          <div className="flex-1 min-w-0" onClick={() => { closeMobileDrawer(); setEditingTask(t); setActiveModal('task-edit'); }}>
                             <h3 className="text-sm font-black text-[#002D56] leading-tight mb-2 line-clamp-2 uppercase tracking-tight">{t.title}</h3>
                             <div className="flex flex-wrap items-center gap-2">
                               <span className="text-[8px] font-black uppercase text-white bg-[#002D56] px-2 py-0.5 rounded-lg tracking-wider">
@@ -2506,7 +3340,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                               )}
                             </div>
                           </div>
-                          <TaskActionsCell task={t} userUid={user?.uid!} />
+                          <TaskActionsCell task={t} onDelete={handleDeleteTask} />
                         </div>
 
                         <div className="grid grid-cols-2 gap-4 py-3 border-y border-slate-50">
@@ -2834,49 +3668,44 @@ const handleAnalyzeDocument = async (docId: string) => {
                   </div>
                 </div>
                 
-                <div className="space-y-2 max-h-[200px] overflow-y-auto pr-1">
-                  {documents.filter(d => d.category === 'PROJECT').length === 0 ? (
-                    <p className="text-[11px] text-slate-400 italic text-center py-4 bg-slate-50 rounded-xl border border-dashed border-slate-200">Chưa có tài liệu nguồn</p>
+                <div className="space-y-2 max-h-[300px] overflow-y-auto pr-1">
+                  {selectedDocIds.length === 0 ? (
+                    <div className="py-8 text-center bg-slate-50 rounded-2xl border-2 border-dashed border-slate-100 px-4">
+                       <Database className="w-10 h-10 text-slate-100 mx-auto mb-4" />
+                       <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest leading-relaxed">
+                          Chưa chọn tài liệu nguồn cho AI. <br/> Hãy chọn từ Thư viện hoặc dán link.
+                       </p>
+                    </div>
                   ) : (
-                    documents.filter(d => d.category === 'PROJECT').map(doc => (
+                    documents.filter(d => selectedDocIds.includes(d.id)).map(doc => (
                       <div 
                         key={doc.id}
-                        className={cn(
-                          "flex items-center gap-2 p-2.5 rounded-xl border transition-all cursor-pointer",
-                          selectedDocIds.includes(doc.id) 
-                            ? "bg-emerald-50 border-emerald-200 shadow-sm" 
-                            : "bg-white border-slate-100 hover:border-slate-300"
-                        )}
-                        onClick={() => toggleDocSelection(doc.id)}
+                        className="flex items-center gap-3 p-3 rounded-2xl border bg-white border-emerald-200 shadow-sm transition-all"
                       >
-                        <div className="flex-1 min-w-0">
-                          {doc.type === 'link' && doc.metadata ? (
-                            <div className="space-y-1">
-                              <div className="flex items-center gap-1.5 overflow-hidden">
-                                {doc.metadata.favicon && (
-                                  <img src={doc.metadata.favicon} alt="" className="w-3 h-3 flex-shrink-0" referrerPolicy="no-referrer" />
-                                )}
-                                <span className="text-[9px] text-[#002D56] font-bold tracking-tight truncate opacity-80">{getHostname(doc.metadata.url || '')}</span>
-                              </div>
-                              <p className="text-[11px] font-bold text-slate-800 leading-tight line-clamp-1">{doc.metadata.title || doc.name}</p>
-                              <p className="text-[9px] text-slate-400 font-medium line-clamp-1 italic">{doc.metadata.description}</p>
-                            </div>
-                          ) : (
-                            <>
-                              <p className="text-[11px] font-bold text-slate-700 truncate">{doc.name}</p>
-                              <p className="text-[9px] text-slate-400 font-medium uppercase tracking-tighter">{doc.type}</p>
-                            </>
-                          )}
-                        </div>
-                        <button 
-                          onClick={(e) => { e.stopPropagation(); removeDocument(doc.id); }}
-                          className="p-1.5 text-slate-300 hover:text-red-500 rounded-md transition-colors"
-                        >
-                          <X className="w-3 h-3" />
-                        </button>
+                         <div className={cn(
+                           "p-2 rounded-xl shrink-0",
+                           doc.type === 'drive' ? "bg-slate-50 text-[#002D56]" : "bg-emerald-50 text-emerald-600"
+                         )}>
+                            {doc.driveIconUrl ? (
+                               <img src={doc.driveIconUrl} alt="icon" className="w-4 h-4 opacity-70" referrerPolicy="no-referrer" />
+                            ) : (
+                               <FileText className="w-4 h-4" />
+                            )}
+                         </div>
+                         <div className="flex-1 min-w-0">
+                            <p className="text-[11px] font-black text-slate-700 truncate uppercase tracking-tight">{doc.name}</p>
+                            <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest truncate">{doc.type} • {doc.sourceType || 'Local'}</p>
+                         </div>
+                         <button 
+                           onClick={(e) => { e.stopPropagation(); toggleDocSelection(doc.id); }}
+                           className="p-1 text-slate-300 hover:text-red-500 rounded-md transition-colors"
+                         >
+                            <X className="w-3.5 h-3.5" />
+                         </button>
                       </div>
                     ))
                   )}
+                  <div className="pt-2 border-t border-slate-50 mt-4 h-px"></div>
                 </div>
               </section>
             </aside>
@@ -3655,97 +4484,11 @@ const handleAnalyzeDocument = async (docId: string) => {
             </div>
           </div>
         ) : activeTab === 'settings' ? (
-          <div className="max-w-4xl mx-auto space-y-8">
-            <div className="bg-white rounded-[40px] p-10 shadow-sm border border-slate-200">
-               <div className="flex items-center gap-6 mb-10 pb-10 border-b border-slate-100">
-                  <div className="w-24 h-24 rounded-3xl bg-slate-900 flex items-center justify-center text-white text-3xl font-black shadow-2xl">
-                     {user?.email?.slice(0, 1).toUpperCase()}
-                  </div>
-                  <div>
-                     <h2 className="text-3xl font-black text-[#002D56] uppercase tracking-tight">{user?.displayName || 'Thành viên HTMB'}</h2>
-                     <p className="text-slate-400 font-bold uppercase tracking-widest text-sm mt-1">{user?.email}</p>
-                     <div className="flex gap-2 mt-4">
-                        <span className="px-3 py-1 bg-blue-50 text-blue-600 rounded-full text-[10px] font-black uppercase tracking-widest border border-blue-100">Cán bộ nghiệp vụ</span>
-                        {user?.email?.endsWith('@vms.com.vn') && (
-                          <span className="px-3 py-1 bg-emerald-50 text-emerald-600 rounded-full text-[10px] font-black uppercase tracking-widest border border-emerald-100 italic flex items-center gap-1">
-                            <ShieldCheck className="w-3 h-3" /> Tài khoản Xác thực
-                          </span>
-                        )}
-                     </div>
-                  </div>
-               </div>
-
-               <div className="grid md:grid-cols-2 gap-10">
-                  <div className="space-y-6">
-                     <h3 className="text-xs font-black text-slate-400 uppercase tracking-[0.2em] px-1">Thông tin cá nhân</h3>
-                     <div className="space-y-4">
-                        <div>
-                           <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1.5 ml-1">Họ và tên</label>
-                           <div className="bg-slate-50 border border-slate-100 rounded-2xl px-5 py-4 font-bold text-slate-800 text-sm">
-                              {user?.displayName || 'Chưa cập nhật'}
-                           </div>
-                        </div>
-                        <div>
-                           <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1.5 ml-1">Email đăng ký</label>
-                           <div className="bg-slate-50 border border-slate-100 rounded-2xl px-5 py-4 font-bold text-slate-800 text-sm">
-                              {user?.email}
-                           </div>
-                        </div>
-                     </div>
-                  </div>
-
-                  <div className="space-y-6">
-                     <h3 className="text-xs font-black text-slate-400 uppercase tracking-[0.2em] px-1">Hành động</h3>
-                     <div className="grid gap-3">
-                        <button 
-                          onClick={() => setActiveModal('account')}
-                          className="w-full h-14 border-2 border-slate-100 rounded-2xl font-black text-[10px] uppercase tracking-widest hover:border-[#002D56] transition-all flex items-center justify-center gap-3 group"
-                        >
-                           <User className="w-4 h-4 text-slate-400 group-hover:text-[#002D56]" /> Quản lý tài khoản
-                        </button>
-                        <button 
-                          onClick={handleLogout}
-                          className="w-full h-14 bg-red-50 text-red-600 rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-red-100 transition-all flex items-center justify-center gap-3"
-                        >
-                           <LogOut className="w-4 h-4" /> Đăng xuất khỏi hệ thống
-                        </button>
-                     </div>
-                  </div>
-               </div>
-            </div>
-
-            <div className="bg-[#002D56] rounded-[32px] sm:rounded-[40px] p-8 sm:p-10 shadow-xl border border-[#002D56] text-white">
-               <div className="flex items-center gap-4 mb-8">
-                  <div className="p-3 bg-white/10 rounded-2xl border border-white/10 shrink-0">
-                     <ShieldCheck className="w-6 h-6 text-emerald-400" />
-                  </div>
-                  <div>
-                     <h3 className="text-lg sm:text-xl font-black uppercase tracking-tight">Hệ thống AI Nghiệp vụ</h3>
-                     <p className="text-white/40 text-[9px] font-black uppercase tracking-widest">Trạng thái kết nối lõi Gemini 2.5</p>
-                  </div>
-               </div>
-               
-               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-8">
-                  <div className="bg-white/5 rounded-3xl p-5 sm:p-6 border border-white/5">
-                     <div className="flex items-center justify-between mb-4">
-                        <span className="text-[9px] font-black text-white/50 uppercase tracking-widest">Lõi trí tuệ</span>
-                        <span className="px-2 py-0.5 bg-emerald-500/20 text-emerald-400 rounded-md text-[8px] font-black">ACTIVE</span>
-                     </div>
-                     <p className="text-base sm:text-lg font-black tracking-tight mb-2 uppercase italic">Gemini v2.5 Flash</p>
-                     <p className="text-[10px] sm:text-xs text-white/40 font-medium leading-relaxed">Tối ưu cho biên tập văn bản hàng hải, độ trễ thấp và ngữ cảnh dài.</p>
-                  </div>
-
-                  <div className="bg-white/5 rounded-3xl p-5 sm:p-6 border border-white/5">
-                     <div className="flex items-center justify-between mb-4">
-                        <span className="text-[9px] font-black text-white/50 uppercase tracking-widest">Bảo mật dữ liệu</span>
-                        <span className="px-2 py-0.5 bg-blue-500/20 text-blue-400 rounded-md text-[8px] font-black">PRIVATE</span>
-                     </div>
-                     <p className="text-base sm:text-lg font-black tracking-tight mb-2 uppercase">Mã hóa Hoa Tiêu Miền Bắc</p>
-                     <p className="text-[10px] sm:text-xs text-white/40 font-medium leading-relaxed">Dữ liệu nguồn được xử lý cô lập, không dùng huấn luyện AI công cộng.</p>
-                  </div>
-               </div>
-            </div>
-          </div>
+          <UserProfileSection 
+            user={user}
+            profile={profile}
+            onSave={handleSaveProfile}
+          />
         ) : (
           /* Knowledge Base / Library Management - NEW MODULAR UI */
           <div className="flex flex-col lg:flex-row gap-6 items-start">
@@ -3757,7 +4500,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                     <Layers className="w-3.5 h-3.5" /> Kho lưu trữ
                   </h3>
                   <button 
-                    onClick={() => setIsAddingLibrary(true)}
+                    onClick={() => { closeMobileDrawer(); setIsAddingLibrary(true); }}
                     className="p-1.5 bg-slate-50 text-slate-400 hover:text-[#002D56] hover:bg-blue-50 rounded-lg transition-all"
                   >
                     <Plus className="w-4 h-4" />
@@ -3852,22 +4595,31 @@ const handleAnalyzeDocument = async (docId: string) => {
                      className="w-full pl-12 pr-4 py-3 bg-slate-50 border border-slate-100 rounded-2xl text-xs font-bold text-slate-800 focus:outline-none focus:ring-4 focus:ring-blue-50 transition-all placeholder:text-slate-300"
                    />
                 </div>
-                <div className="flex items-center gap-2 w-full sm:w-auto">
+                <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+                    {documents.some(d => (d.type as string) === 'link' && (d.metadata?.url?.includes('drive.google.com') || d.metadata?.url?.includes('docs.google.com'))) && (
+                       <button 
+                         onClick={repairLegacyDriveLinks}
+                         className="flex-1 sm:flex-initial bg-amber-50 text-amber-600 border border-amber-200 px-4 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-amber-100 transition-all flex items-center justify-center gap-2"
+                         title="Chuyển đổi các link Drive cũ sang định dạng tài liệu chuẩn"
+                       >
+                         <Zap className="w-3.5 h-3.5" /> Sửa link Drive cũ
+                       </button>
+                    )}
                     <button 
-                      onClick={() => setIsAddingText(true)}
-                      className="flex-1 sm:flex-initial bg-white border border-slate-200 text-[#002D56] px-5 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-50 transition-all flex items-center justify-center gap-2"
+                      onClick={() => { closeMobileDrawer(); setIsAddingText(true); }}
+                      className="flex-1 sm:flex-initial bg-white border border-slate-200 text-[#002D56] px-4 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-50 transition-all flex items-center justify-center gap-2"
                     >
                       <Type className="w-3.5 h-3.5" /> Ghi chú
                     </button>
                     <button 
-                      onClick={() => setIsAddingLink(true)}
-                      className="flex-1 sm:flex-initial bg-white border border-slate-200 text-[#002D56] px-5 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-50 transition-all flex items-center justify-center gap-2"
+                      onClick={() => { closeMobileDrawer(); setIsAddingLink(true); }}
+                      className="flex-1 sm:flex-initial bg-white border border-slate-200 text-[#002D56] px-4 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-50 transition-all flex items-center justify-center gap-2"
                     >
                       <LinkIcon className="w-3.5 h-3.5" /> Link
                     </button>
                     <button 
                       onClick={() => fileInputRef.current?.click()}
-                      className="flex-1 sm:flex-initial bg-[#002D56] text-white px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-900 transition-all shadow-lg shadow-[#002D56]/10 flex items-center justify-center gap-2"
+                      className="flex-1 sm:flex-initial bg-[#002D56] text-white px-5 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-900 transition-all shadow-lg shadow-[#002D56]/10 flex items-center justify-center gap-2"
                     >
                       <FileUp className="w-4 h-4" /> Tải tệp
                     </button>
@@ -3887,168 +4639,167 @@ const handleAnalyzeDocument = async (docId: string) => {
                     </p>
                   </div>
                 ) : (
-                  filteredDocs
-                    .map(doc => (
-                      <motion.div
-                        layout
-                        key={doc.id}
-                        className="bg-white rounded-[32px] border border-slate-200 p-5 shadow-sm hover:shadow-xl hover:border-[#002D56]/20 transition-all group relative overflow-hidden flex flex-col justify-between"
-                      >
-                        <div>
-                          {/* Status/Type Badge */}
-                          <div className="flex items-center justify-between mb-4">
-                             <div className="flex items-center gap-2">
-                                <div className={cn(
-                                  "px-2.5 py-1 rounded-lg text-[8px] font-black uppercase tracking-widest border shadow-sm",
-                                  doc.type === 'pdf' ? "bg-rose-50 border-rose-100 text-rose-500" :
-                                  doc.type === 'word' ? "bg-blue-50 border-blue-100 text-blue-500" :
-                                  doc.type === 'excel' ? "bg-emerald-50 border-emerald-100 text-emerald-500" :
-                                  doc.type === 'drive' ? "bg-[#002D56] border-[#002D56] text-white" :
-                                  "bg-slate-50 border-slate-100 text-slate-400"
-                                )}>
-                                   {doc.driveMimeType?.includes('folder') ? 'FOLDER' : (doc.type || 'TEXT')}
-                                </div>
-                                {doc.documentKind && (
-                                   <div className="px-2 py-1 bg-amber-50 border border-amber-100 text-amber-600 rounded-lg text-[8px] font-black uppercase tracking-widest">
-                                      {doc.documentKind.replace(/_/g, ' ')}
-                                   </div>
-                                )}
-                             </div>
-                             <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                <button 
-                                  onClick={() => setSelectedDocIds(prev => prev.includes(doc.id) ? prev.filter(id => id !== doc.id) : [...prev, doc.id])}
-                                  className={cn(
-                                    "p-2 rounded-xl transition-all active:scale-90 shadow-sm border",
-                                    selectedDocIds.includes(doc.id) ? "bg-emerald-500 text-white border-emerald-400" : "bg-white text-slate-400 border-slate-100 hover:bg-slate-50"
-                                  )}
-                                  title={selectedDocIds.includes(doc.id) ? "Bỏ chọn" : "Chọn làm nguồn AI"}
-                                >
-                                  <CheckSquare className="w-3.5 h-3.5" />
-                                </button>
-                                <button 
-                                  onClick={() => { if(confirm('Xóa tài liệu này?')) removeDocument(doc.id) }}
-                                  className="p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-xl transition-all"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
-                             </div>
-                          </div>
-
-                          {/* Content Info */}
-                          <div className="space-y-4">
-                             <div className="flex items-start gap-4">
-                                <div className="p-3 bg-slate-50 rounded-2xl group-hover:bg-blue-50 transition-colors shrink-0">
-                                   {doc.driveIconUrl ? (
-                                      <img src={doc.driveIconUrl} alt="icon" className="w-5 h-5 opacity-70" referrerPolicy="no-referrer" />
-                                   ) : (
-                                     <>
-                                       {doc.type === 'pdf' && <FileText className="w-5 h-5 text-rose-500" />}
-                                       {doc.type === 'word' && <FileText className="w-5 h-5 text-blue-500" />}
-                                       {doc.type === 'excel' && <FileText className="w-5 h-5 text-emerald-500" />}
-                                       {doc.type === 'drive' ? (
-                                          <Database className="w-5 h-5 text-[#002D56]" />
-                                       ) : doc.type === 'link' ? (
-                                          <LinkIcon className="w-5 h-5 text-indigo-500" />
-                                       ) : (
-                                          <FileText className="w-5 h-5 text-slate-400" />
-                                       )}
-                                     </>
-                                   )}
-                                </div>
-                                <div className="min-w-0">
-                                   <h4 className="text-sm font-black text-slate-800 uppercase tracking-tight leading-tight line-clamp-2 decoration-[#002D56]/10 underline-offset-2 decoration-2 group-hover:underline">
-                                     {doc.name}
-                                   </h4>
-                                   <div className="flex items-center gap-2 mt-1">
-                                      <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest truncate">
-                                         {formatLibraryDate(doc.metadata?.modifiedTime || doc.updatedAt || doc.createdAt)}
-                                      </p>
-                                      {doc.driveSize && (
-                                         <span className="text-[8px] font-black text-slate-300">({(parseInt(doc.driveSize)/1024/1024).toFixed(2)} MB)</span>
-                                      )}
-                                   </div>
-                                </div>
-                             </div>
-
-                             {(doc.summary?.short || doc.metadata?.description) && (
-                               <p className="text-[11px] text-slate-500 font-medium leading-relaxed line-clamp-3 border-l-2 border-slate-100 pl-3 italic">
-                                  {doc.summary?.short || doc.metadata?.description}
-                               </p>
-                             )}
-
-                             {doc.type === 'drive' && (
-                               <div className="space-y-3 pt-1">
-                                  <div className="flex flex-wrap items-center gap-2">
-                                     <div className="px-2 py-0.5 bg-[#002D56]/5 text-[#002D56] rounded-md text-[8px] font-black uppercase tracking-wider border border-[#002D56]/10">DRIVE SOURCE</div>
-                                     <div className={cn(
-                                       "px-2 py-0.5 rounded-md text-[8px] font-black uppercase tracking-wider border flex items-center gap-1",
-                                       doc.contentStatus === 'full' ? "bg-emerald-50 text-emerald-600 border-emerald-100" : "bg-amber-50 text-amber-600 border-amber-100"
-                                     )}>
-                                        {doc.contentStatus === 'full' ? <Check className="w-2.5 h-2.5" /> : <EyeOff className="w-2.5 h-2.5" />}
-                                        {doc.contentStatus === 'full' ? 'AI Đọc được' : 'Chỉ tiêu đề'}
-                                     </div>
-                                  </div>
-                                  <div className="flex gap-2">
-                                     <a 
-                                       href={doc.driveWebViewLink || doc.metadata?.url} 
-                                       target="_blank" 
-                                       rel="noreferrer"
-                                       className="flex-1 bg-slate-50 text-slate-600 border border-slate-100 py-2.5 rounded-xl text-[9px] font-black uppercase tracking-widest flex items-center justify-center gap-2 hover:bg-slate-100 transition-all shadow-sm"
-                                     >
-                                        Mở Drive <ExternalLink className="w-3 h-3" />
-                                     </a>
-                                     {doc.driveMimeType?.includes('folder') && (
-                                       <button 
-                                          onClick={(e) => { e.stopPropagation(); handleSyncDriveFolder(doc.driveFileId || '', doc.name); }}
-                                          disabled={isSyncingDrive === doc.driveFileId}
-                                          className="flex-1 bg-amber-50 text-amber-600 border border-amber-100 py-2.5 rounded-xl text-[9px] font-black uppercase tracking-widest flex items-center justify-center gap-2 hover:bg-amber-100 transition-all disabled:opacity-50"
-                                       >
-                                          {isSyncingDrive === doc.driveFileId ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
-                                          Đồng bộ
-                                       </button>
-                                     )}
-                                  </div>
-                               </div>
-                             )}
-                          </div>
-                        </div>
-
-                        {/* Footer / Meta */}
-                        <div className="mt-5 pt-4 border-t border-slate-50 flex items-center justify-between">
+                  filteredDocs.map(doc => (
+                    <motion.div
+                      layout
+                      key={doc.id}
+                      className="bg-white rounded-[32px] border border-slate-200 p-5 shadow-sm hover:shadow-xl hover:border-[#002D56]/20 transition-all group relative overflow-hidden flex flex-col justify-between"
+                    >
+                      <div>
+                        {/* Status/Type Badge */}
+                        <div className="flex items-center justify-between mb-4">
                            <div className="flex items-center gap-2">
-                              <button 
-                                onClick={(e) => { e.stopPropagation(); setIsPickingTaskForDoc(doc); }}
-                                className="p-2.5 bg-emerald-50 text-emerald-600 border border-emerald-100 rounded-xl hover:bg-emerald-100 transition-all flex items-center gap-2 group/btn"
-                                title="Gắn vào công việc"
-                              >
-                                <Plus className="w-3.5 h-3.5 group-hover/btn:rotate-90 transition-transform" />
-                                <span className="text-[9px] font-black uppercase tracking-tight hidden sm:inline">Gắn vào VIỆC</span>
-                              </button>
-                              {doc.contentStatus === 'full' && !doc.summary && (
-                                 <button 
-                                   onClick={() => handleAnalyzeDocument(doc.id)}
-                                   disabled={!!isAnalyzing}
-                                   className="text-[9px] font-black text-blue-600 uppercase tracking-widest hover:bg-blue-50 px-2 py-1 rounded-lg flex items-center gap-1 transition-all"
-                                 >
-                                    {isAnalyzing === doc.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
-                                    AI Phân tích
-                                 </button>
-                              )}
-                              {doc.summary && (
-                                 <div className="flex items-center gap-1 text-[8px] font-black text-emerald-600 uppercase italic">
-                                    <ShieldCheck className="w-3 h-3" /> Đã phân tích
+                              <div className={cn(
+                                "px-2.5 py-1 rounded-lg text-[8px] font-black uppercase tracking-widest border shadow-sm",
+                                doc.type === 'pdf' ? "bg-rose-50 border-rose-100 text-rose-500" :
+                                doc.type === 'word' ? "bg-blue-50 border-blue-100 text-blue-500" :
+                                doc.type === 'excel' ? "bg-emerald-50 border-emerald-100 text-emerald-500" :
+                                doc.type === 'drive' ? "bg-[#002D56] border-[#002D56] text-white" :
+                                "bg-slate-50 border-slate-100 text-slate-400"
+                              )}>
+                                 {doc.driveMimeType?.includes('folder') ? 'FOLDER' : (doc.type || 'TEXT')}
+                              </div>
+                              {doc.documentKind && (
+                                 <div className="px-2 py-1 bg-amber-50 border border-amber-100 text-amber-600 rounded-lg text-[8px] font-black uppercase tracking-widest">
+                                    {doc.documentKind.replace(/_/g, ' ')}
                                  </div>
                               )}
                            </div>
-                           <button 
-                             onClick={() => setPreviewDocument(doc)}
-                             className="text-[10px] font-black text-[#002D56] uppercase tracking-widest hover:underline flex items-center gap-1.5 group/link"
-                           >
-                              Xem nội dung <ArrowRight className="w-3.5 h-3.5 group-hover/link:translate-x-0.5 transition-transform" />
-                           </button>
+                           <div className="flex items-center gap-1 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-all">
+                              <button 
+                                onClick={() => setSelectedDocIds(prev => prev.includes(doc.id) ? prev.filter(id => id !== doc.id) : [...prev, doc.id])}
+                                className={cn(
+                                  "p-2 rounded-xl transition-all active:scale-90 shadow-sm border",
+                                  selectedDocIds.includes(doc.id) ? "bg-emerald-500 text-white border-emerald-400" : "bg-white text-slate-400 border-slate-100 hover:bg-slate-50"
+                                )}
+                                title={selectedDocIds.includes(doc.id) ? "Bỏ chọn" : "Chọn làm nguồn AI"}
+                              >
+                                <CheckSquare className="w-3.5 h-3.5" />
+                              </button>
+                              <button 
+                                onClick={() => { if(confirm('Xóa tài liệu này?')) removeDocument(doc.id) }}
+                                className="p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-xl transition-all"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                           </div>
                         </div>
-                      </motion.div>
-                    ))
+
+                        {/* Content Info */}
+                        <div className="space-y-4">
+                           <div className="flex items-start gap-4">
+                              <div className="p-3 bg-slate-50 rounded-2xl group-hover:bg-blue-50 transition-colors shrink-0">
+                                 {doc.driveIconUrl ? (
+                                    <img src={doc.driveIconUrl} alt="icon" className="w-5 h-5 opacity-70" referrerPolicy="no-referrer" />
+                                 ) : (
+                                   <>
+                                     {doc.type === 'pdf' && <FileText className="w-5 h-5 text-rose-500" />}
+                                     {doc.type === 'word' && <FileText className="w-5 h-5 text-blue-500" />}
+                                     {doc.type === 'excel' && <FileText className="w-5 h-5 text-emerald-500" />}
+                                     {doc.type === 'drive' ? (
+                                        <Database className="w-5 h-5 text-[#002D56]" />
+                                     ) : doc.type === 'link' ? (
+                                        <LinkIcon className="w-5 h-5 text-indigo-500" />
+                                     ) : (
+                                        <FileText className="w-5 h-5 text-slate-400" />
+                                     )}
+                                   </>
+                                 )}
+                              </div>
+                              <div className="min-w-0">
+                                 <h4 className="text-sm font-black text-slate-800 uppercase tracking-tight leading-tight line-clamp-2 decoration-[#002D56]/10 underline-offset-2 decoration-2 group-hover:underline">
+                                   {doc.name}
+                                 </h4>
+                                 <div className="flex items-center gap-2 mt-1">
+                                    <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest truncate">
+                                       {formatLibraryDate(doc.metadata?.modifiedTime || doc.updatedAt || doc.createdAt)}
+                                    </p>
+                                    {doc.driveSize && (
+                                       <span className="text-[8px] font-black text-slate-300">({(parseInt(doc.driveSize)/1024/1024).toFixed(2)} MB)</span>
+                                    )}
+                                 </div>
+                              </div>
+                           </div>
+
+                           {(doc.summary && (typeof doc.summary === 'string' ? doc.summary : doc.summary.short) || doc.metadata?.description) && (
+                             <p className="text-[11px] text-slate-500 font-medium leading-relaxed line-clamp-3 border-l-2 border-slate-100 pl-3 italic">
+                                {typeof doc.summary === 'string' ? doc.summary : doc.summary?.short || doc.metadata?.description}
+                              </p>
+                           )}
+
+                           {doc.type === 'drive' && (
+                             <div className="space-y-3 pt-1">
+                                <div className="flex flex-wrap items-center gap-2">
+                                   <div className="px-2 py-0.5 bg-[#002D56]/5 text-[#002D56] rounded-md text-[8px] font-black uppercase tracking-wider border border-[#002D56]/10">DRIVE SOURCE</div>
+                                   <div className={cn(
+                                     "px-2 py-1 rounded-md text-[8px] font-black uppercase tracking-wider border flex items-center gap-1",
+                                     (doc.contentStatus === 'extracted' || doc.contentStatus === 'summary_only') ? "bg-emerald-50 text-emerald-600 border-emerald-100" : "bg-amber-50 text-amber-600 border-amber-100"
+                                   )}>
+                                      {(doc.contentStatus === 'extracted' || doc.contentStatus === 'summary_only') ? <Check className="w-2.5 h-2.5" /> : <EyeOff className="w-2.5 h-2.5" />}
+                                      {(doc.contentStatus === 'extracted' || doc.contentStatus === 'summary_only') ? 'AI Đọc được' : 'Chỉ tiêu đề'}
+                                   </div>
+                                </div>
+                                <div className="flex gap-2">
+                                   <a 
+                                     href={doc.driveWebViewLink || doc.metadata?.url} 
+                                     target="_blank" 
+                                     rel="noreferrer"
+                                     className="flex-1 bg-slate-50 text-slate-600 border border-slate-100 py-2.5 rounded-xl text-[9px] font-black uppercase tracking-widest flex items-center justify-center gap-2 hover:bg-slate-100 transition-all shadow-sm"
+                                   >
+                                      Mở Drive <ExternalLink className="w-3 h-3" />
+                                   </a>
+                                   {doc.driveMimeType?.includes('folder') && (
+                                     <button 
+                                        onClick={(e) => { e.stopPropagation(); handleSyncDriveFolder(doc.driveFileId || '', doc.name); }}
+                                        disabled={isSyncingDrive === doc.driveFileId}
+                                        className="flex-1 bg-amber-50 text-amber-600 border border-amber-100 py-2.5 rounded-xl text-[9px] font-black uppercase tracking-widest flex items-center justify-center gap-2 hover:bg-amber-100 transition-all disabled:opacity-50"
+                                     >
+                                        {isSyncingDrive === doc.driveFileId ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                                        Đồng bộ
+                                     </button>
+                                   )}
+                                </div>
+                             </div>
+                           )}
+                        </div>
+                      </div>
+
+                      {/* Footer / Meta */}
+                      <div className="mt-5 pt-4 border-t border-slate-50 flex items-center justify-between">
+                         <div className="flex items-center gap-2">
+                            <button 
+                              onClick={(e) => { e.stopPropagation(); closeMobileDrawer(); setIsPickingTaskForDoc(doc); }}
+                              className="p-2.5 bg-emerald-50 text-emerald-600 border border-emerald-100 rounded-xl hover:bg-emerald-100 transition-all flex items-center gap-2 group/btn"
+                              title="Gắn vào công việc"
+                            >
+                              <Plus className="w-3.5 h-3.5 group-hover/btn:rotate-90 transition-transform" />
+                              <span className="text-[9px] font-black uppercase tracking-tight hidden sm:inline">Gắn vào VIỆC</span>
+                            </button>
+                            {!doc.summary && (
+                               <button 
+                                 onClick={(e) => { e.stopPropagation(); handleAnalyzeDocument(doc.id); }}
+                                 disabled={!!isAnalyzing}
+                                 className="text-[9px] font-black text-blue-600 uppercase tracking-widest hover:bg-blue-50 px-2 py-1 rounded-lg flex items-center gap-1 transition-all"
+                               >
+                                  {isAnalyzing === doc.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                                  AI Phân tích
+                               </button>
+                            )}
+                            {doc.summary && (
+                               <div className="flex items-center gap-1 text-[8px] font-black text-emerald-600 uppercase italic">
+                                  <ShieldCheck className="w-3 h-3" /> Đã phân tích
+                               </div>
+                            )}
+                         </div>
+                         <button 
+                           onClick={() => openDocumentPreview(doc)}
+                           className="text-[10px] font-black text-[#002D56] uppercase tracking-widest hover:underline flex items-center gap-1.5 group/link"
+                         >
+                             Xem nội dung <ArrowRight className="w-3.5 h-3.5 group-hover/link:translate-x-0.5 transition-transform" />
+                         </button>
+                      </div>
+                    </motion.div>
+                  ))
                 )}
               </div>
             </main>
@@ -4058,57 +4809,6 @@ const handleAnalyzeDocument = async (docId: string) => {
     </AnimatePresence>
   </div>
 </main>
-
-      {/* Google Drive Preview Modal */}
-      <AnimatePresence>
-        {isPreviewingDrive && (
-          <motion.div 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[200] flex items-center justify-center p-4 sm:p-10 bg-slate-900/80 backdrop-blur-md"
-            onClick={() => setIsPreviewingDrive(null)}
-          >
-            <motion.div 
-              initial={{ scale: 0.95, opacity: 0, y: 20 }}
-              animate={{ scale: 1, opacity: 1, y: 0 }}
-              exit={{ scale: 0.95, opacity: 0, y: 20 }}
-              className="bg-white rounded-[32px] sm:rounded-[40px] shadow-2xl w-full h-full flex flex-col overflow-hidden relative"
-              onClick={e => e.stopPropagation()}
-            >
-              <div className="px-6 sm:px-10 py-5 sm:py-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
-                <div className="flex items-center gap-4">
-                   <div className="p-3 bg-[#002D56] rounded-2xl shadow-lg shadow-[#002D56]/20">
-                      <Database className="w-5 h-5 text-white" />
-                   </div>
-                   <div>
-                      <h3 className="text-sm sm:text-base font-black text-[#002D56] uppercase tracking-tight">Xem trước tài liệu Drive</h3>
-                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">Quyền truy cập phụ thuộc vào cài đặt của Google</p>
-                   </div>
-                </div>
-                <button 
-                  onClick={() => setIsPreviewingDrive(null)}
-                  className="p-3 hover:bg-slate-200 rounded-2xl transition-all"
-                >
-                   <X className="w-6 h-6 text-slate-400" />
-                </button>
-              </div>
-              
-              <div className="flex-1 bg-slate-900 relative">
-                 <iframe 
-                   src={isPreviewingDrive} 
-                   className="w-full h-full border-none"
-                   allow="autoplay"
-                   referrerPolicy="no-referrer"
-                 />
-                 <div className="absolute bottom-6 left-1/2 -translate-x-1/2 p-4 bg-white/10 backdrop-blur-xl border border-white/10 rounded-2xl text-center max-w-sm pointer-events-none">
-                    <p className="text-[10px] text-white/60 font-medium">Nếu không thấy nội dung, vui lòng kiểm tra quyền chia sẻ file trên Google Drive hoặc đăng nhập tài khoản Google.</p>
-                 </div>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
 
       {/* Modals Container */}
       <AnimatePresence>
@@ -4400,11 +5100,11 @@ const handleAnalyzeDocument = async (docId: string) => {
                                       onChange={e => resetTestResultIfFormChanged({...aiKeyForm, modelPreset: e.target.value})}
                                       className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-[10px] font-bold text-slate-700 focus:outline-none"
                                    >
-                                         <option value="gemini-2.5-flash">gemini-2.5-flash (Chuẩn - Nhanh & Ổn định)</option>
-                                         <option value="gemini-2.5-flash">gemini-2.5-flash (Tiết kiệm)</option>
-                                         <option value="gemini-2.5-pro">gemini-2.5-pro (Thông minh cao nhất)</option>
+                                         <option value="gemini-2.0-flash">gemini-2.0-flash (Chuẩn - Nhanh & Ổn định)</option>
+                                         <option value="gemini-2.0-flash-lite">gemini-2.0-flash-lite (Tiết kiệm)</option>
+                                         <option value="gemini-2.0-pro">gemini-2.0-pro (Thông minh cao nhất)</option>
                                          <option value="gemini-2.0-flash">gemini-2.0-flash (Thế hệ mới)</option>
-                                         <option value="gemini-2.5-flash">gemini-2.5-flash (Legacy)</option>
+                                         <option value="gemini-1.5-flash">gemini-1.5-flash (Legacy)</option>
                                          <option value="gemini-1.5-pro">gemini-1.5-pro (Legacy)</option>
                                       <option value="custom">-- Tự nhập Model ID --</option>
                                    </select>
@@ -4568,215 +5268,24 @@ const handleAnalyzeDocument = async (docId: string) => {
         )}
 
         {activeModal === 'task-edit' && editingTask && (
-             <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
-               <motion.div 
-                 initial={{ opacity: 0, scale: 0.9, y: 20 }}
-                 animate={{ opacity: 1, scale: 1, y: 0 }}
-                 exit={{ opacity: 0, scale: 0.9, y: 20 }}
-                 className="bg-white w-full max-w-2xl rounded-[40px] shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
-                 onClick={e => e.stopPropagation()}
-               >
-                 <div className="px-8 py-6 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
-                    <div className="flex items-center gap-4">
-                       <div className="bg-[#002D56] p-3 rounded-2xl">
-                          {editingTask.id ? <Edit3 className="text-white w-5 h-5" /> : <Plus className="text-white w-5 h-5" />}
-                       </div>
-                       <div>
-                          <h3 className="text-lg font-black text-slate-800 uppercase tracking-tight">
-                            {editingTask.id ? 'Chi tiết công việc' : 'Tạo mới công việc'}
-                          </h3>
-                          <p className="text-xs text-slate-400 font-bold uppercase tracking-widest">Hoa Tiêu Miền Bắc - Task Engine</p>
-                       </div>
-                    </div>
-                    <button onClick={() => setActiveModal(null)} className="p-2 text-slate-300 hover:text-slate-800 transition-colors">
-                       <X className="w-6 h-6" />
-                    </button>
-                 </div>
-
-                 <div className="p-8 overflow-y-auto space-y-6">
-                    <div className="space-y-2">
-                       <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Tiêu đề công việc</label>
-                       <input 
-                         type="text" 
-                         value={editingTask.title}
-                         onChange={e => setEditingTask({ ...editingTask, title: e.target.value })}
-                         placeholder="VD: Kiểm tra mớn nước tàu HTMB 01..."
-                         className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-4 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
-                       />
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                       <div className="space-y-2">
-                          <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Người xử lý</label>
-                          <input 
-                            type="text" 
-                            value={editingTask.assignee}
-                            onChange={e => setEditingTask({ ...editingTask, assignee: e.target.value })}
-                            placeholder="Tên hoặc mã định danh..."
-                            className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-3 text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
-                          />
-                       </div>
-                       <div className="space-y-2">
-                          <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Lĩnh vực chuyên môn</label>
-                          <select 
-                             value={editingTask.categoryCode}
-                             onChange={e => setEditingTask({ ...editingTask, categoryCode: e.target.value })}
-                             className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
-                          >
-                             {TASK_CATEGORIES.map(c => <option key={c.code} value={c.code}>{c.name}</option>)}
-                          </select>
-                       </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                       <div className="space-y-2">
-                          <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Thời hạn (Deadline)</label>
-                          <input 
-                            type="date" 
-                            value={editingTask.dueDate}
-                            onChange={e => setEditingTask({ ...editingTask, dueDate: e.target.value })}
-                            className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-3 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
-                          />
-                       </div>
-                       <div className="space-y-2">
-                          <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Độ ưu tiên</label>
-                          <select 
-                             value={editingTask.priority}
-                             onChange={e => setEditingTask({ ...editingTask, priority: e.target.value as any })}
-                             className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
-                          >
-                             <option value="low">Thấp</option>
-                             <option value="medium">Trung bình</option>
-                             <option value="high">Cao</option>
-                             <option value="urgent">Khẩn cấp</option>
-                          </select>
-                       </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        <div className="space-y-2">
-                           <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Trạng thái hiện tại</label>
-                           <select 
-                              value={editingTask.status}
-                              onChange={e => setEditingTask({ ...editingTask, status: e.target.value as any })}
-                              className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
-                           >
-                              <option value="todo">Cần làm</option>
-                              <option value="doing">Đang làm</option>
-                              <option value="review">Kiểm tra</option>
-                              <option value="done">Xong</option>
-                              <option value="blocked">Vướng</option>
-                           </select>
-                        </div>
-                        <div className="space-y-3 pt-2">
-                           <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Tài liệu liên quan ({editingTask.linkedDocumentIds?.length || 0})</label>
-                           <div className="flex flex-wrap gap-2">
-                              {editingTask.linkedDocumentIds?.map(docId => {
-                                 const doc = documents.find(d => d.id === docId);
-                                 if (!doc) return null;
-                                 return (
-                                    <div key={docId} className="flex items-center gap-2 bg-[#002D56] text-white px-3 py-1.5 rounded-xl text-[10px] font-black uppercase">
-                                       <span className="truncate max-w-[150px]">{doc.name}</span>
-                                       <button 
-                                          onClick={() => setEditingTask({
-                                             ...editingTask,
-                                             linkedDocumentIds: editingTask.linkedDocumentIds?.filter(id => id !== docId)
-                                          })}
-                                          className="p-0.5 hover:bg-white/20 rounded-md"
-                                       >
-                                          <X className="w-3 h-3" />
-                                       </button>
-                                    </div>
-                                 );
-                              })}
-                              <button 
-                                 onClick={() => setIsPickingFromLibraryForTask(true)}
-                                 className="flex items-center gap-2 bg-slate-100 text-slate-600 px-3 py-1.5 rounded-xl text-[10px] font-black uppercase border border-dashed border-slate-200 hover:bg-slate-200 transition-all"
-                              >
-                                 <Plus className="w-3 h-3" /> Gắn tài liệu
-                              </button>
-                           </div>
-                        </div>
-
-                        <div className="flex flex-col justify-center gap-2 pt-2">
-                           <label className="flex items-center gap-3 cursor-pointer select-none bg-slate-50 p-4 rounded-2xl border border-slate-100 hover:border-[#002D56]/20 transition-all">
-                              <input 
-                                type="checkbox"
-                                checked={editingTask.isDeputy}
-                                onChange={e => setEditingTask({ ...editingTask, isDeputy: e.target.checked })}
-                                className="w-5 h-5 rounded-lg text-[#002D56] focus:ring-[#002D56]"
-                              />
-                              <div className="flex flex-col">
-                                 <span className="text-xs font-black text-slate-700 uppercase tracking-tight">Chế độ kiêm nhiệm</span>
-                                 <span className="text-[10px] text-slate-400 font-bold italic">Cho phép giao việc không chính danh</span>
-                              </div>
-                           </label>
-                        </div>
-                    </div>
-
-                    {editingTask.isDeputy && (
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 animate-in slide-in-from-top-2">
-                           <div className="space-y-2">
-                              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Mã chức danh</label>
-                              <input 
-                                type="text" 
-                                value={editingTask.assignmentCode || ''}
-                                onChange={e => setEditingTask({ ...editingTask, assignmentCode: e.target.value })}
-                                placeholder="VD: DH01"
-                                className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-3 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
-                              />
-                           </div>
-                           <div className="space-y-2">
-                              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Tên chức vụ</label>
-                              <input 
-                                type="text" 
-                                value={editingTask.assignmentName || ''}
-                                onChange={e => setEditingTask({ ...editingTask, assignmentName: e.target.value })}
-                                placeholder="Phó ca, hỗ trợ..."
-                                className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-3 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
-                              />
-                           </div>
-                        </div>
-                    )}
-
-                    <div className="space-y-2">
-                       <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Mô tả chi tiết</label>
-                       <textarea 
-                         rows={4}
-                         value={editingTask.description}
-                         onChange={e => setEditingTask({ ...editingTask, description: e.target.value })}
-                         placeholder="Ghi chú thêm về yêu cầu, tài liệu đính kèm hoặc các vướng mắc..."
-                         className="w-full bg-slate-50 border border-slate-200 rounded-3xl px-5 py-4 text-sm font-medium text-slate-600 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10 resize-none"
-                       />
-                    </div>
-                 </div>
-
-                 <div className="p-8 bg-slate-50 border-t border-slate-100 flex items-center justify-end gap-3">
-                    <button 
-                       onClick={() => setActiveModal(null)}
-                       className="px-6 py-3 rounded-2xl text-[10px] font-black uppercase text-slate-400 hover:bg-slate-200 transition-all"
-                    >
-                       Hủy bỏ
-                    </button>
-                    <button 
-                       onClick={() => {
-                          if (!editingTask.title) return toast.error('Vui lòng nhập tiêu đề');
-                          if (editingTask.id) {
-                             handleUpdateTask(editingTask.id, editingTask);
-                          } else {
-                             const { id, ...rest } = editingTask;
-                             persistTask(rest);
-                             setActiveModal(null);
-                          }
-                       }}
-                       className="bg-[#002D56] text-white px-10 py-4 rounded-2xl text-xs font-black uppercase tracking-[0.2em] shadow-2xl hover:shadow-[#002D56]/20 transition-all active:scale-95 flex items-center gap-2"
-                    >
-                       <Save className="w-4 h-4" />
-                       {editingTask.id ? 'CẬP NHẬT DỮ LIỆU' : 'LƯU CÔNG VIỆC MỚI'}
-                    </button>
-                 </div>
-               </motion.div>
-             </div>
+          <TaskEditModal 
+            editingTask={editingTask}
+            setEditingTask={setEditingTask}
+            onClose={() => setActiveModal(null)}
+            onDelete={handleDeleteTask}
+            onSave={(task) => {
+              if (!task.title) return toast.error('Vui lòng nhập tiêu đề');
+              if (task.id) {
+                handleUpdateTask(task.id, task);
+              } else {
+                const { id, ...rest } = task;
+                persistTask(rest);
+                setActiveModal(null);
+              }
+            }}
+            documents={documents}
+            setIsPickingFromLibrary={setIsPickingFromLibraryForTask}
+          />
         )}
 
         {/* Library Add Text Modal */}
@@ -4862,21 +5371,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                 <div className="flex gap-3 mt-8">
                    <button onClick={() => setIsAddingLink(false)} className="flex-1 py-4 text-xs font-black uppercase text-slate-400 hover:bg-slate-50 rounded-2xl">Hủy</button>
                    <button 
-                     onClick={async () => {
-                        if(!newLinkUrl) return toast.error('Vui lòng nhập URL');
-                        const driveInfo = parseGoogleDriveUrl(newLinkUrl);
-                        await persistDocument({
-                           name: driveInfo.isGoogleDrive ? driveInfo.title : 'Web Link',
-                           content: newLinkUrl,
-                           type: 'link',
-                           category: 'GENERAL',
-                           metadata: driveInfo,
-                           collectionId: activeLibraryId
-                        });
-                        setIsAddingLink(false);
-                        setNewLinkUrl('');
-                        toast.success('Đã thêm liên kết');
-                     }}
+                     onClick={handleAddLink}
                      className="flex-1 bg-indigo-600 text-white py-4 rounded-2xl text-xs font-black uppercase tracking-widest shadow-xl"
                    >
                      Xác nhận thêm
@@ -5310,7 +5805,258 @@ const handleAnalyzeDocument = async (docId: string) => {
             </div>
          )}
 
-         {/* Document Picker Modal for Tasks */}
+         {/* Document Detail Drawer */}
+      <AnimatePresence>
+        {previewDocument && (
+          <div className="fixed inset-0 z-[250] flex justify-end">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm"
+              onClick={() => setPreviewDocument(null)}
+            />
+            <motion.div
+              initial={{ x: "100%" }}
+              animate={{ x: 0 }}
+              exit={{ x: "100%" }}
+              transition={{ type: "spring", damping: 25, stiffness: 200 }}
+              className="relative w-full max-w-2xl bg-white h-full shadow-2xl flex flex-col overflow-hidden"
+            >
+              {/* Drawer Header */}
+              <div className="px-8 py-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50 shrink-0">
+                <div className="flex items-center gap-4 min-w-0">
+                  <div className={cn(
+                    "p-3 rounded-2xl shadow-lg shrink-0",
+                    previewDocument.type === 'drive' ? "bg-[#002D56] text-white" : "bg-blue-600 text-white"
+                  )}>
+                    {previewDocument.driveIconUrl ? (
+                      <img src={previewDocument.driveIconUrl} alt="icon" className="w-5 h-5 brightness-0 invert" referrerPolicy="no-referrer" />
+                    ) : (
+                      <Database className="w-5 h-5" />
+                    )}
+                  </div>
+                  <div className="min-w-0">
+                    <h3 className="text-base font-black text-slate-800 uppercase tracking-tight truncate leading-tight">
+                      {previewDocument.name}
+                    </h3>
+                    <div className="flex items-center gap-2 mt-0.5">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                        {previewDocument.type} • {formatLibraryDate(previewDocument.metadata?.modifiedTime || previewDocument.updatedAt)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => setPreviewDocument(null)}
+                  className="p-2.5 hover:bg-white rounded-xl shadow-sm border border-slate-100 transition-all shrink-0 ml-4"
+                >
+                  <X className="w-5 h-5 text-slate-400" />
+                </button>
+              </div>
+
+              {/* Tabs Navigation */}
+              <div className="px-8 bg-white border-b border-slate-100 flex items-center gap-6 shrink-0">
+                {['overview', 'preview', 'ai', 'metadata'].map((tab) => (
+                  <button
+                    key={tab}
+                    onClick={() => setDocumentDetailTab(tab as any)}
+                    className={cn(
+                      "py-4 text-[10px] font-black uppercase tracking-[0.2em] relative transition-all",
+                      documentDetailTab === tab ? "text-[#002D56]" : "text-slate-400 hover:text-slate-600"
+                    )}
+                  >
+                    {tab === 'overview' && 'Tổ̉ng quan'}
+                    {tab === 'preview' && 'Xem trước'}
+                    {tab === 'ai' && 'AI tóm tắt'}
+                    {tab === 'metadata' && 'Metadata'}
+                    {documentDetailTab === tab && (
+                      <motion.div 
+                        layoutId="activeTabUnderline"
+                        className="absolute bottom-0 left-0 right-0 h-1 bg-[#002D56] rounded-t-full"
+                      />
+                    )}
+                  </button>
+                ))}
+              </div>
+
+              {/* Content Area */}
+              <div className="flex-1 overflow-y-auto p-8 custom-scrollbar">
+                {documentDetailTab === 'overview' && (
+                  <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                    {/* Summary Card */}
+                    <div className="bg-slate-50 rounded-[32px] p-6 border border-slate-100">
+                      <h4 className="text-[11px] font-black text-[#002D56] uppercase tracking-widest mb-4 flex items-center gap-2">
+                         <Sparkles className="w-3.5 h-3.5" /> Tóm tắt nội dung
+                      </h4>
+                      {previewDocument.summary ? (
+                        <p className="text-sm text-slate-600 font-medium leading-relaxed">
+                          {typeof previewDocument.summary === 'string' ? previewDocument.summary : previewDocument.summary.short}
+                        </p>
+                      ) : (
+                        <div className="py-4 text-center">
+                           <p className="text-xs text-slate-400 font-bold uppercase mb-4">Chưa có bản tóm tắt AI</p>
+                           <button 
+                             onClick={() => handleAnalyzeDocument(previewDocument.id)}
+                             disabled={!!isAnalyzing}
+                             className="bg-blue-600 text-white px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-blue-700 transition-all flex items-center gap-2 mx-auto disabled:opacity-50"
+                           >
+                              {isAnalyzing === previewDocument.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                              Phân tích ngay
+                           </button>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Stats Grid */}
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="bg-white p-5 rounded-3xl border border-slate-100 shadow-sm">
+                        <div className="flex items-center gap-3 mb-2">
+                           <Calendar className="w-4 h-4 text-orange-500" />
+                           <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Ngày cập nhật</span>
+                        </div>
+                        <p className="text-xs font-black text-slate-700 uppercase">
+                          {formatLibraryDate(previewDocument.metadata?.modifiedTime || previewDocument.updatedAt)}
+                        </p>
+                      </div>
+                      <div className="bg-white p-5 rounded-3xl border border-slate-100 shadow-sm">
+                        <div className="flex items-center gap-3 mb-2">
+                           <HardDrive className="w-4 h-4 text-indigo-500" />
+                           <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Dung lượng</span>
+                        </div>
+                        <p className="text-xs font-black text-slate-700 uppercase">
+                          {previewDocument.driveSize ? (parseInt(previewDocument.driveSize)/1024/1024).toFixed(2) + ' MB' : (previewDocument.content?.length || 0)/1000 + ' KB'}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="pt-4 flex flex-wrap gap-3">
+                       <a 
+                         href={previewDocument.driveWebViewLink || (previewDocument.type === 'link' ? previewDocument.metadata?.url : undefined)} 
+                         target="_blank" 
+                         rel="noreferrer"
+                         className="bg-slate-900 text-white px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 hover:bg-slate-800 transition-all shadow-lg"
+                       >
+                          Mở nguồn gốc <ExternalLink className="w-3.5 h-3.5" />
+                       </a>
+                       <button 
+                         onClick={() => { closeMobileDrawer(); setIsPickingTaskForDoc(previewDocument); setPreviewDocument(null); }}
+                         className="bg-emerald-50 text-emerald-600 border border-emerald-200 px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-emerald-100 transition-all flex items-center gap-2"
+                       >
+                          Gắn vào công việc <Plus className="w-3.5 h-3.5" />
+                       </button>
+                    </div>
+                  </div>
+                )}
+
+                {documentDetailTab === 'preview' && (
+                  <div className="h-full min-h-[500px] bg-slate-100 rounded-[32px] overflow-hidden relative animate-in fade-in zoom-in-95 duration-500">
+                    {previewDocument.type === 'drive' || (previewDocument.type === 'link' && previewDocument.metadata?.url?.includes('drive.google.com')) ? (
+                      <iframe 
+                        src={previewDocument.driveWebViewLink?.replace('/view', '/preview') || previewDocument.metadata?.url} 
+                        className="w-full h-full border-none"
+                        title={previewDocument.name}
+                        referrerPolicy="no-referrer"
+                      />
+                    ) : (
+                      <div className="p-8 h-full bg-white flex flex-col">
+                        <div className="flex items-center gap-3 mb-6 p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                           <AlertCircle className="w-4 h-4 text-amber-500" />
+                           <p className="text-[10px] font-bold text-slate-500 uppercase tracking-tight italic">
+                              Hệ thống hiển thị nội dung thô đã được AI trích xuất.
+                           </p>
+                        </div>
+                        <div className="flex-1 overflow-y-auto font-mono text-[11px] leading-relaxed text-slate-600 bg-slate-50/50 p-6 rounded-3xl border border-slate-50">
+                           <pre className="whitespace-pre-wrap">{previewDocument.content || 'Nội dung trống'}</pre>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {documentDetailTab === 'ai' && (
+                  <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-500">
+                    {previewDocument.summary && typeof previewDocument.summary === 'object' ? (
+                      <>
+                        <div className="p-6 bg-slate-50/50 rounded-[32px] border border-slate-100">
+                           <h5 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">Chi tiết AI trích xuất</h5>
+                           <div className="prose prose-slate prose-sm text-slate-600 max-w-none font-medium leading-relaxed">
+                              {previewDocument.summary.full || previewDocument.summary.short}
+                           </div>
+                        </div>
+                        
+                        <div className="grid grid-cols-1 gap-4">
+                           {previewDocument.summary.keyPoints?.map((point, idx) => (
+                              <div key={idx} className="flex gap-4 p-4 bg-white rounded-2xl border border-slate-100 shadow-sm">
+                                 <div className="w-6 h-6 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-[10px] font-black shrink-0">{idx + 1}</div>
+                                 <p className="text-xs font-medium text-slate-700 leading-relaxed">{point}</p>
+                              </div>
+                           ))}
+                        </div>
+
+                        <div className="p-6 bg-blue-50/30 rounded-3xl border border-blue-100/50 flex items-center justify-between">
+                           <div>
+                              <p className="text-[10px] font-black text-[#002D56] uppercase tracking-tight">Cần cập nhật tóm tắt?</p>
+                              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">AI sẽ đọc lại nội dung mới nhất</p>
+                           </div>
+                           <button 
+                             onClick={() => handleAnalyzeDocument(previewDocument.id)}
+                             disabled={!!isAnalyzing}
+                             className="p-2.5 bg-white text-[#002D56] border border-slate-100 rounded-xl hover:bg-blue-50 transition-all shadow-sm"
+                           >
+                              <RefreshCw className={cn("w-4 h-4", isAnalyzing === previewDocument.id && "animate-spin")} />
+                           </button>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="py-20 text-center">
+                         <div className="w-16 h-16 bg-slate-50 rounded-3xl flex items-center justify-center mx-auto mb-6">
+                            <Sparkles className="w-8 h-8 text-slate-200" />
+                         </div>
+                         <h4 className="text-sm font-black text-slate-400 uppercase tracking-widest mb-2">Chưa có kết quả AI</h4>
+                         <p className="text-[10px] text-slate-300 font-bold uppercase mb-8">AI cần đọc nội dung tài liệu trước khi tóm tắt</p>
+                         <button 
+                           onClick={() => handleAnalyzeDocument(previewDocument.id)}
+                           disabled={!!isAnalyzing}
+                           className="bg-blue-600 text-white px-8 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-blue-700 transition-all flex items-center gap-2 mx-auto shadow-lg shadow-blue-500/20"
+                         >
+                            {isAnalyzing === previewDocument.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                            Yêu cầu AI phân tích
+                         </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {documentDetailTab === 'metadata' && (
+                  <div className="space-y-6 animate-in fade-in duration-500">
+                    <div className="bg-slate-900 rounded-[32px] p-8 text-slate-300 overflow-hidden relative">
+                       <div className="absolute top-0 right-0 p-10 opacity-[0.03] pointer-events-none">
+                          <FileType className="w-64 h-64 rotate-12" />
+                       </div>
+                       <h5 className="text-[10px] font-black text-white/40 uppercase tracking-[0.2em] mb-6 flex items-center gap-2">
+                          <Code className="w-3.5 h-3.5" /> Metadata thô từ nguồn
+                       </h5>
+                       <pre className="text-[10px] font-mono leading-relaxed overflow-x-auto custom-scrollbar">
+                         {JSON.stringify({
+                            id: previewDocument.id,
+                            type: previewDocument.type,
+                            sourceType: previewDocument.sourceType,
+                            mimeType: previewDocument.driveMimeType,
+                            fileId: previewDocument.driveFileId,
+                            createdAt: previewDocument.createdAt,
+                            updatedAt: previewDocument.updatedAt,
+                            metadata: previewDocument.metadata,
+                         }, null, 2)}
+                       </pre>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
          {isPickingFromLibrary && pickingMode === 'task' && editingTask && (
             <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-md z-[200] flex items-center justify-center p-4">
                <motion.div 
@@ -5393,6 +6139,28 @@ const handleAnalyzeDocument = async (docId: string) => {
             </div>
          )}
       </AnimatePresence>
+      
+        {/* AI Chatbox - Only show if auth ready and user logged in */}
+        {authReady && user && !activeModal && (
+          <FloatingChatbox
+            isOpen={isChatOpen}
+            onToggle={() => setIsChatOpen(!isChatOpen)}
+            messages={chatMessages}
+            input={chatInput}
+            onInputChange={setChatInput}
+            onSend={() => handleSendChat()}
+            onClear={() => setChatMessages([])}
+            onExecuteAction={handleExecuteAction}
+            onCreateTasks={createTasksFromChatDrafts}
+            onToggleTaskDraft={toggleChatTaskDraft}
+            activeTab={activeTab}
+            loading={isChatLoading}
+            disabled={!backendReady || !authReady || !user || !isAiCoreActive}
+            isAiReady={isAiCoreActive}
+            disabledReason={!backendReady ? "Máy chủ đang khởi động..." : !isAiCoreActive ? "AI chưa sẵn sàng..." : undefined}
+            currentModel={isPersonalAiActive ? (personalAIStatus?.model || health?.textModel) : (health?.textModel || 'gemini-2.5-flash')}
+          />
+        )}
     </div>
   </div>
    );
