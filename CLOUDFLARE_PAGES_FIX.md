@@ -33,7 +33,7 @@ Tùy chọn thêm:
 
 ```txt
 GEMINI_TEXT_MODEL=gemini-2.5-flash
-GEMINI_FALLBACK_MODEL=gemini-2.5-flash-lite
+GEMINI_FALLBACK_MODEL=gemini-2.5-flash
 GOOGLE_DRIVE_API_KEY=API_KEY_GOOGLE_DRIVE_NẾU_DÙNG_DRIVE
 ```
 

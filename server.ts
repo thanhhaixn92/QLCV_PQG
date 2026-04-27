@@ -332,7 +332,7 @@ async function startServer() {
       hasGoogleDriveKey: !!process.env.GOOGLE_DRIVE_API_KEY,
       imageGenerationEnabled: false,
       textModel: process.env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash',
-      fallbackModel: process.env.GEMINI_FALLBACK_MODEL || 'gemini-2.5-flash-lite',
+      fallbackModel: process.env.GEMINI_FALLBACK_MODEL || 'gemini-2.5-flash',
       firestoreDatabaseId: databaseId || '(default)',
       sdk: '@google/generative-ai',
       timestamp: new Date().toISOString()
@@ -931,7 +931,7 @@ TRẢ VỀ JSON:
       const aiConfig = await resolveActiveAIConfig(userId);
       const ai = getAI(aiConfig.apiKey);
       
-      const textModel = aiConfig.model && aiConfig.provider === 'gemini' ? aiConfig.model : normalizeModelName(process.env.GEMINI_TEXT_MODEL, 'gemini-1.5-flash');
+      const textModel = aiConfig.model && aiConfig.provider === 'gemini' ? aiConfig.model : normalizeModelName(process.env.GEMINI_TEXT_MODEL, 'gemini-2.5-flash');
       const model = ai.getGenerativeModel({
         model: textModel,
         systemInstruction: "Bạn là chuyên gia nghiên cứu tư liệu báo chí cho VMS. Tìm kiếm thông tin chính xác và cập nhật.",

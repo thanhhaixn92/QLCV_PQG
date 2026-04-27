@@ -4401,10 +4401,10 @@ const handleAnalyzeDocument = async (docId: string) => {
                                       className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-[10px] font-bold text-slate-700 focus:outline-none"
                                    >
                                          <option value="gemini-2.5-flash">gemini-2.5-flash (Chuẩn - Nhanh & Ổn định)</option>
-                                         <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite (Tiết kiệm)</option>
+                                         <option value="gemini-2.5-flash">gemini-2.5-flash (Tiết kiệm)</option>
                                          <option value="gemini-2.5-pro">gemini-2.5-pro (Thông minh cao nhất)</option>
                                          <option value="gemini-2.0-flash">gemini-2.0-flash (Thế hệ mới)</option>
-                                         <option value="gemini-1.5-flash">gemini-1.5-flash (Legacy)</option>
+                                         <option value="gemini-2.5-flash">gemini-2.5-flash (Legacy)</option>
                                          <option value="gemini-1.5-pro">gemini-1.5-pro (Legacy)</option>
                                       <option value="custom">-- Tự nhập Model ID --</option>
                                    </select>
