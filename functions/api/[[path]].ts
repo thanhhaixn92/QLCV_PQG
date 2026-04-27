@@ -22,6 +22,7 @@ type Env = {
   GEMINI_API_KEY?: string;
   GEMINI_TEXT_MODEL?: string;
   GEMINI_FALLBACK_MODEL?: string;
+  GEMINI_PRO_MODEL?: string;
   GOOGLE_DRIVE_API_KEY?: string;
 };
 
@@ -40,23 +41,23 @@ export async function onRequest(context: PagesContext): Promise<Response> {
 
   try {
     if (request.method === 'GET' && pathname === '/api/health') return handleHealth(env);
-    if (request.method === 'GET' && pathname === '/api/fetch-link') return handleFetchLink(request);
+    if (request.method === 'GET' && pathname === '/api/fetch-link') return await handleFetchLink(request);
     if (request.method === 'GET' && pathname === '/api/user-ai-key/status') return handleUserAIKeyStatus(env);
     if (request.method === 'DELETE' && pathname === '/api/user-ai-key') return handleDeleteUserAIKey();
 
-    if (request.method === 'POST' && pathname === '/api/ai/process') return handleAIProcess(request, env);
-    if (request.method === 'POST' && pathname === '/api/ai/search') return handleAISearch(request, env);
-    if (request.method === 'POST' && pathname === '/api/tasks/build') return handleTasksBuild(request, env);
-    if (request.method === 'POST' && pathname === '/api/editorial-images/plan') return handleEditorialImagesPlan(request, env);
+    if (request.method === 'POST' && pathname === '/api/ai/process') return await handleAIProcess(request, env);
+    if (request.method === 'POST' && pathname === '/api/ai/search') return await handleAISearch(request, env);
+    if (request.method === 'POST' && pathname === '/api/tasks/build') return await handleTasksBuild(request, env);
+    if (request.method === 'POST' && pathname === '/api/editorial-images/plan') return await handleEditorialImagesPlan(request, env);
     if (request.method === 'POST' && pathname === '/api/editorial-images/generate') return handleEditorialImagesGenerateDisabled();
-    if (request.method === 'POST' && pathname === '/api/user-ai-key/test') return handleUserAIKeyTest(request);
+    if (request.method === 'POST' && pathname === '/api/user-ai-key/test') return await handleUserAIKeyTest(request);
     if (request.method === 'POST' && pathname === '/api/user-ai-key/save') return handleUserAIKeySaveUnsupported();
-    if (request.method === 'POST' && pathname === '/api/drive/inspect-public-link') return handleDriveInspectPublicLink(request, env);
-    if (request.method === 'POST' && pathname === '/api/drive/import-public-link') return handleDriveImportPublicLink(request, env);
-    if (request.method === 'POST' && pathname === '/api/drive/sync-public-folder') return handleDriveSyncPublicFolder(request, env);
+    if (request.method === 'POST' && pathname === '/api/drive/inspect-public-link') return await handleDriveInspectPublicLink(request, env);
+    if (request.method === 'POST' && pathname === '/api/drive/import-public-link') return await handleDriveImportPublicLink(request, env);
+    if (request.method === 'POST' && pathname === '/api/drive/sync-public-folder') return await handleDriveSyncPublicFolder(request, env);
 
     const documentAnalyzeMatch = pathname.match(/^\/api\/documents\/([^/]+)\/analyze$/);
-    if (request.method === 'POST' && documentAnalyzeMatch) return handleDocumentAnalyze(request, env);
+    if (request.method === 'POST' && documentAnalyzeMatch) return await handleDocumentAnalyze(request, env);
 
     return json({
       success: false,
@@ -65,12 +66,14 @@ export async function onRequest(context: PagesContext): Promise<Response> {
       message: `Endpoint ${request.method} ${pathname} chưa được hỗ trợ trên Cloudflare Pages Functions.`,
     }, 405);
   } catch (error: any) {
+    const message = error?.message || 'Lỗi server không xác định.';
+    const status = inferStatusFromError(message);
     return json({
       success: false,
-      errorType: 'SERVER_ERROR',
-      error: error?.message || 'Lỗi server không xác định.',
-      message: error?.message || 'Lỗi server không xác định.',
-    }, 500);
+      errorType: status === 401 ? 'UNAUTHORIZED' : status === 429 ? 'QUOTA_EXHAUSTED' : 'SERVER_ERROR',
+      error: message,
+      message,
+    }, status);
   }
 }
 
@@ -84,7 +87,8 @@ function handleHealth(env: Env): Response {
     hasGeminiKey,
     hasGoogleDriveKey: isRealKey(env.GOOGLE_DRIVE_API_KEY),
     textModel: env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash',
-    fallbackModel: env.GEMINI_FALLBACK_MODEL || 'gemini-2.5-flash-lite',
+    fallbackModel: env.GEMINI_FALLBACK_MODEL || 'gemini-2.0-flash',
+    fallbackChain: getFallbackModels(env, env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash'),
   });
 }
 
@@ -151,9 +155,10 @@ async function handleAIProcess(request: Request, env: Env): Promise<Response> {
   const prompt = `Hôm nay là ngày: ${today}\nTác vụ: [${taskType}]\nVăn phong: [${style}]\nHình thức: [${format}]\n\nNội dung/Yêu cầu:\n${content}${sourceContext}`;
 
   const model = getDynamicModel(env, content, taskType);
-  const text = await callGeminiText({
+  const text = await callGeminiTextWithFallback({
     apiKey,
     model,
+    fallbackModels: getFallbackModels(env, model),
     systemInstruction: SYSTEM_INSTRUCTION + '\n\nLƯU Ý QUAN TRỌNG: Tuyệt đối không để sót cụm từ "Bộ Giao thông Vận tải" hoặc "Bộ GTVT" trong văn bản hiện hành; phải thay bằng "Bộ Xây dựng" khi phù hợp ngữ cảnh.',
     prompt,
     temperature: taskType === 'SYNTHESIZE' ? 0.3 : 0.2,
@@ -170,9 +175,11 @@ async function handleAISearch(request: Request, env: Env): Promise<Response> {
   const query = String(body?.query || '').trim();
   if (!query) return json({ success: false, error: 'Thiếu từ khóa tìm kiếm.', message: 'Thiếu từ khóa tìm kiếm.' }, 400);
 
-  const result = await callGeminiRaw({
+  const searchModel = normalizeModelName(env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash');
+  const result = await callGeminiRawWithFallback({
     apiKey,
-    model: normalizeModelName(env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash'),
+    model: searchModel,
+    fallbackModels: getFallbackModels(env, searchModel),
     systemInstruction: 'Bạn là chuyên gia nghiên cứu tư liệu báo chí cho Công ty Hoa tiêu hàng hải miền Bắc. Ưu tiên thông tin chính xác, cập nhật, có nguồn tin cậy.',
     prompt: `Tìm kiếm/tổng hợp chi tiết về: ${query}. Trả về bản tóm tắt ngắn gọn và các nguồn/đường dẫn nếu có. Không bịa nguồn.`,
     temperature: 0,
@@ -198,9 +205,11 @@ async function handleTasksBuild(request: Request, env: Env): Promise<Response> {
 
   const prompt = `Phân tích nội dung sau để trích xuất danh sách công việc cho Công ty Hoa tiêu hàng hải miền Bắc.\nNgày hiện tại: ${today}. Múi giờ: ${timezone}.\n\nDanh mục lĩnh vực hợp lệ:\n- LV_DH: Điều hành sản xuất\n- LV_AT: An toàn hàng hải\n- LV_KT: Kỹ thuật - Vật tư\n- LV_TC: Tài chính - Kế toán\n- LV_TCCB: Tổ chức cán bộ - Lao động\n- LV_PCTTra: Pháp chế - Thanh tra\n- LV_KHDN: Kế hoạch - Kinh doanh\n- LV_HTQT: Hợp tác quốc tế\n- LV_VPDT: Văn phòng - Đoàn thể\n\nYêu cầu trả về JSON thuần, không markdown, dạng:\n{ "tasks": [ { "title": "...", "description": "...", "assignee": "", "dueDate": "YYYY-MM-DD hoặc rỗng", "priority": "low|medium|high|urgent", "status": "todo", "categoryCode": "LV_DH", "isDeputy": false } ] }\n\nNội dung:\n${text}`;
 
-  const raw = await callGeminiText({
+  const taskModel = normalizeModelName(env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash');
+  const raw = await callGeminiTextWithFallback({
     apiKey,
-    model: normalizeModelName(env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash'),
+    model: taskModel,
+    fallbackModels: getFallbackModels(env, taskModel),
     systemInstruction: 'Bạn là trợ lý lập kế hoạch công việc. Chỉ trả JSON hợp lệ, không giải thích.',
     prompt,
     temperature: 0.1,
@@ -234,9 +243,11 @@ async function handleEditorialImagesPlan(request: Request, env: Env): Promise<Re
 
   const prompt = `Phân tích bài viết sau và đề xuất tối đa 4 vị trí minh họa phù hợp.\nTránh đề xuất trùng các vị trí đã có trong phân tích cục bộ sau: ${JSON.stringify(existingAnalysis).slice(0, 4000)}\n\nChỉ trả JSON thuần dạng:\n{ "plans": [ { "paragraphIndex": 0, "insertAfter": "câu/đoạn neo", "caption": "chú thích hình", "prompt": "mô tả hình cần tìm/tải", "reason": "lý do", "priority": "high|medium|low" } ], "notes": ["..."] }\n\nBài viết:\n${content.slice(0, 30000)}`;
 
-  const raw = await callGeminiText({
+  const imagePlanModel = normalizeModelName(env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash');
+  const raw = await callGeminiTextWithFallback({
     apiKey,
-    model: normalizeModelName(env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash'),
+    model: imagePlanModel,
+    fallbackModels: getFallbackModels(env, imagePlanModel),
     systemInstruction: 'Bạn là biên tập viên ảnh minh họa báo chí. Chỉ trả JSON hợp lệ, không markdown.',
     prompt,
     temperature: 0.2,
@@ -355,9 +366,11 @@ async function handleDocumentAnalyze(request: Request, env: Env): Promise<Respon
   if (!content) return json({ success: false, error: 'Thiếu nội dung tài liệu để phân tích.', message: 'Thiếu nội dung tài liệu để phân tích.' }, 400);
 
   const prompt = `Phân tích tài liệu sau cho kho tư liệu văn phòng. Chỉ trả JSON thuần dạng:\n{ "summary": { "short": "...", "mainPoints": ["..."], "entities": { "people": [], "organizations": [], "locations": [], "vessels": [], "dates": [] }, "sourceLimitNote": null }, "documentKind": "khac", "taskCategoryCode": "LV_DH" }\n\nTài liệu:\n${content.slice(0, 30000)}`;
-  const raw = await callGeminiText({
+  const analyzeModel = normalizeModelName(env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash');
+  const raw = await callGeminiTextWithFallback({
     apiKey,
-    model: normalizeModelName(env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash'),
+    model: analyzeModel,
+    fallbackModels: getFallbackModels(env, analyzeModel),
     systemInstruction: 'Bạn là chuyên gia phân loại và tóm tắt tài liệu. Chỉ trả JSON hợp lệ.',
     prompt,
     temperature: 0.1,
@@ -365,6 +378,51 @@ async function handleDocumentAnalyze(request: Request, env: Env): Promise<Respon
   });
 
   return json(extractJson(raw));
+}
+
+async function callGeminiTextWithFallback(args: {
+  apiKey: string;
+  model: string;
+  fallbackModels?: string[];
+  systemInstruction?: string;
+  prompt: string;
+  temperature?: number;
+  maxOutputTokens?: number;
+  tools?: any[];
+}): Promise<string> {
+  const data = await callGeminiRawWithFallback(args);
+  const text = extractGeminiText(data);
+  if (!text) {
+    throw new Error('Gemini đã phản hồi nhưng nội dung rỗng. Vui lòng thử lại với yêu cầu rõ hơn.');
+  }
+  return text;
+}
+
+async function callGeminiRawWithFallback(args: {
+  apiKey: string;
+  model: string;
+  fallbackModels?: string[];
+  systemInstruction?: string;
+  prompt: string;
+  temperature?: number;
+  maxOutputTokens?: number;
+  tools?: any[];
+}): Promise<any> {
+  const models = uniqueModels([args.model, ...(args.fallbackModels || [])]);
+  let lastError: any = null;
+
+  for (const model of models) {
+    try {
+      return await callGeminiRaw({ ...args, model });
+    } catch (error: any) {
+      lastError = error;
+      const message = String(error?.message || '');
+      const canFallback = /model|not found|not supported|quota|RESOURCE_EXHAUSTED|429|503|500/i.test(message);
+      if (!canFallback) break;
+    }
+  }
+
+  throw lastError || new Error('Không gọi được Gemini API.');
 }
 
 async function callGeminiText(args: {
@@ -407,11 +465,26 @@ async function callGeminiRaw(args: {
     },
     body: JSON.stringify(body),
   });
-  const data = await resp.json().catch(async () => ({ raw: await resp.text() }));
+  const responseText = await resp.text();
+  let data: any = {};
+  try {
+    data = responseText ? JSON.parse(responseText) : {};
+  } catch {
+    data = { raw: responseText };
+  }
+
   if (!resp.ok) {
-    const message = data?.error?.message || `Gemini API error ${resp.status}`;
+    const message = data?.error?.message || data?.raw || `Gemini API error ${resp.status}`;
     const isQuota = resp.status === 429 || /quota|RESOURCE_EXHAUSTED/i.test(message);
-    throw new Error(isQuota ? 'Hạn mức AI tạm thời hết. Vui lòng thử lại sau 1 phút.' : message);
+    const isModelError = resp.status === 404 || /model|not found|not supported/i.test(message);
+
+    if (isQuota) {
+      throw new Error(`Hạn mức AI tạm thời hết hoặc API key chưa đủ quota cho model ${args.model}.`);
+    }
+    if (isModelError) {
+      throw new Error(`Model Gemini không khả dụng với API key hiện tại: ${args.model}.`);
+    }
+    throw new Error(`Gemini API error ${resp.status}: ${message}`);
   }
   return data;
 }
@@ -440,6 +513,35 @@ function requireAuthHeader(request: Request): void {
 function getDynamicModel(env: Env, content: string, taskType: string): string {
   if (taskType === 'SYNTHESIZE' || content.length > 12000) return normalizeModelName(env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash');
   return normalizeModelName(env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash');
+}
+
+function getFallbackModels(env: Env, primaryModel: string): string[] {
+  return uniqueModels([
+    primaryModel,
+    env.GEMINI_FALLBACK_MODEL || '',
+    'gemini-2.0-flash',
+    'gemini-1.5-flash',
+    'gemini-2.5-flash-lite',
+  ]);
+}
+
+function uniqueModels(models: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const model of models) {
+    const normalized = normalizeModelName(model || '');
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(normalized);
+  }
+  return result;
+}
+
+function inferStatusFromError(message: string): number {
+  if (/thiếu thông tin đăng nhập|unauthorized|authorization/i.test(message)) return 401;
+  if (/thiếu|không hợp lệ|validation/i.test(message)) return 400;
+  if (/hạn mức|quota|RESOURCE_EXHAUSTED|429/i.test(message)) return 429;
+  return 500;
 }
 
 function normalizeModelName(model: string): string {

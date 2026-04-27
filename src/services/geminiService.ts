@@ -26,12 +26,13 @@ async function fetchWithAI(url: string, options: RequestInit, maxRetries = 2): P
     ...options.headers,
     ...(token ? { 'Authorization': `Bearer ${token}` } : {})
   };
-  
+  const cleanOptions: RequestInit = { ...options, headers, cache: 'no-store' };
+  delete (cleanOptions as any).token;
+
   let attempt = 0;
   while (attempt <= maxRetries) {
-    const response = await fetch(url, { ...options, headers });
+    const response = await fetch(url, cleanOptions);
     if (response.status === 429 && attempt < maxRetries) {
-      // Wait before retry: 3s, 8s...
       const waitTime = (attempt + 1) * 3000 + Math.random() * 1000;
       await new Promise(resolve => setTimeout(resolve, waitTime));
       attempt++;
@@ -39,7 +40,34 @@ async function fetchWithAI(url: string, options: RequestInit, maxRetries = 2): P
     }
     return response;
   }
-  return fetch(url, { ...options, headers });
+  return fetch(url, cleanOptions);
+}
+
+async function readApiError(response: Response, fallbackPrefix = 'Lỗi server'): Promise<string> {
+  const rawText = await response.text().catch(() => '');
+  let data: any = {};
+  try {
+    data = rawText ? JSON.parse(rawText) : {};
+  } catch {
+    data = {};
+  }
+
+  const message =
+    data?.message ||
+    data?.error ||
+    data?.errorType ||
+    data?.details ||
+    rawText ||
+    `${fallbackPrefix} (${response.status}): ${response.statusText}`;
+
+  return String(message).slice(0, 2000);
+}
+
+async function readJsonResponse<T = any>(response: Response, fallbackPrefix = 'Lỗi server'): Promise<T> {
+  if (!response.ok) {
+    throw new Error(await readApiError(response, fallbackPrefix));
+  }
+  return response.json() as Promise<T>;
 }
 
 export async function processTask(
@@ -57,13 +85,7 @@ export async function processTask(
     token
   } as any);
 
-  if (!response.ok) {
-    const data = await response.json().catch(() => ({}));
-    const errorMessage = data.error || `Lỗi server (${response.status}): ${response.statusText}`;
-    throw new Error(errorMessage);
-  }
-
-  const data = await response.json();
+  const data = await readJsonResponse<{ text?: string }>(response, 'Lỗi xử lý AI');
   return data.text as string;
 }
 
@@ -75,13 +97,7 @@ export async function searchWebSources(query: string, token?: string) {
     token
   } as any);
 
-  if (!response.ok) {
-    const data = await response.json().catch(() => ({}));
-    const errorMessage = data.error || `Lỗi tìm kiếm (${response.status}): ${response.statusText}`;
-    throw new Error(errorMessage);
-  }
-
-  return response.json();
+  return readJsonResponse(response, 'Lỗi tìm kiếm');
 }
 
 export async function checkHealth() {
@@ -98,11 +114,5 @@ export async function planEditorialImages(content: string, existingAnalysis: Par
     token
   } as any);
 
-  if (!response.ok) {
-    const data = await response.json().catch(() => ({}));
-    const errorMessage = data.error || `Lỗi lập kế hoạch ảnh (${response.status}): ${response.statusText}`;
-    throw new Error(errorMessage);
-  }
-
-  return response.json() as Promise<{ plans: EditorialIllustrationPlan[]; notes: string[] }>;
+  return readJsonResponse<{ plans: EditorialIllustrationPlan[]; notes: string[] }>(response, 'Lỗi lập kế hoạch ảnh');
 }
