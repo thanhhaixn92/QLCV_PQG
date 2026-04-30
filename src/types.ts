@@ -53,10 +53,11 @@ export interface DocumentSource {
   // AI Classification & Summary
   documentKind?: 'van_ban_chi_dao' | 'quy_dinh_phap_ly' | 'bao_cao' | 'ke_hoach' | 'hop_dong' | 'tai_lieu_ky_thuat' | 'tai_lieu_an_toan' | 'tin_bai_truyen_thong' | 'tai_chinh_ke_toan' | 'nhan_su_lao_dong' | 'khac';
   taskCategoryCode?: string;
-  summary?: string | {
+  summary?: {
     short: string;
     mainPoints: string[];
     keyPoints?: string[];
+    keywords: string[];
     full?: string;
     entities: {
       people: string[];
@@ -65,6 +66,8 @@ export interface DocumentSource {
       vessels: string[];
       dates: string[];
     };
+    actionItems?: string[];
+    risks?: string[];
     sourceLimitNote?: string | null;
     generatedAt: number;
     model?: string;
@@ -75,6 +78,7 @@ export interface DocumentSource {
     description?: string;
     favicon?: string;
     url?: string;
+    size?: number;
     isGoogleDrive?: boolean;
     driveId?: string;
     parentDriveFolderId?: string;
@@ -88,12 +92,14 @@ export interface DocumentSource {
     lastSyncedAt?: number;
     openUrl?: string;
     previewUrl?: string;
+    googleViewerUrl?: string;
   };
   linkedType?: 'article' | 'task' | 'general';
   linkedId?: string;
   ownerId?: string;
   createdAt?: number;
   updatedAt?: number;
+  archived?: boolean;
 }
 
 export type IllustrationStatus = 'pending' | 'planning' | 'generating' | 'ready' | 'error';
@@ -161,6 +167,29 @@ export interface EditorialImageAnalysis {
   neededImageCount: number;
   plans: EditorialIllustrationPlan[];
   notes: string[];
+}
+
+export interface ChatAttachment {
+  id: string;
+  ownerId: string;
+  name: string;
+  originalName: string;
+  mimeType: string;
+  extension: string;
+  size: number;
+  storagePath: string;
+  downloadUrl?: string;
+  contentExcerpt?: string;
+  contentStatus: 'pending' | 'extracting' | 'extracted' | 'error' | 'unavailable';
+  summary?: any;
+  classification?: any;
+  linkedDocumentId?: string;
+  linkedTaskIds?: string[];
+  linkedSessionIds?: string[];
+  status: 'uploading' | 'ready' | 'error';
+  errorMessage?: string;
+  createdAt: number;
+  updatedAt: number;
 }
 
 export type WorkTaskStatus = 'todo' | 'doing' | 'review' | 'done' | 'blocked';
@@ -268,10 +297,11 @@ export interface ChatTaskDraft {
 }
 
 export interface ChatSuggestedAction {
-  type: 'review_task_drafts' | 'open_tasks' | 'open_library' | 'open_editor' | 'create_task' | 'search_library';
+  type: 'review_task_drafts' | 'open_tasks' | 'open_library' | 'open_editor' | 'create_task' | 'search_library' | 'summarize' | 'create_tasks' | 'write_article' | 'save_document' | 'link_to_task' | 'ask_followup' | string;
   label: string;
   payload?: any;
   filter?: any;
+  confidence?: number;
 }
 
 export interface ChatMessage {
@@ -280,6 +310,7 @@ export interface ChatMessage {
   createdAt: number;
   taskDrafts?: ChatTaskDraft[];
   suggestedActions?: ChatSuggestedAction[];
+  attachments?: ChatAttachment[];
   status?: 'normal' | 'error' | 'task_review';
 }
 

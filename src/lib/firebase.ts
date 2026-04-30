@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, setPersistence, browserLocalPersistence } from 'firebase/auth';
-import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
+import { getFirestore, doc, getDocFromServer, initializeFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 import firebaseConfig from '../../firebase-applet-config.json';
 
@@ -11,13 +11,13 @@ let firestoreDb: any;
 try {
   const dbId = (firebaseConfig as any).firestoreDatabaseId;
   if (dbId && dbId !== '(default)') {
-    firestoreDb = getFirestore(firebaseApp, dbId);
+    firestoreDb = initializeFirestore(firebaseApp, {}, dbId);
   } else {
     firestoreDb = getFirestore(firebaseApp);
   }
 } catch (e) {
-  console.error("Firestore initialization failed, falling back to default:", e);
-  firestoreDb = getFirestore(firebaseApp);
+  console.error("Firestore initialization failed. No fallback allowed for named database:", e);
+  throw e; // Do not fallback to (default)
 }
 
 export const db = firestoreDb;
@@ -32,10 +32,10 @@ if (typeof window !== 'undefined') {
 }
 export const storage = getStorage(firebaseApp);
 
-console.log('Firebase Services Initialized:', { 
-  projectId: firebaseConfig.projectId, 
-  hasDb: !!db,
-  dbType: typeof db
+console.info("[Firebase Config]", {
+  projectId: firebaseConfig.projectId,
+  authDomain: firebaseConfig.authDomain,
+  firestoreDatabaseId: (firebaseConfig as any).firestoreDatabaseId
 });
 
 export interface FirestoreErrorInfo {
@@ -85,8 +85,8 @@ async function testConnection() {
   } catch (error: any) {
     if (error.code === 'permission-denied') {
         console.warn("Firestore Client: Connection test returned permission-denied (Expected if not sharing public test root).");
-    } else if (error.message && error.message.includes('the client is offline')) {
-      console.error("Firestore Client: Error - The client is offline. Please check your network and configuration.");
+    } else if (error.message && (error.message.includes('the client is offline') || error.message.includes('Database') || error.message.includes('not found'))) {
+      console.error("Firestore Client: Connection error. This often means the Firestore Database in your Firebase Project is not provisioned or configured correctly. Please visit the Firebase Console and ensure a Firestore Database exists (select '(default)' database).");
     } else {
         console.error("Firestore Client: Connection test failed with error:", error);
     }

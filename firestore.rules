@@ -11,6 +11,11 @@ service cloud.firestore {
       allow read: if true;
     }
 
+    // Allow connectivity check
+    match /_health/{document=**} {
+      allow read: if true;
+    }
+
     function isSignedIn() {
       return request.auth != null;
     }
@@ -113,6 +118,10 @@ service cloud.firestore {
         allow read: if isOwner(userId);
         allow create, update: if isOwner(userId) && isValidProfile(request.resource.data);
         allow delete: if isOwner(userId);
+      }
+      // 9. Chat Attachments Sub-collection
+      match /chatAttachments/{attachmentId} {
+        allow read, write: if isOwner(userId);
       }
     }
   }

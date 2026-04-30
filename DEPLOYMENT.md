@@ -18,8 +18,17 @@ Tạo file `.env` từ `.env.example` và điền đầy đủ các giá trị:
 - `GEMINI_API_KEY`: Lấy từ [Google AI Studio](https://aistudio.google.com/).
 - `GEMINI_TEXT_MODEL`: Chốt ở `gemini-2.5-flash` cho hiệu năng cao.
 - `GEMINI_PRO_MODEL`: Chốt ở `gemini-2.5-pro` dùng cho phân tích sâu và lập kế hoạch công việc.
-- `GOOGLE_DRIVE_API_KEY`: API Key từ Google Cloud Console để quét thư mục Drive công khai.
-- Các biến `VITE_FIREBASE_*`: Lấy từ file `firebase-applet-config.json` hoặc Dashboard Firebase.
+- `GOOGLE_API_KEY`: API Key từ Google Cloud Console để quét thư mục Drive và Search.
+- `FIREBASE_PROJECT_ID`: ID dự án Firebase (`gen-lang-client-0733170002`).
+- `FIRESTORE_DATABASE_ID`: ID database Firestore (`ai-studio-b6074ed0-9102-4183-836c-45db24476dce`).
+- `FIREBASE_SERVICE_ACCOUNT_JSON`: Nội dung JSON Service Account.
+- `FIREBASE_SERVICE_ACCOUNT_JSON_BASE64`: Nội dung JSON Service Account dạng Base64 (nếu không hỗ trợ multiline secret).
+- `DEBUG_HEALTH`: Đặt `true` để xem chi tiết lỗi tại `/api/health`.
+
+### Lưu ý quan trọng về Bảo mật:
+- **KHÔNG ĐƯỢC** commit Service Account JSON vào mã nguồn.
+- Chỉ đặt Service Account trong phần **Secrets** hoặc **Environment Variables** của hệ thống.
+- Hệ thống chỉ sẵn sàng khi `/api/health` có `"firestoreReady": true`.
 
 ## 4. Triển khai Local (Phát triển)
 ```bash

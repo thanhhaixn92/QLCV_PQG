@@ -64,6 +64,8 @@ import {
   Bot,
   Home,
   MessageSquare,
+  Archive,
+  MoreHorizontal,
   FileCode,
   Monitor,
   Cpu,
@@ -72,7 +74,9 @@ import {
   FilePlus,
   HardDrive,
   FileType,
-  Code
+  Code,
+  FolderOpen,
+  Folder
 } from 'lucide-react';
 import { TaskEditModal } from './components/TaskEditModal';
 import { UserProfileSection } from './components/UserProfileSection';
@@ -102,7 +106,8 @@ import {
   LibraryCollectionType,
   ChatMessage,
   ChatSuggestedAction as SuggestedAction,
-  ChatTaskDraft
+  ChatTaskDraft,
+  ChatAttachment
 } from './types';
 import { parseFile } from './lib/fileParser';
 import { exportToPDF, exportToWord } from './lib/exportUtils';
@@ -247,11 +252,11 @@ function TaskTitleCell({ task, documents }: { task: any, documents: any[] }) {
          </div>
          {task.linkedDocumentIds && task.linkedDocumentIds.length > 0 && (
             <div className="flex flex-wrap gap-1">
-               {task.linkedDocumentIds.slice(0, 3).map((docId: string) => {
+               {task.linkedDocumentIds.slice(0, 3).map((docId: string, idx: number) => {
                   const doc = documents.find(d => d.id === docId);
                   if (!doc) return null;
                   return (
-                     <div key={docId} className="flex items-center gap-1 bg-slate-100 text-slate-500 px-2 py-0.5 rounded-md text-[8px] font-black uppercase border border-slate-200">
+                     <div key={`${docId}-${idx}`} className="flex items-center gap-1 bg-slate-100 text-slate-500 px-2 py-0.5 rounded-md text-[8px] font-black uppercase border border-slate-200">
                         <FileText className="w-2.5 h-2.5" />
                         <span className="truncate max-w-[80px]">{doc.name}</span>
                      </div>
@@ -343,6 +348,63 @@ const DEFAULT_LIBRARY_COLLECTIONS: LibraryCollection[] = [
   { id: 'lib-drive', name: 'Google Drive', type: 'drive', icon: 'Database', color: 'amber', ownerId: 'default', createdAt: Date.now(), updatedAt: Date.now() },
 ];
 
+const DOCUMENT_KIND_LABELS: Record<string, string> = {
+  van_ban_chi_dao: 'Văn bản chỉ đạo',
+  quy_dinh_phap_ly: 'Quy định pháp lý',
+  bao_cao: 'Báo cáo',
+  ke_hoach: 'Kế hoạch',
+  hop_dong: 'Hợp đồng',
+  tai_lieu_ky_thuat: 'Tài liệu kỹ thuật',
+  tai_lieu_an_toan: 'Tài liệu an toàn',
+  tin_bai_truyen_thong: 'Tin bài truyền thông',
+  tai_chinh_ke_toan: 'Tài chính - Kế toán',
+  nhan_su_lao_dong: 'Nhân sự - Lao động',
+  khac: 'Khác'
+};
+
+const matchesSearch = (d: DocumentSource, query: string) => {
+  const q = query.toLowerCase().trim();
+  if (!q) return true;
+
+  const summary: any = d.summary || {};
+  const mainPoints = Array.isArray(summary.mainPoints) ? summary.mainPoints.join(' ') : '';
+  const keyPoints = Array.isArray(summary.keyPoints) ? summary.keyPoints.join(' ') : '';
+  const keywords = Array.isArray(summary.keywords) ? summary.keywords.join(' ') : '';
+  const entities = summary.entities ? JSON.stringify(summary.entities) : '';
+  const metadataDesc = d.metadata?.description || '';
+
+  const searchText = [
+    d.name,
+    d.content,
+    summary.short || '',
+    mainPoints,
+    keyPoints,
+    keywords,
+    entities,
+    d.documentKind,
+    DOCUMENT_KIND_LABELS[d.documentKind || ''] || '',
+    d.taskCategoryCode,
+    metadataDesc
+  ].filter(Boolean).join(' ').toLowerCase();
+
+  return searchText.includes(q);
+};
+
+function getDocumentPreviewUrl(d: DocumentSource): string {
+  return d.metadata?.previewUrl ||
+    d.metadata?.googleViewerUrl ||
+    d.driveWebViewLink?.replace('/view', '/preview') ||
+    d.driveWebViewLink ||
+    d.metadata?.driveWebViewLink ||
+    d.metadata?.openUrl ||
+    d.metadata?.url ||
+    '';
+}
+
+function getDocumentOpenUrl(d: DocumentSource): string {
+  return d.driveWebViewLink || d.metadata?.driveWebViewLink || d.metadata?.openUrl || d.metadata?.url || '';
+}
+
 function App() {
   const [taskType, setTaskType] = useState<TaskType>('WRITE_NEW');
   const [style, setStyle] = useState<WritingStyle>('FORMAL');
@@ -369,7 +431,9 @@ function App() {
   const [documents, setDocuments] = useState<DocumentSource[]>([]);
   const [libraryCollections, setLibraryCollections] = useState<LibraryCollection[]>(DEFAULT_LIBRARY_COLLECTIONS);
   const [activeLibraryId, setActiveLibraryId] = useState<string>('lib-personal');
-  const [selectedDocIds, setSelectedDocIds] = useState<string[]>([]);
+  const [selectedSourceDocIds, setSelectedSourceDocIds] = useState<string[]>([]);
+  const [bulkSelectedDocIds, setBulkSelectedDocIds] = useState<string[]>([]);
+  const [documentMenuDocId, setDocumentMenuDocId] = useState<string | null>(null);
   const [previewDocument, setPreviewDocument] = useState<DocumentSource | null>(null);
   const [documentDetailTab, setDocumentDetailTab] = useState<'overview' | 'preview' | 'ai' | 'metadata'>('overview');
   const [isSyncingDrive, setIsSyncingDrive] = useState<string | null>(null);
@@ -475,9 +539,9 @@ function App() {
     }
   };
 
-  const openDocumentPreview = (docObj: DocumentSource) => {
+  const openDocumentPreview = (docObj: DocumentSource, tab: 'overview' | 'preview' | 'ai' = 'overview') => {
     setPreviewDocument(docObj);
-    setDocumentDetailTab('preview');
+    setDocumentDetailTab(tab);
   };
 
   const handleImportDriveLink = async (url: string) => {
@@ -498,11 +562,7 @@ function App() {
       if (!response.ok) throw new Error(data.error || 'Lỗi khi import Drive');
       
       if (data.document) {
-        setDocuments(prev => {
-          const exists = prev.some(d => d.id === data.document.id);
-          if (exists) return prev.map(d => d.id === data.document.id ? data.document : d);
-          return [data.document, ...prev];
-        });
+        // avoid optimistic update, let onSnapshot handle it
       }
       
       toast.success('Đã import tài liệu từ Google Drive thành công');
@@ -660,7 +720,7 @@ function App() {
       : profile?.defaultTaskCategoryCode || 'LV_DH';
 
     return {
-      clientId: draft.clientId || `chat-task-${now}-${Math.random().toString(36).slice(2)}`,
+      clientId: `chat-task-${now}-${Math.random().toString(36).slice(2)}`,
       title: String(draft.title || 'Công việc mới').trim(),
       description: String(draft.description || '').trim(),
       assignee: String(draft.assignee || profile?.defaultAssigneeName || (user?.displayName || user?.email || 'Người dùng')).trim(),
@@ -707,7 +767,7 @@ function App() {
         const taskToSave: Partial<WorkTask> = {
           ...draft,
           assignee: draft.assignee,
-          linkedDocumentIds: selectedDocIds,
+          linkedDocumentIds: selectedSourceDocIds,
           parentGroupTitle: draft.categoryName || ''
         };
 
@@ -735,9 +795,13 @@ function App() {
     }
   }
 
-  const handleSendChat = async (retryMessage?: string) => {
-    const message = retryMessage || chatInput.trim();
-    if (!message || isChatLoading) return;
+  const handleSendChat = async (retryMessage?: string, attachments?: ChatAttachment[]) => {
+    let message = retryMessage || chatInput.trim();
+    if ((!message && (!attachments || attachments.length === 0)) || isChatLoading) return;
+
+    if (!message && attachments && attachments.length > 0) {
+      message = "Hãy đọc, tóm tắt và cho tôi biết nội dung chính của tệp đính kèm này.";
+    }
 
     if (!backendReady) {
       toast.error('Máy chủ đang khởi động. Vui lòng thử lại sau vài giây.');
@@ -762,6 +826,7 @@ function App() {
       const userMsg: ChatMessage = {
         role: 'user',
         content: message,
+        attachments: attachments,
         createdAt: Date.now()
       };
       setChatMessages(prev => [...prev, userMsg]);
@@ -804,6 +869,24 @@ function App() {
       const context = getContextByTab(activeTab);
 
       try {
+        if (attachments && attachments.length > 0) {
+          const endpoint = '/api/chat/with-attachments';
+          return await apiFetchJson(endpoint, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${authToken}`
+            },
+            body: JSON.stringify({
+              message,
+              attachmentIds: attachments.map(a => a.id),
+              context
+            }),
+            retries: 0, 
+            timeoutMs: 120000 
+          });
+        }
+
         return await apiFetchJson('/api/ai/chat', {
           method: 'POST',
           headers: {
@@ -829,7 +912,6 @@ function App() {
       try {
         aiResponse = await callChatApi(token);
       } catch (err: any) {
-        // Retry once on 401
         if (err.status === 401 && user) {
           token = await user.getIdToken(true);
           aiResponse = await callChatApi(token);
@@ -838,13 +920,18 @@ function App() {
         }
       }
 
+      let aiContent = aiResponse.reply || aiResponse.answer || 'AI không có nội dung phản hồi.';
+      if (aiResponse.warnings && aiResponse.warnings.length > 0) {
+        aiContent += '\n\n**Cảnh báo:**\n' + aiResponse.warnings.map((w: string) => '- ' + w).join('\n');
+      }
+
       const assistantMessage: ChatMessage = {
         role: 'assistant',
-        content: aiResponse.reply || 'AI không có nội dung phản hồi.',
+        content: aiContent,
         taskDrafts: Array.isArray(aiResponse.taskDrafts)
           ? aiResponse.taskDrafts.map(normalizeChatTaskDraft)
           : [],
-        suggestedActions: Array.isArray(aiResponse.suggestedActions) ? aiResponse.suggestedActions : [],
+        suggestedActions: Array.isArray(aiResponse.actions) ? aiResponse.actions : (Array.isArray(aiResponse.suggestedActions) ? aiResponse.suggestedActions : []),
         status: (aiResponse.taskDrafts?.length > 0) ? 'task_review' : 'normal',
         createdAt: Date.now()
       };
@@ -871,7 +958,7 @@ function App() {
     }
   };
 
-  const handleExecuteAction = (action: SuggestedAction) => {
+  const handleExecuteAction = async (action: SuggestedAction) => {
     switch(action.type) {
       case 'open_tasks':
         if (action.filter) {
@@ -881,7 +968,7 @@ function App() {
         break;
       case 'create_task':
         setEditingTask({
-          id: `new-${Date.now()}`,
+          id: '',
           title: action.payload?.title || 'Công việc mới từ Chat',
           description: action.payload?.description || '',
           assignee: profile?.displayName || '',
@@ -904,12 +991,55 @@ function App() {
         break;
       case 'search_library':
         setActiveTab('library');
-        // We could add a library search state if it existed
+        break;
+      case 'save_document':
+      case 'create_tasks':
+        // Handle server-side execution
+        try {
+          if (!user) throw new Error('Vui lòng đăng nhập.');
+          
+          let attachmentIds: string[] = [];
+          for (let i = chatMessages.length - 1; i >= 0; i--) {
+            if (chatMessages[i].role === 'user' && chatMessages[i].attachments && chatMessages[i].attachments!.length > 0) {
+              attachmentIds = chatMessages[i].attachments!.map(a => a.id);
+              break;
+            }
+          }
+          
+          const token = await user.getIdToken();
+          const targetIsSave = action.type === 'save_document';
+          const loadingMsg = targetIsSave ? 'Đang lưu tài liệu...' : 'Đang xử lý...';
+          const successMsg = targetIsSave ? 'Lưu tài liệu thành công!' : 'Thao tác thành công!';
+          
+          const tId = toast.loading(loadingMsg);
+          const res = await apiFetchJson('/api/chat/actions/execute', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({
+              action,
+              attachmentIds
+            })
+          });
+
+          toast.dismiss(tId);
+          if (res.success) {
+            toast.success(successMsg);
+          } else {
+            toast.error(res.message || 'Có lỗi xảy ra.');
+          }
+        } catch (err: any) {
+          toast.error(err.message || 'Lỗi server.');
+        }
         break;
       default:
         toast(action.label, { icon: 'ℹ️' });
     }
-    setIsChatOpen(false);
+    if (['open_tasks', 'open_library', 'open_editor', 'search_library'].includes(action.type)) {
+       setIsChatOpen(false);
+    }
   };
   const [isAddingLibrary, setIsAddingLibrary] = useState(false);
   const [editingCollection, setEditingCollection] = useState<LibraryCollection | null>(null);
@@ -987,7 +1117,7 @@ function App() {
 
   const filteredTasks = useMemo(() => {
     return allTasks.filter(t => {
-      const matchesSearch = !taskFilters.search || 
+      const isSearchMatched = !taskFilters.search || 
         t.title.toLowerCase().includes(taskFilters.search.toLowerCase()) ||
         t.description.toLowerCase().includes(taskFilters.search.toLowerCase()) ||
         t.assignee.toLowerCase().includes(taskFilters.search.toLowerCase());
@@ -1009,18 +1139,16 @@ function App() {
       if (taskFilters.status === 'overdue') matchesStatus = isTaskOverdue(t);
       if (taskFilters.status === 'upcoming') matchesStatus = isTaskUpcoming(t);
 
-      return matchesSearch && matchesStatus && matchesPriority && matchesCategory;
+      return isSearchMatched && matchesStatus && matchesPriority && matchesCategory;
     });
   }, [allTasks, taskFilters]);
 
 
   const filteredDocs = useMemo(() => {
     return documents.filter(d => {
+      if (d.archived) return false;
       const matchesCollection = (d.collectionId === activeLibraryId) || (!d.collectionId && activeLibraryId === 'lib-personal');
-      const matchesSearch = !librarySearchQuery || 
-        d.name.toLowerCase().includes(librarySearchQuery.toLowerCase()) ||
-        (d.metadata?.description || '').toLowerCase().includes(librarySearchQuery.toLowerCase());
-      return matchesCollection && matchesSearch;
+      return matchesCollection && matchesSearch(d, librarySearchQuery);
     });
   }, [documents, activeLibraryId, librarySearchQuery]);
   
@@ -1034,6 +1162,14 @@ function App() {
     lastTestedAt?: number;
     useSystem: boolean;
   }>({ hasKey: false, useSystem: true });
+
+  const [editingDocument, setEditingDocument] = useState<DocumentSource | null>(null);
+  const [isEditingDocModalOpen, setIsEditingDocModalOpen] = useState(false);
+  const [docEditForm, setDocEditForm] = useState<{name: string, description: string, collectionId?: string, documentKind?: string, taskCategoryCode?: string}>({ name: '', description: '' });
+
+  const [documentExplorerFolder, setDocumentExplorerFolder] = useState<{ id: string, name: string } | null>(null);
+  const [explorerFiles, setExplorerFiles] = useState<any[]>([]);
+  const [isExplorerLoading, setIsExplorerLoading] = useState(false);
 
   const [aiKeyForm, setAiKeyForm] = useState({
     provider: 'gemini',
@@ -1356,7 +1492,7 @@ function App() {
          updatedAt: Date.now()
        });
        const newColl = { id: docRef.id, ...coll, ownerId: user.uid, createdAt: Date.now(), updatedAt: Date.now() } as LibraryCollection;
-       setLibraryCollections(prev => [...prev, newColl]);
+       // avoid optimistic update when user is logged in, let onSnapshot handle it
        return docRef.id;
     } catch (err: any) {
        handleFirestoreError(err, 'create', `users/${user?.uid}/libraryCollections`);
@@ -1420,7 +1556,7 @@ function App() {
       try {
         const docRef = await addDoc(collection(db, 'users', user.uid, 'documents'), finalData);
         const newDoc = { id: docRef.id, ...finalData } as DocumentSource;
-        setDocuments(prev => [...prev, newDoc]);
+        // avoid optimistic update when user is logged in, let onSnapshot handle it
         return newDoc;
       } catch (err: any) {
         handleFirestoreError(err, 'create', `users/${user.uid}/documents`);
@@ -1449,7 +1585,7 @@ function App() {
           const dataToInsert = { ...sessionData, createdAt: Date.now(), updatedAt: Date.now() };
           const sessionRef = await addDoc(collection(db, 'users', user.uid, 'sessions'), dataToInsert);
           const newSession = { id: sessionRef.id, ...dataToInsert } as ProjectSession;
-          setSessions(prev => [newSession, ...prev]);
+          // onSnapshot handles it
           return sessionRef.id;
         }
       } catch (err: any) {
@@ -1555,7 +1691,8 @@ const handleSyncDriveFolder = async (folderId: string, folderName: string) => {
   if (!user) return;
   setIsSyncingDrive(folderId);
   try {
-    const token = await user.getIdToken();
+    const rawToken = await user.getIdToken();
+    const token = rawToken ? String(rawToken).trim().replace(/[\r\n]/g, '') : '';
     const response = await fetch('/api/drive/sync-public-folder', {
       method: 'POST',
       headers: { 
@@ -1585,13 +1722,25 @@ const handleAnalyzeDocument = async (docId: string) => {
   if (!user) return;
   setIsAnalyzing(docId);
   try {
-    const token = await user.getIdToken();
+    const rawToken = await user.getIdToken();
+    const token = rawToken ? String(rawToken).trim().replace(/[\r\n]/g, '') : '';
     const resp = await fetch(`/api/documents/${docId}/analyze`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${token}` }
     });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || 'Lỗi phân tích');
+    
+    if (data.document || data.analysis) {
+       const summaryData = data.analysis || data.document?.summary;
+       if (summaryData) {
+          setDocuments(prev => prev.map(d => d.id === docId ? { ...d, summary: summaryData, contentStatus: data.document?.contentStatus || d.contentStatus } : d));
+          if (previewDocument?.id === docId) {
+             setPreviewDocument(prev => prev ? { ...prev, summary: summaryData, contentStatus: data.document?.contentStatus || prev.contentStatus } : null);
+             setDocumentDetailTab('ai');
+          }
+       }
+    }
     
     toast.success('Phân tích tài liệu hoàn tất');
   } catch (err: any) {
@@ -1637,7 +1786,7 @@ const handleAnalyzeDocument = async (docId: string) => {
       taskType,
       style,
       format: outputFormat,
-      documentIds: selectedDocIds,
+      documentIds: selectedSourceDocIds,
       currentOutput: finalOutput,
       versions: [] as ArticleVersion[],
       illustrations,
@@ -1662,7 +1811,7 @@ const handleAnalyzeDocument = async (docId: string) => {
     setStyle(session.style);
     setInput(session.title);
     setOutput(session.currentOutput);
-    setSelectedDocIds(session.documentIds);
+    setSelectedSourceDocIds(session.documentIds);
     setIllustrations(session.illustrations || []);
     setActiveTab('editor');
   };
@@ -1673,8 +1822,9 @@ const handleAnalyzeDocument = async (docId: string) => {
     setInput('');
     setOutput('');
     setIllustrations([]);
-    setSelectedDocIds([]);
+    setSelectedSourceDocIds([]);
     setIsEditing(false);
+    setActiveTab('editor'); // Switch to editor for new article
   };
 
   const handleBuildTasks = async () => {
@@ -1817,10 +1967,10 @@ const handleAnalyzeDocument = async (docId: string) => {
   };
 
   const handleProcess = async () => {
-    if (!input.trim() && selectedDocIds.length === 0) return;
+    if (!input.trim() && selectedSourceDocIds.length === 0) return;
     
     // Cache check
-    const currentInputSignature = `${taskType}-${style}-${outputFormat}-${input.substring(0, 500)}-${selectedDocIds.join(',')}`;
+    const currentInputSignature = `${taskType}-${style}-${outputFormat}-${input.substring(0, 500)}-${selectedSourceDocIds.join(',')}`;
     if (currentInputSignature === lastAiInput && lastAiOutput) {
       if (confirm('Nội dung yêu cầu trùng khớp với lần gọi AI trước đó. Bạn có muốn dùng lại kết quả cũ để tiết kiệm hạn mức không?')) {
         setOutput(lastAiOutput);
@@ -1832,7 +1982,7 @@ const handleAnalyzeDocument = async (docId: string) => {
     setIsLoading(true);
     setError(null);
     try {
-      const selectedSources = documents.filter(d => selectedDocIds.includes(d.id));
+      const selectedSources = documents.filter(d => selectedSourceDocIds.includes(d.id));
       const limitedSources = limitSourceContent(selectedSources);
       
       const token = user ? await user.getIdToken() : undefined;
@@ -1871,6 +2021,19 @@ const handleAnalyzeDocument = async (docId: string) => {
       return;
     }
     
+    const MAX_IMAGE_SIZE = 5 * 1024 * 1024;
+    const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+
+    if (!ALLOWED_IMAGE_TYPES.includes(file.type)) {
+      toast.error('Chỉ hỗ trợ ảnh JPG, PNG hoặc WEBP.');
+      return;
+    }
+
+    if (file.size > MAX_IMAGE_SIZE) {
+      toast.error('Ảnh vượt quá 5MB. Vui lòng chọn ảnh nhẹ hơn.');
+      return;
+    }
+    
     setIsLoading(true);
     const id = `manual-${Date.now()}`;
     const subPath = currentSessionId || 'draft';
@@ -1879,7 +2042,7 @@ const handleAnalyzeDocument = async (docId: string) => {
       const { ref, uploadBytes, getDownloadURL } = await import('firebase/storage');
       // CONSTRAINT 4: Specific storage path pattern
       const storageRef = ref(storage, `illustrations/${user.uid}/${subPath}/${id}`);
-      await uploadBytes(storageRef, file);
+      await uploadBytes(storageRef, file, { contentType: file.type });
       const imageUrl = await getDownloadURL(storageRef);
 
       const matchingPlan = imagePlans.find(p => p.id === planId);
@@ -1950,6 +2113,64 @@ const handleAnalyzeDocument = async (docId: string) => {
     }
   };
 
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, category: 'GENERAL' | 'PROJECT' = 'PROJECT') => {
+    const files = e.target.files;
+    if (!files) return;
+
+    setIsParsing(true);
+    setError(null);
+
+    const MAX_SIZE = 10 * 1024 * 1024; // 10MB
+    const allowedExtensions = ['pdf', 'docx', 'xlsx', 'xls', 'csv', 'txt', 'md'];
+
+    for (let i = 0; i < files.length; i++) {
+      try {
+        const file = files[i];
+        
+        // Size validation
+        if (file.size > MAX_SIZE) {
+          toast.error(`Tệp ${file.name} quá lớn (tối đa 10MB).`);
+          continue;
+        }
+
+        // Extension validation
+        const ext = file.name.split('.').pop()?.toLowerCase();
+        if (!ext || !allowedExtensions.includes(ext)) {
+           toast.error(`Định dạng tệp ${file.name} không hỗ trợ.`);
+           continue;
+        }
+
+        const content = await parseFile(file);
+        const type = file.name.endsWith('.pdf') ? 'pdf' : file.name.endsWith('.docx') ? 'word' : (file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) ? 'excel' : 'text';
+        
+        const docData: Omit<DocumentSource, 'id'> = {
+          name: file.name,
+          content,
+          type: type as any,
+          category,
+          collectionId: activeLibraryId,
+          metadata: {
+            description: `Tệp tải lên: ${file.name}`,
+            modifiedTime: new Date(file.lastModified).toISOString(),
+            size: file.size
+          }
+        };
+        const newDoc = await persistDocument(docData);
+        if (newDoc && category === 'PROJECT') {
+          setSelectedSourceDocIds(prev => prev.includes(newDoc.id) ? prev : [...prev, newDoc.id]);
+        }
+      } catch (err: any) {
+        console.error("File Parse Error:", err);
+        toast.error(`Lỗi xử lý file ${files[i].name}: ${err.message}`);
+      }
+    }
+
+    setIsParsing(false);
+    setIsAddingLink(false);
+    setIsAddingText(false);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
   const handleWebSearch = async () => {
     if (!searchQuery.trim()) return;
     setIsLoading(true);
@@ -1977,46 +2198,8 @@ const handleAnalyzeDocument = async (docId: string) => {
     };
     const newDoc = await persistDocument(newDocData);
     if (newDoc) {
-      setSelectedDocIds(prev => [...prev, newDoc.id]);
+      setSelectedSourceDocIds(prev => prev.includes(newDoc.id) ? prev : [...prev, newDoc.id]);
     }
-  };
-
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, category: 'GENERAL' | 'PROJECT' = 'PROJECT') => {
-    const files = e.target.files;
-    if (!files) return;
-
-    setIsParsing(true);
-    setError(null);
-
-    for (let i = 0; i < files.length; i++) {
-      try {
-        const file = files[i];
-        const content = await parseFile(file);
-        const type = file.name.endsWith('.pdf') ? 'pdf' : file.name.endsWith('.docx') ? 'word' : (file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) ? 'excel' : 'text';
-        
-        const docData: Omit<DocumentSource, 'id'> = {
-          name: file.name,
-          content,
-          type: type as any,
-          category,
-          collectionId: activeLibraryId,
-          metadata: {
-            description: `Tệp tải lên: ${file.name}`,
-            modifiedTime: new Date(file.lastModified).toISOString()
-          }
-        };
-        const newDoc = await persistDocument(docData);
-        if (newDoc && category === 'PROJECT') {
-          setSelectedDocIds(prev => prev.includes(newDoc.id) ? prev : [...prev, newDoc.id]);
-        }
-      } catch (err: any) {
-        console.error("File Parse Error:", err);
-        toast.error(`Lỗi xử lý file ${files[i].name}: ${err.message}`);
-      }
-    }
-
-    setIsParsing(false);
-    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   const searchContainerRef = useRef<HTMLDivElement>(null);
@@ -2055,11 +2238,21 @@ const handleAnalyzeDocument = async (docId: string) => {
     setIsParsing(true);
     setError(null);
     try {
-      // Standard link fetch
-      const response = await fetch(`/api/fetch-link?url=${encodeURIComponent(url)}`);
-      if (!response.ok) throw new Error('Không thể lấy dữ liệu từ link này');
+      const token = user ? await user.getIdToken() : '';
+      if (!user) {
+        toast.error('Vui lòng đăng nhập để thêm liên kết.');
+        return;
+      }
+
+      const response = await fetch(`/api/fetch-link?url=${encodeURIComponent(url)}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
       
       const data = await response.json();
+      if (!response.ok) {
+        const errorMsg = data.message || data.error || 'Không thể lấy dữ liệu từ link này';
+        throw new Error(errorMsg);
+      }
       
       const docData: Omit<DocumentSource, 'id'> = {
         name: data.title || url,
@@ -2137,7 +2330,7 @@ const handleAnalyzeDocument = async (docId: string) => {
     }
 
     const task = allTasks.find(t => t.id === taskId);
-    if (!confirm('Bạn có chắc chắn muốn xóa công việc này? Dữ liệu không thể khôi phục.')) return;
+    if (!(await requestConfirmAsync('Bạn có chắc chắn muốn xóa công việc này? Dữ liệu không thể khôi phục.'))) return;
 
     try {
       await deleteDoc(doc(db, 'users', user.uid, 'tasks', taskId));
@@ -2152,29 +2345,151 @@ const handleAnalyzeDocument = async (docId: string) => {
       toast.error('Không thể xóa công việc: ' + (err.message || 'Lỗi không xác định'));
     }
   };
-   
-  const removeDocument = async (id: string) => {
-    if (!confirm('Xác nhận xóa tài liệu này?')) return;
+  const archiveDocument = async (id: string) => {
     try {
       if (user) {
-        await deleteDoc(doc(db, 'users', user.uid, 'documents', id));
+        await updateDoc(doc(db, 'users', user.uid, 'documents', id), {
+          archived: true,
+          updatedAt: Date.now()
+        });
+      }
+      setDocuments(prev => prev.map(d => d.id === id ? { ...d, archived: true } : d));
+      if (documentMenuDocId === id) setDocumentMenuDocId(null);
+      toast.success('Đã lưu trữ tài liệu');
+    } catch (err: any) {
+      toast.error('Lỗi khi lưu trữ: ' + err.message);
+    }
+  };
+   
+  const removeDocument = async (id: string) => {
+    try {
+      if (user) {
+        const token = await user.getIdToken();
+        const res = await fetch(`/api/documents/${id}`, {
+          method: 'DELETE',
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.message || 'Lỗi từ máy chủ');
       }
       setDocuments(prev => {
         const updated = prev.filter(d => d.id !== id);
         if (!user) localStorage.setItem('vms_documents', JSON.stringify(updated));
         return updated;
       });
-      setSelectedDocIds(prev => prev.filter(did => did !== id));
+      setSelectedSourceDocIds(prev => prev.filter(did => did !== id));
+      setBulkSelectedDocIds(prev => prev.filter(did => did !== id));
+      if (previewDocument?.id === id) setPreviewDocument(null);
       toast.success('Đã xóa tài liệu.');
     } catch (err: any) {
-      handleFirestoreError(err, 'delete' as any, `documents/${id}`);
-      toast.error('Không thể xóa tài liệu: ' + (err.message || 'Lỗi không xác định'));
+      console.error('Delete error:', err);
+      toast.error('Lỗi khi xóa: ' + err.message);
+    }
+  };
+
+  const deleteSelectedDocuments = async () => {
+    if (bulkSelectedDocIds.length === 0) return;
+    if (!(await requestConfirmAsync(`Bạn có chắc chắn muốn xóa ${bulkSelectedDocIds.length} tài liệu đã chọn khỏi hệ thống?`))) return;
+
+    setIsLoading(true);
+    let successCount = 0;
+    try {
+       const token = user ? await user.getIdToken() : '';
+       for (const id of bulkSelectedDocIds) {
+          try {
+             if (user) {
+                await fetch(`/api/documents/${id}`, {
+                  method: 'DELETE',
+                  headers: { 'Authorization': `Bearer ${token}` }
+                });
+             }
+             successCount++;
+          } catch (e) {
+             console.error(`Failed to delete doc ${id}:`, e);
+          }
+       }
+       
+       setDocuments(prev => {
+          const updated = prev.filter(d => !bulkSelectedDocIds.includes(d.id));
+         setBulkSelectedDocIds([]);
+          if (!user) localStorage.setItem('vms_documents', JSON.stringify(updated));
+          return updated;
+       });
+       setSelectedSourceDocIds(prev => prev.filter(did => !bulkSelectedDocIds.includes(did)));
+       if (previewDocument && bulkSelectedDocIds.includes(previewDocument.id)) {
+           setPreviewDocument(null);
+       }
+       toast.success(`Đã xóa ${successCount} tài liệu.`);
+    } catch (err: any) {
+       toast.error('Có lỗi xảy ra khi xóa tài liệu.');
+    } finally {
+       setIsLoading(false);
+    }
+  };
+
+  const saveDocumentEdit = async () => {
+    if (!editingDocument) return;
+    try {
+      const updates: any = {
+        name: docEditForm.name.trim(),
+        metadata: { ...editingDocument.metadata, description: docEditForm.description.trim() },
+        collectionId: docEditForm.collectionId || editingDocument.collectionId || 'lib-personal',
+        documentKind: docEditForm.documentKind || editingDocument.documentKind || '',
+        taskCategoryCode: docEditForm.taskCategoryCode || editingDocument.taskCategoryCode || '',
+        updatedAt: Date.now()
+      };
+      
+      if (user) {
+        await updateDoc(doc(db, 'users', user.uid, 'documents', editingDocument.id), updates);
+      }
+      setDocuments(prev => prev.map(d => 
+        d.id === editingDocument.id ? { 
+          ...d, 
+          ...updates
+        } : d
+      ));
+      toast.success('Đã cập nhật thông tin tài liệu.');
+      setIsEditingDocModalOpen(false);
+      setEditingDocument(null);
+    } catch (err: any) {
+      toast.error('Lỗi khi lưu thông tin: ' + err.message);
+    }
+  };
+
+  const openDocumentExplorer = async (folderId: string, folderName: string) => {
+    setDocumentExplorerFolder({ id: folderId, name: folderName });
+    setIsExplorerLoading(true);
+    setExplorerFiles([]);
+    try {
+      const authHeader = auth.currentUser ? `Bearer ${await auth.currentUser.getIdToken()}` : '';
+      const data = await apiFetchJson('/api/drive/folder-contents?folderId=' + folderId, {
+         headers: authHeader ? { Authorization: authHeader } : {}
+      });
+      if (data.success) {
+         setExplorerFiles(data.files || []);
+      } else {
+         toast.error(data.message || 'Có lỗi xảy ra khi tải nội dung thư mục');
+      }
+    } catch (err: any) {
+      toast.error('Có lỗi xảy ra khi tải nội dung thư mục.');
+    } finally {
+      setIsExplorerLoading(false);
     }
   };
 
 
 
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+
+  const [confirmDialog, setConfirmDialog] = useState<{ message: string; resolve: (val: boolean) => void; } | null>(null);
+
+  const requestConfirmAsync = (message: string): Promise<boolean> => {
+    return new Promise((resolve) => {
+      setConfirmDialog({ message, resolve });
+    });
+  };
 
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -2245,7 +2560,7 @@ const handleAnalyzeDocument = async (docId: string) => {
       
       const newDoc = await persistDocument(docData);
       if (newDoc) {
-        setSelectedDocIds(prev => [...prev, newDoc.id]);
+        setSelectedSourceDocIds(prev => prev.includes(newDoc.id) ? prev : [...prev, newDoc.id]);
         setNewTextName('');
         setNewTextContent('');
         setIsAddingText(false);
@@ -2255,7 +2570,7 @@ const handleAnalyzeDocument = async (docId: string) => {
 
 
   const toggleDocSelection = (id: string) => {
-    setSelectedDocIds(prev => 
+    setSelectedSourceDocIds(prev => 
       prev.includes(id) ? prev.filter(did => did !== id) : [...prev, id]
     );
   };
@@ -2405,7 +2720,7 @@ const handleAnalyzeDocument = async (docId: string) => {
   ];
 
   const formatOptions: { id: OutputFormat; label: string }[] = [
-    { id: 'ARTICLE', label: 'Bài báo' },
+    { id: 'ARTICLE', label: 'Bài viết' },
     { id: 'NEWS', label: 'Tin tức' },
     { id: 'PRESS_RELEASE', label: 'Thông cáo' },
     { id: 'REPORT', label: 'Báo cáo' },
@@ -2608,6 +2923,105 @@ const handleAnalyzeDocument = async (docId: string) => {
     );
   }
 
+  // --- CHAT ATTACHMENT HANDLER ---
+  const handleUploadChatAttachment = async (file: File, onStatusUpdate?: (status: string) => void): Promise<ChatAttachment> => {
+    if (!user) throw new Error('Vui lòng đăng nhập.');
+    
+    const MAX_SIZE = 10 * 1024 * 1024;
+    if (file.size > MAX_SIZE) {
+      throw new Error(`Tệp ${file.name} vượt quá 10MB.`);
+    }
+
+    const cleanFileName = file.name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+    let extension = file.name.split('.').pop()?.toLowerCase() || '';
+    let mimeType = file.type;
+
+    // MIME type inference
+    if (!mimeType) {
+      if (extension === 'pdf') mimeType = 'application/pdf';
+      else if (extension === 'docx') mimeType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+      else if (extension === 'xlsx') mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+      else if (extension === 'xls') mimeType = 'application/vnd.ms-excel';
+      else if (extension === 'csv') mimeType = 'text/csv';
+      else if (extension === 'txt') mimeType = 'text/plain';
+      else if (extension === 'md') mimeType = 'text/markdown';
+      else mimeType = 'application/octet-stream';
+    }
+
+    const allowedExtensions = ['pdf', 'docx', 'xlsx', 'xls', 'csv', 'txt', 'md'];
+    if (!allowedExtensions.includes(extension)) {
+      throw new Error(`Định dạng tệp .${extension} không được hỗ trợ.`);
+    }
+
+    onStatusUpdate?.('uploading');
+
+    const attachmentId = Date.now().toString() + '_' + Math.random().toString(36).substring(2, 7);
+    const storagePath = `chatAttachments/${user.uid}/${attachmentId}/${cleanFileName}`;
+    
+    const storageRef = ref(storage, storagePath);
+    await uploadBytes(storageRef, file, { contentType: mimeType });
+    
+    onStatusUpdate?.('uploaded');
+
+    const token = await user.getIdToken();
+    const res = await apiFetchJson('/api/chat/attachments/register', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({
+        name: cleanFileName,
+        originalName: file.name,
+        mimeType,
+        extension,
+        size: file.size,
+        storagePath
+      }),
+    });
+
+    if (!res.success) throw new Error(res.message);
+
+    onStatusUpdate?.('extracting');
+
+    // Extract content immediately and wait for it
+    try {
+      const extractRes = await apiFetchJson(`/api/chat/attachments/${res.attachment.id}/extract`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (!extractRes.success) {
+         toast.error(`Lỗi trích xuất tệp: ${extractRes.message}`);
+         return {
+            ...res.attachment,
+            status: 'error',
+            contentStatus: 'error',
+            errorMessage: extractRes.message
+         };
+      }
+
+      onStatusUpdate?.('ready');
+
+      return {
+        ...res.attachment,
+        status: 'ready',
+        contentStatus: 'extracted'
+      };
+    } catch (err: any) {
+      toast.error(`Lỗi kết nối trích xuất tệp: ${err.message}`);
+      return {
+         ...res.attachment,
+         status: 'error',
+         contentStatus: 'error',
+         errorMessage: err.message
+      };
+    }
+  };
+
   // --- MAIN APP LAYOUT (LOGGED IN) ---
   return (
     <div className="min-h-screen bg-[#F1F5F9] flex font-sans text-slate-900 overflow-hidden">
@@ -2756,17 +3170,6 @@ const handleAnalyzeDocument = async (docId: string) => {
               <Bot className="w-5 h-5 shrink-0" />
               {!isSidebarCollapsed && <span className="text-sm font-bold">AI Task Builder</span>}
             </button>
-            <button 
-              onClick={openLibrary}
-              className={cn(
-                "w-full flex items-center gap-3 px-4 py-3.5 rounded-2xl bg-indigo-500/10 text-indigo-400 hover:bg-indigo-500 hover:text-white transition-all group",
-                isSidebarCollapsed ? "justify-center" : ""
-              )}
-              title={isSidebarCollapsed ? "Kho tư liệu" : ""}
-            >
-              <Database className="w-5 h-5 shrink-0" />
-              {!isSidebarCollapsed && <span className="text-sm font-bold">Kho tư liệu</span>}
-            </button>
           </div>
         </nav>
 
@@ -2868,7 +3271,7 @@ const handleAnalyzeDocument = async (docId: string) => {
         {/* Global Action Bar (Desktop only) */}
         <div className="hidden md:flex h-16 bg-white/80 backdrop-blur-md border-b border-slate-200 items-center justify-between px-8 sticky top-0 z-30 shrink-0">
            <div className="flex items-center gap-3">
-              <span className="text-xs font-black text-slate-400 uppercase tracking-[0.2em]">Context:</span>
+              <span className="text-xs font-black text-slate-400 uppercase tracking-[0.2em]">Ngữ cảnh:</span>
               <div className="flex items-center gap-2 px-3 py-1 bg-slate-100 rounded-lg border border-slate-200">
                  <Globe className="w-3.5 h-3.5 text-[#002D56]" />
                  <span className="text-[10px] font-black text-[#002D56] uppercase">Phòng nghiệp vụ</span>
@@ -2887,7 +3290,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                 onClick={createNewSession}
                 className="bg-[#002D56] text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest shadow-lg hover:shadow-[#002D56]/20 transition-all active:scale-95"
               >
-                Draft mới
+                Bản thảo mới
               </button>
            </div>
         </div>
@@ -2981,7 +3384,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                     </div>
 
                     {/* Quick Actions */}
-                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+                    <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
                       <button 
                         onClick={openCreateTask}
                         className="p-4 sm:p-6 bg-[#002D56] text-white rounded-[24px] flex flex-col sm:flex-row items-center sm:items-start text-center sm:text-left gap-3 sm:gap-4 hover:shadow-xl transition-all group active:scale-95"
@@ -3005,19 +3408,6 @@ const handleAnalyzeDocument = async (docId: string) => {
                         <div className="min-w-0">
                           <p className="font-extrabold text-[10px] sm:text-sm uppercase tracking-tight text-[#002D56] truncate">Viết bài mới</p>
                           <p className="hidden sm:block text-[10px] text-slate-400 font-medium tracking-tight truncate">Biên tập AI</p>
-                        </div>
-                      </button>
-
-                      <button 
-                        onClick={openLibrary}
-                        className="p-4 sm:p-6 bg-white border border-slate-200 rounded-[24px] flex flex-col sm:flex-row items-center sm:items-start text-center sm:text-left gap-3 sm:gap-4 hover:shadow-xl transition-all group active:scale-95"
-                      >
-                        <div className="p-2 sm:p-3 bg-blue-100 rounded-xl sm:rounded-2xl group-hover:bg-blue-200 transition-colors shrink-0">
-                          <Database className="w-5 h-5 sm:w-6 sm:h-6 text-blue-600" />
-                        </div>
-                        <div className="min-w-0">
-                          <p className="font-extrabold text-[10px] sm:text-sm uppercase tracking-tight text-[#002D56] truncate">Kho tư liệu</p>
-                          <p className="hidden sm:block text-[10px] text-slate-400 font-medium tracking-tight truncate">Quản lý tệp</p>
                         </div>
                       </button>
 
@@ -3118,10 +3508,10 @@ const handleAnalyzeDocument = async (docId: string) => {
                                <div className="flex items-center justify-between">
                                  <div className="flex gap-2">
                                     <span className="text-[9px] font-black uppercase tracking-tight px-2 py-0.5 rounded-md bg-blue-50 text-blue-600">
-                                      {session.taskType}
+                                      {taskOptions.find(o => o.id === session.taskType)?.label || session.taskType}
                                     </span>
                                     <span className="text-[9px] font-black uppercase tracking-tight px-2 py-0.5 rounded-md bg-slate-50 text-slate-500">
-                                      {session.format}
+                                      {formatOptions.find(o => o.id === session.format)?.label || session.format}
                                     </span>
                                  </div>
                                  <button 
@@ -3147,11 +3537,11 @@ const handleAnalyzeDocument = async (docId: string) => {
              {/* Dashboard Summary */}
              <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
                 {[
-                  { label: 'Tổng số', value: taskStats.total, icon: ListTodo, color: 'text-slate-600', bg: 'bg-slate-100', onClick: () => setTaskFilters({ status: 'all', priority: 'all', category: 'all', search: '' }) },
+                  { label: 'Tổng việc', value: taskStats.total, icon: ListTodo, color: 'text-slate-600', bg: 'bg-slate-100', onClick: () => setTaskFilters({ status: 'all', priority: 'all', category: 'all', search: '' }) },
                   { label: 'Quá hạn', value: taskStats.overdue, icon: AlertCircle, color: 'text-red-700', bg: 'bg-red-100', onClick: () => setTaskFilters({ status: 'overdue', priority: 'all', category: 'all', search: '' }) },
-                  { label: 'Gần hạn', value: taskStats.upcoming, icon: Clock, color: 'text-orange-600', bg: 'bg-orange-100', onClick: () => setTaskFilters({ status: 'upcoming', priority: 'all', category: 'all', search: '' }) },
+                  { label: 'Cần làm', value: taskStats.upcoming, icon: Clock, color: 'text-orange-600', bg: 'bg-orange-100', onClick: () => setTaskFilters({ status: 'upcoming', priority: 'all', category: 'all', search: '' }) },
                   { label: 'Đang làm', value: taskStats.doing, icon: Target, color: 'text-blue-600', bg: 'bg-blue-100', onClick: () => setTaskFilters({ status: 'doing', priority: 'all', category: 'all', search: '' }) },
-                  { label: 'Thanh toán/Xong', value: taskStats.done, icon: CheckCircle, color: 'text-emerald-600', bg: 'bg-emerald-100', onClick: () => setTaskFilters({ status: 'done', priority: 'all', category: 'all', search: '' }) },
+                  { label: 'Hoàn thành', value: taskStats.done, icon: CheckCircle, color: 'text-emerald-600', bg: 'bg-emerald-100', onClick: () => setTaskFilters({ status: 'done', priority: 'all', category: 'all', search: '' }) },
                 ].map((stat, i) => (
                   <button 
                     key={i} 
@@ -3669,7 +4059,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                 </div>
                 
                 <div className="space-y-2 max-h-[300px] overflow-y-auto pr-1">
-                  {selectedDocIds.length === 0 ? (
+                  {selectedSourceDocIds.length === 0 ? (
                     <div className="py-8 text-center bg-slate-50 rounded-2xl border-2 border-dashed border-slate-100 px-4">
                        <Database className="w-10 h-10 text-slate-100 mx-auto mb-4" />
                        <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest leading-relaxed">
@@ -3677,7 +4067,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                        </p>
                     </div>
                   ) : (
-                    documents.filter(d => selectedDocIds.includes(d.id)).map(doc => (
+                    documents.filter(d => selectedSourceDocIds.includes(d.id)).map(doc => (
                       <div 
                         key={doc.id}
                         className="flex items-center gap-3 p-3 rounded-2xl border bg-white border-emerald-200 shadow-sm transition-all"
@@ -3722,9 +4112,9 @@ const handleAnalyzeDocument = async (docId: string) => {
                     </div>
                     <div>
                       <span className="text-xs sm:text-sm font-black text-[#002D56] uppercase tracking-widest">Yêu cầu biên soạn</span>
-                      {selectedDocIds.length > 0 && (
+                      {selectedSourceDocIds.length > 0 && (
                         <p className="text-[8px] sm:text-[10px] text-emerald-600 font-black flex items-center gap-1.5 mt-0.5 uppercase">
-                          <Database className="w-2.5 h-2.5 sm:w-3.5 sm:h-3.5" /> {selectedDocIds.length} tệp nguồn đã chọn
+                          <Database className="w-2.5 h-2.5 sm:w-3.5 sm:h-3.5" /> {selectedSourceDocIds.length} tệp nguồn đã chọn
                         </p>
                       )}
                     </div>
@@ -3762,11 +4152,11 @@ const handleAnalyzeDocument = async (docId: string) => {
                     </p>
                   </div>
                   <button
-                    disabled={(!input.trim() && selectedDocIds.length === 0) || isLoading || isParsing || isBuildingTasks}
+                    disabled={(!input.trim() && selectedSourceDocIds.length === 0) || isLoading || isParsing || isBuildingTasks}
                     onClick={taskType === 'TASK_BUILDER' ? handleBuildTasks : handleProcess}
                     className={cn(
                       "w-full sm:w-auto flex items-center justify-center gap-3 px-10 sm:px-12 py-4 sm:py-5 rounded-2xl font-black text-xs sm:text-sm transition-all duration-300 shadow-2xl active:scale-95 uppercase tracking-widest",
-                      ((!input.trim() && selectedDocIds.length === 0) || isLoading || isParsing || isBuildingTasks)
+                      ((!input.trim() && selectedSourceDocIds.length === 0) || isLoading || isParsing || isBuildingTasks)
                         ? "bg-slate-100 text-slate-400 cursor-not-allowed shadow-none border border-slate-200"
                         : "bg-[#002D56] text-white hover:bg-slate-900 border border-[#002D56] shadow-[#002D56]/20"
                     )}
@@ -4221,8 +4611,8 @@ const handleAnalyzeDocument = async (docId: string) => {
                                  <h5 className="text-[11px] font-black uppercase tracking-widest text-slate-500">Ảnh chờ duyệt</h5>
                               </div>
                               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-                                 {illustrations.filter(img => img.reviewStatus === 'suggested').map((img) => (
-                                   <div key={img.id} className="bg-white p-4 rounded-[32px] border-2 border-blue-50 shadow-sm relative group overflow-hidden">
+                                 {illustrations.filter(img => img.reviewStatus === 'suggested').map((img, idx) => (
+                                   <div key={`${img.id}-${idx}`} className="bg-white p-4 rounded-[32px] border-2 border-blue-50 shadow-sm relative group overflow-hidden">
                                       <div className="aspect-video rounded-2xl overflow-hidden mb-4 relative">
                                          <img src={img.url} alt={img.caption} className="w-full h-full object-cover" />
                                          <div className="absolute inset-0 bg-blue-600/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-3">
@@ -4266,8 +4656,8 @@ const handleAnalyzeDocument = async (docId: string) => {
                                  <h5 className="text-[11px] font-black uppercase tracking-widest text-slate-500">Ảnh đã duyệt (Sẽ xuất PDF/Word)</h5>
                               </div>
                               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-                                 {illustrations.filter(img => img.reviewStatus === 'approved').map((img) => (
-                                   <div key={img.id} className="bg-white p-4 rounded-[32px] border-2 border-emerald-50 shadow-sm relative group overflow-hidden">
+                                 {illustrations.filter(img => img.reviewStatus === 'approved').map((img, idx) => (
+                                   <div key={`${img.id}-${idx}`} className="bg-white p-4 rounded-[32px] border-2 border-emerald-50 shadow-sm relative group overflow-hidden">
                                       <div className="aspect-video rounded-2xl overflow-hidden mb-4 relative">
                                          <img src={img.url} alt={img.caption} className="w-full h-full object-cover" />
                                          <div className="absolute top-2 right-2 bg-emerald-500 text-white p-1.5 rounded-xl shadow-lg">
@@ -4445,10 +4835,21 @@ const handleAnalyzeDocument = async (docId: string) => {
                             </span>
                          </div>
                          <button 
-                           onClick={(e) => {
+                           onClick={async (e) => {
                              e.stopPropagation();
                              if (confirm('Bạn có chắc chắn muốn xóa bài viết này cùng toàn bộ lịch sử?')) {
-                               setSessions(prev => prev.filter(s => s.id !== session.id));
+                               if (user) {
+                                  try {
+                                     await deleteDoc(doc(db, 'users', user.uid, 'sessions', session.id));
+                                     setSessions(prev => prev.filter(s => s.id !== session.id));
+                                     toast.success('Đã xóa bài viết.');
+                                  } catch (err) {
+                                     console.error('Delete session error:', err);
+                                     toast.error('Không thể xóa bài viết trên hệ thống.');
+                                  }
+                               } else {
+                                  setSessions(prev => prev.filter(s => s.id !== session.id));
+                               }
                              }
                            }}
                            className="text-slate-200 hover:text-red-500 transition-colors p-1.5 hover:bg-red-50 rounded-lg"
@@ -4492,10 +4893,10 @@ const handleAnalyzeDocument = async (docId: string) => {
         ) : (
           /* Knowledge Base / Library Management - NEW MODULAR UI */
           <div className="flex flex-col lg:flex-row gap-6 items-start">
-            {/* Left Sidebar: Collections */}
-            <aside className="w-full lg:w-72 shrink-0 space-y-4">
-              <div className="bg-white rounded-[32px] p-6 shadow-sm border border-slate-200">
-                <div className="flex items-center justify-between mb-6 px-1">
+            {/* Left Sidebar: Collections - Horizontal on Mobile */}
+            <aside className="w-full lg:w-72 shrink-0 lg:sticky lg:top-8">
+              <div className="bg-white rounded-[24px] lg:rounded-[32px] p-4 lg:p-6 shadow-sm border border-slate-200">
+                <div className="flex items-center justify-between mb-4 lg:mb-6 px-1 shrink-0">
                   <h3 className="text-[11px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
                     <Layers className="w-3.5 h-3.5" /> Kho lưu trữ
                   </h3>
@@ -4507,33 +4908,33 @@ const handleAnalyzeDocument = async (docId: string) => {
                   </button>
                 </div>
 
-                <nav className="space-y-1.5">
+                <nav className="flex lg:flex-col gap-2 overflow-x-auto lg:overflow-x-visible pb-2 lg:pb-0 scrollbar-hide -mx-2 px-2 lg:mx-0 lg:px-0">
                   {libraryCollections.map(coll => (
                     <button
                       key={coll.id}
                       onClick={() => setActiveLibraryId(coll.id)}
                       className={cn(
-                        "w-full flex items-center justify-between px-3.5 py-3 rounded-2xl transition-all group",
+                        "flex shrink-0 items-center justify-between px-3.5 py-2.5 lg:py-3 rounded-2xl transition-all group border",
                         activeLibraryId === coll.id 
-                          ? "bg-[#002D56] text-white shadow-lg shadow-[#002D56]/20" 
-                          : "text-slate-600 hover:bg-slate-50 border border-transparent hover:border-slate-100"
+                          ? "bg-[#002D56] text-white shadow-lg shadow-[#002D56]/20 border-[#002D56]" 
+                          : "text-slate-600 hover:bg-slate-50 border-transparent hover:border-slate-100 bg-slate-50/50"
                       )}
                     >
                       <div className="flex items-center gap-3">
                         <div className={cn(
-                          "p-2 rounded-xl transition-colors",
+                          "p-2 rounded-xl transition-colors shrink-0",
                           activeLibraryId === coll.id ? "bg-white/10" : "bg-slate-100 group-hover:bg-white shadow-sm"
                         )}>
-                          {coll.type === 'personal' && <User className="w-4 h-4" />}
-                          {coll.type === 'work' && <Briefcase className="w-4 h-4" />}
-                          {coll.type === 'editorial' && <Edit3 className="w-4 h-4" />}
-                          {coll.type === 'shared' && <Users className="w-4 h-4" />}
-                          {coll.type === 'drive' && <Database className="w-4 h-4" />}
-                          {coll.type === 'custom' && <BookOpen className="w-4 h-4" />}
+                          {coll.type === 'personal' && <User className="w-3.5 h-3.5 lg:w-4 lg:h-4" />}
+                          {coll.type === 'work' && <Briefcase className="w-3.5 h-3.5 lg:w-4 lg:h-4" />}
+                          {coll.type === 'editorial' && <Edit3 className="w-3.5 h-3.5 lg:w-4 lg:h-4" />}
+                          {coll.type === 'shared' && <Users className="w-3.5 h-3.5 lg:w-4 lg:h-4" />}
+                          {coll.type === 'drive' && <Database className="w-3.5 h-3.5 lg:w-4 lg:h-4" />}
+                          {coll.type === 'custom' && <BookOpen className="w-3.5 h-3.5 lg:w-4 lg:h-4" />}
                         </div>
-                        <span className="text-xs font-black uppercase tracking-tight truncate max-w-[100px]">{coll.name}</span>
+                        <span className="text-[11px] lg:text-xs font-black uppercase tracking-tight truncate max-w-[100px]">{coll.name}</span>
                       </div>
-                      <div className="flex items-center gap-2">
+                      <div className="hidden lg:flex items-center gap-2">
                         <span className={cn(
                           "text-[10px] font-black px-2 py-0.5 rounded-full",
                           activeLibraryId === coll.id ? "bg-white/20 text-white" : "bg-slate-100 text-slate-400"
@@ -4546,13 +4947,13 @@ const handleAnalyzeDocument = async (docId: string) => {
                                onClick={(e) => { e.stopPropagation(); setEditingCollection(coll); }}
                                className="p-1 hover:bg-white/20 rounded-md transition-all"
                              >
-                               <Edit3 className="w-3 h-3" />
+                               <Edit3 className="w-3.5 h-3.5" />
                              </button>
                              <button 
                                onClick={(e) => { e.stopPropagation(); if(confirm('Xóa kho này?')) deleteLibraryCollection(coll.id); }}
                                className="p-1 hover:bg-red-500 hover:text-white rounded-md transition-all"
                              >
-                               <Trash2 className="w-3 h-3" />
+                               <Trash2 className="w-3.5 h-3.5" />
                              </button>
                           </div>
                         )}
@@ -4562,7 +4963,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                 </nav>
               </div>
 
-              <div className="bg-[#002D56] rounded-[32px] p-6 text-white shadow-xl">
+              <div className="hidden lg:block bg-[#002D56] rounded-[32px] p-6 text-white shadow-xl">
                  <h4 className="text-[10px] font-black uppercase tracking-widest mb-4 opacity-60">Thống kê lưu trữ</h4>
                  <div className="space-y-4">
                     <div className="flex items-center justify-between">
@@ -4596,6 +4997,17 @@ const handleAnalyzeDocument = async (docId: string) => {
                    />
                 </div>
                 <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+                    {selectedSourceDocIds.length > 0 && (
+                       <button 
+                         onClick={(e) => {
+                           e.stopPropagation();
+                           deleteSelectedDocuments();
+                         }}
+                         className="flex-1 sm:flex-initial bg-red-50 text-red-600 border border-red-200 px-4 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-red-500 hover:text-white transition-all flex items-center justify-center gap-2 shadow-sm"
+                       >
+                         <Trash2 className="w-3.5 h-3.5" /> Xóa ({selectedSourceDocIds.length})
+                       </button>
+                    )}
                     {documents.some(d => (d.type as string) === 'link' && (d.metadata?.url?.includes('drive.google.com') || d.metadata?.url?.includes('docs.google.com'))) && (
                        <button 
                          onClick={repairLegacyDriveLinks}
@@ -4626,8 +5038,8 @@ const handleAnalyzeDocument = async (docId: string) => {
                  </div>
               </div>
 
-              {/* Document Grid */}
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
+              {/* Document Grid - 1 columns on mobile */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4 lg:gap-5">
                 {filteredDocs.length === 0 ? (
                   <div className="col-span-full py-32 flex flex-col items-center justify-center bg-white rounded-[40px] border-2 border-dashed border-slate-100 text-center">
                     <div className="w-20 h-20 bg-slate-50 rounded-3xl flex items-center justify-center mb-6">
@@ -4665,23 +5077,79 @@ const handleAnalyzeDocument = async (docId: string) => {
                                  </div>
                               )}
                            </div>
-                           <div className="flex items-center gap-1 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-all">
+                           <div className="flex items-center gap-1 relative z-10 opacity-100 sm:opacity-0 group-hover:opacity-100 transition-all">
                               <button 
-                                onClick={() => setSelectedDocIds(prev => prev.includes(doc.id) ? prev.filter(id => id !== doc.id) : [...prev, doc.id])}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setBulkSelectedDocIds(prev => prev.includes(doc.id) ? prev.filter(id => id !== doc.id) : [...prev, doc.id]);
+                                }}
                                 className={cn(
-                                  "p-2 rounded-xl transition-all active:scale-90 shadow-sm border",
-                                  selectedDocIds.includes(doc.id) ? "bg-emerald-500 text-white border-emerald-400" : "bg-white text-slate-400 border-slate-100 hover:bg-slate-50"
+                                  "p-2 rounded-xl transition-all shadow-sm border",
+                                  bulkSelectedDocIds.includes(doc.id) ? "bg-blue-500 text-white border-blue-400" : "bg-white text-slate-400 border-slate-100 hover:bg-slate-50"
                                 )}
-                                title={selectedDocIds.includes(doc.id) ? "Bỏ chọn" : "Chọn làm nguồn AI"}
+                                title={bulkSelectedDocIds.includes(doc.id) ? "Đã chọn lưới" : "Chọn nhiều"}
                               >
                                 <CheckSquare className="w-3.5 h-3.5" />
                               </button>
-                              <button 
-                                onClick={() => { if(confirm('Xóa tài liệu này?')) removeDocument(doc.id) }}
-                                className="p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-xl transition-all"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
+
+                              <div className="relative">
+                                 <button 
+                                   onClick={(e) => {
+                                     e.stopPropagation();
+                                     setDocumentMenuDocId(documentMenuDocId === doc.id ? null : doc.id);
+                                   }}
+                                   className="p-2 bg-white border border-slate-100 text-slate-400 hover:text-blue-500 hover:bg-blue-50 rounded-xl transition-all shadow-sm"
+                                   title="Thao tác"
+                                 >
+                                   <MoreHorizontal className="w-3.5 h-3.5" />
+                                 </button>
+                                 
+                                 {documentMenuDocId === doc.id && (
+                                    <div className="absolute right-0 top-full mt-2 w-40 bg-white rounded-2xl shadow-xl border border-slate-100 py-1.5 z-[200]">
+                                       <button 
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setDocumentMenuDocId(null);
+                                            setEditingDocument(doc);
+                                            setDocEditForm({ 
+                                               name: doc.name, 
+                                               description: doc.metadata?.description || '',
+                                               collectionId: doc.collectionId || 'lib-personal',
+                                               documentKind: doc.documentKind || '',
+                                               taskCategoryCode: doc.taskCategoryCode || ''
+                                            });
+                                            setIsEditingDocModalOpen(true);
+                                          }}
+                                          className="w-full text-left px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 hover:text-[#002D56] flex items-center gap-2"
+                                       >
+                                          <Edit3 className="w-3.5 h-3.5" /> Chỉnh sửa
+                                       </button>
+                                       <button 
+                                          onClick={(e) => {
+                                             e.stopPropagation();
+                                             setDocumentMenuDocId(null);
+                                             archiveDocument(doc.id);
+                                          }}
+                                          className="w-full text-left px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 hover:text-amber-600 flex items-center gap-2"
+                                       >
+                                          <Archive className="w-3.5 h-3.5" /> Lưu trữ
+                                       </button>
+                                       <div className="h-px bg-slate-100 my-1"></div>
+                                       <button 
+                                          onClick={async (e) => {
+                                            e.stopPropagation();
+                                            setDocumentMenuDocId(null);
+                                            if(await requestConfirmAsync('Xóa tài liệu này khỏi hệ thống?')) {
+                                              removeDocument(doc.id);
+                                            }
+                                          }}
+                                          className="w-full text-left px-4 py-2 text-xs font-semibold text-rose-600 hover:bg-rose-50 flex items-center gap-2"
+                                       >
+                                          <Trash2 className="w-3.5 h-3.5" /> Xóa tài liệu
+                                       </button>
+                                    </div>
+                                 )}
+                              </div>
                            </div>
                         </div>
 
@@ -4741,22 +5209,31 @@ const handleAnalyzeDocument = async (docId: string) => {
                                 </div>
                                 <div className="flex gap-2">
                                    <a 
-                                     href={doc.driveWebViewLink || doc.metadata?.url} 
+                                     href={getDocumentOpenUrl(doc)} 
                                      target="_blank" 
                                      rel="noreferrer"
+                                     onClick={(e) => e.stopPropagation()}
                                      className="flex-1 bg-slate-50 text-slate-600 border border-slate-100 py-2.5 rounded-xl text-[9px] font-black uppercase tracking-widest flex items-center justify-center gap-2 hover:bg-slate-100 transition-all shadow-sm"
                                    >
                                       Mở Drive <ExternalLink className="w-3 h-3" />
                                    </a>
                                    {doc.driveMimeType?.includes('folder') && (
-                                     <button 
-                                        onClick={(e) => { e.stopPropagation(); handleSyncDriveFolder(doc.driveFileId || '', doc.name); }}
-                                        disabled={isSyncingDrive === doc.driveFileId}
-                                        className="flex-1 bg-amber-50 text-amber-600 border border-amber-100 py-2.5 rounded-xl text-[9px] font-black uppercase tracking-widest flex items-center justify-center gap-2 hover:bg-amber-100 transition-all disabled:opacity-50"
-                                     >
-                                        {isSyncingDrive === doc.driveFileId ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
-                                        Đồng bộ
-                                     </button>
+                                     <>
+                                      <button 
+                                         onClick={(e) => { e.stopPropagation(); openDocumentExplorer(doc.driveFileId || '', doc.name); }}
+                                         className="flex-1 bg-blue-50 text-blue-600 border border-blue-100 py-2.5 rounded-xl text-[9px] font-black uppercase tracking-widest flex items-center justify-center gap-2 hover:bg-blue-100 transition-all"
+                                      >
+                                         <FolderOpen className="w-3 h-3" /> Xem
+                                      </button>
+                                      <button 
+                                         onClick={(e) => { e.stopPropagation(); handleSyncDriveFolder(doc.driveFileId || '', doc.name); }}
+                                         disabled={isSyncingDrive === doc.driveFileId}
+                                         className="flex-1 bg-amber-50 text-amber-600 border border-amber-100 py-2.5 rounded-xl text-[9px] font-black uppercase tracking-widest flex items-center justify-center gap-2 hover:bg-amber-100 transition-all disabled:opacity-50"
+                                      >
+                                         {isSyncingDrive === doc.driveFileId ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                                          Đồng bộ
+                                       </button>
+                                     </>
                                    )}
                                 </div>
                              </div>
@@ -4807,8 +5284,8 @@ const handleAnalyzeDocument = async (docId: string) => {
         )}
       </motion.div>
     </AnimatePresence>
-  </div>
-</main>
+          </div>
+        </main>
 
       {/* Modals Container */}
       <AnimatePresence>
@@ -4824,11 +5301,11 @@ const handleAnalyzeDocument = async (docId: string) => {
               initial={{ scale: 0.9, opacity: 0, y: 20 }}
               animate={{ scale: 1, opacity: 1, y: 0 }}
               exit={{ scale: 0.9, opacity: 0, y: 20 }}
-              className="bg-white rounded-[40px] shadow-2xl w-full max-w-md overflow-hidden relative"
+              className="bg-white rounded-[24px] sm:rounded-[40px] shadow-2xl w-full max-w-md overflow-hidden relative"
               onClick={e => e.stopPropagation()}
             >
-              <div className="p-8 pb-4">
-                <div className="flex justify-between items-start mb-8">
+              <div className="p-6 sm:p-8 pb-4">
+                <div className="flex justify-between items-start mb-6 sm:mb-8">
                   <div className="flex items-center gap-3">
                     <div className="p-2.5 bg-[#002D56] rounded-2xl">
                       <Ship className="w-6 h-6 text-white" />
@@ -4943,7 +5420,7 @@ const handleAnalyzeDocument = async (docId: string) => {
               initial={{ scale: 0.9, opacity: 0, y: 20 }}
               animate={{ scale: 1, opacity: 1, y: 0 }}
               exit={{ scale: 0.9, opacity: 0, y: 20 }}
-              className="bg-white rounded-[40px] shadow-2xl w-full max-w-md overflow-hidden relative p-8"
+              className="bg-white rounded-[24px] sm:rounded-[40px] shadow-2xl w-full max-w-md overflow-hidden relative p-6 sm:p-8"
               onClick={e => e.stopPropagation()}
             >
               <div className="flex justify-between items-start mb-8">
@@ -5098,86 +5575,84 @@ const handleAnalyzeDocument = async (docId: string) => {
                                    <select 
                                       value={aiKeyForm.modelPreset}
                                       onChange={e => resetTestResultIfFormChanged({...aiKeyForm, modelPreset: e.target.value})}
-                                      className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-[10px] font-bold text-slate-700 focus:outline-none"
-                                   >
-                                         <option value="gemini-2.0-flash">gemini-2.0-flash (Chuẩn - Nhanh & Ổn định)</option>
-                                         <option value="gemini-2.0-flash-lite">gemini-2.0-flash-lite (Tiết kiệm)</option>
-                                         <option value="gemini-2.0-pro">gemini-2.0-pro (Thông minh cao nhất)</option>
-                                         <option value="gemini-2.0-flash">gemini-2.0-flash (Thế hệ mới)</option>
-                                         <option value="gemini-1.5-flash">gemini-1.5-flash (Legacy)</option>
-                                         <option value="gemini-1.5-pro">gemini-1.5-pro (Legacy)</option>
-                                      <option value="custom">-- Tự nhập Model ID --</option>
-                                   </select>
-                                      {aiKeyForm.modelPreset === 'custom' && (
-                                         <input 
-                                            type="text"
-                                            placeholder="Nhập chính xác Model ID (VD: gemini-2.0-flash-exp)..."
-                                            value={aiKeyForm.customModel}
-                                            className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-[10px] font-bold text-slate-700 focus:outline-none"
-                                            onChange={e => resetTestResultIfFormChanged({...aiKeyForm, customModel: e.target.value})}
-                                         />
-                                      )}
-                                </div>
-                             </div>
+                                       className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-[10px] font-bold text-slate-700 focus:outline-none"
+                                    >
+                                       <option value="gemini-2.0-flash">gemini-2.0-flash (Chuẩn - Nhanh & Ổn định)</option>
+                                       <option value="gemini-2.0-flash-lite">gemini-2.0-flash-lite (Tiết kiệm)</option>
+                                       <option value="gemini-2.0-pro">gemini-2.0-pro (Thông minh cao nhất)</option>
+                                       <option value="gemini-1.5-flash">gemini-1.5-flash (Legacy)</option>
+                                       <option value="gemini-1.5-pro">gemini-1.5-pro (Legacy)</option>
+                                       <option value="custom">-- Tự nhập Model ID --</option>
+                                    </select>
+                                    {aiKeyForm.modelPreset === 'custom' && (
+                                       <input 
+                                          type="text"
+                                          placeholder="Nhập chính xác Model ID (VD: gemini-2.0-flash-exp)..."
+                                          value={aiKeyForm.customModel}
+                                          className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-[10px] font-bold text-slate-700 focus:outline-none"
+                                          onChange={e => resetTestResultIfFormChanged({...aiKeyForm, customModel: e.target.value})}
+                                       />
+                                    )}
+                                 </div>
+                              </div>
 
-                             {keyTestResult && !keyTestResult.success && (
-                                <div className="p-3 bg-red-50 rounded-xl border border-red-100 mb-2">
-                                   <p className="text-[9px] font-bold text-red-600 uppercase mb-1">
-                                      Lỗi: {keyTestResult.errorType === 'invalid_key' ? 'API Key không hợp lệ' : 
-                                            keyTestResult.errorType === 'model_not_found' ? 'Model không được hỗ trợ' : 
-                                            keyTestResult.errorType === 'quota_exceeded' ? 'Hết hạn mức (Quota)' : 
-                                            keyTestResult.errorType === 'permission_denied' ? 'Không có quyền truy cập' : 'Lỗi không xác định'}
-                                   </p>
-                                   <p className="text-[10px] text-red-500 leading-tight">{keyTestResult.message}</p>
-                                </div>
-                             )}
+                              {keyTestResult && !keyTestResult.success && (
+                                 <div className="p-3 bg-red-50 rounded-xl border border-red-100 mb-2">
+                                    <p className="text-[9px] font-bold text-red-600 uppercase mb-1">
+                                       Lỗi: {keyTestResult.errorType === 'invalid_key' ? 'API Key không hợp lệ' : 
+                                             keyTestResult.errorType === 'model_not_found' ? 'Model không được hỗ trợ' : 
+                                             keyTestResult.errorType === 'quota_exceeded' ? 'Hết hạn mức (Quota)' : 
+                                             keyTestResult.errorType === 'permission_denied' ? 'Không có quyền truy cập' : 'Lỗi không xác định'}
+                                    </p>
+                                    <p className="text-[10px] text-red-500 leading-tight">{keyTestResult.message}</p>
+                                 </div>
+                              )}
 
-                             <div className="flex gap-2 pt-2">
-                                <button 
-                                   onClick={testPersonalKey}
-                                   disabled={isTestingKey || !aiKeyForm.apiKey}
-                                   className={`flex-1 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${isTestingKey ? 'bg-slate-100 text-slate-400' : 'bg-slate-800 text-white hover:bg-black'}`}
-                                >
-                                   {isTestingKey ? 'Đang test...' : 'Kiểm tra'}
-                                </button>
-                                {keyTestResult?.success && (
-                                   <button 
-                                      onClick={savePersonalKey}
-                                      disabled={isSavingKey}
-                                      className="flex-1 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest transition-all"
-                                   >
-                                      {isSavingKey ? 'Đang lưu...' : 'Lưu Key'}
-                                   </button>
-                                )}
-                             </div>
-                             <button 
-                                onClick={() => setShowAiKeyForm(false)}
-                                className="w-full text-[9px] font-bold text-slate-400 uppercase hover:text-slate-600 transition-all pt-1"
-                             >
-                                Hủy bỏ
-                             </button>
-                          </div>
-                       ) : (
-                          <div className="text-center py-2">
-                             <p className="text-[10px] text-slate-400 font-medium mb-4 italic">Đang sử dụng cấu hình AI chung của hệ thống Hoa Tiêu Miền Bắc.</p>
-                             <button 
-                                onClick={() => setShowAiKeyForm(true)}
-                                className="w-full py-2.5 px-4 bg-[#002D56] hover:bg-[#003d74] text-white rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-lg shadow-[#002D56]/20 transition-all"
-                             >
-                                Thêm API Key Cá nhân
-                             </button>
-                          </div>
-                       )}
-                    </div>
-                 )}
-              </div>
+                              <div className="flex gap-2 pt-2">
+                                 <button 
+                                    onClick={testPersonalKey}
+                                    disabled={isTestingKey || !aiKeyForm.apiKey}
+                                    className={`flex-1 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${isTestingKey ? 'bg-slate-100 text-slate-400' : 'bg-slate-800 text-white hover:bg-black'}`}
+                                 >
+                                    {isTestingKey ? 'Đang test...' : 'Kiểm tra'}
+                                 </button>
+                                 {keyTestResult?.success && (
+                                    <button 
+                                       onClick={savePersonalKey}
+                                       disabled={isSavingKey}
+                                       className="flex-1 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest transition-all"
+                                    >
+                                       {isSavingKey ? 'Đang lưu...' : 'Lưu Key'}
+                                    </button>
+                                 )}
+                              </div>
+                              <button 
+                                 onClick={() => setShowAiKeyForm(false)}
+                                 className="w-full text-[9px] font-bold text-slate-400 uppercase hover:text-slate-600 transition-all pt-1"
+                              >
+                                 Hủy bỏ
+                              </button>
+                           </div>
+                        ) : (
+                           <div className="text-center py-2">
+                              <p className="text-[10px] text-slate-400 font-medium mb-4 italic">Đang sử dụng cấu hình AI chung của hệ thống Hoa Tiêu Miền Bắc.</p>
+                              <button 
+                                 onClick={() => setShowAiKeyForm(true)}
+                                 className="w-full py-2.5 px-4 bg-[#002D56] hover:bg-[#003d74] text-white rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-lg shadow-[#002D56]/20 transition-all"
+                              >
+                                 Thêm API Key Cá nhân
+                              </button>
+                           </div>
+                        )}
+                     </div>
+                  )}
+               </div>
             </motion.div>
           </motion.div>
         )}
       </AnimatePresence>
 
       <footer className="bg-white border-t border-slate-200 py-10 px-4 mt-auto">
-        <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-8">
           <div className="flex flex-col md:items-start items-center">
             <h2 className="text-[#002D56] font-black text-xl tracking-tighter italic uppercase">Biên tập Hoa Tiêu Miền Bắc</h2>
             <p className="text-[11px] font-black text-slate-400 uppercase tracking-[0.4em] mt-1">THE FUTURE OF MARITIME PILOTING</p>
@@ -5189,7 +5664,6 @@ const handleAnalyzeDocument = async (docId: string) => {
             <a href="#" className="text-[10px] font-black text-slate-400 hover:text-slate-800 uppercase tracking-widest transition-all">Liên hệ kỹ thuật</a>
             <a href="#" className="text-[10px] font-black text-slate-400 hover:text-slate-800 uppercase tracking-widest transition-all italic underline underline-offset-4 decoration-emerald-400 decoration-2">Bộ Xây dựng 2025</a>
           </div>
-        </div>
         <div className="max-w-7xl mx-auto mt-10 pt-10 border-t border-slate-100 text-[10px] font-black text-slate-300 text-center uppercase tracking-widest flex flex-col md:flex-row items-center justify-center gap-4">
            <span>© {new Date().getFullYear()} TỔNG CÔNG TY BẢO ĐẢM AN TOÀN HÀNG HẢI VIỆT NAM</span>
            <span className="hidden md:block opacity-20">•</span>
@@ -5500,10 +5974,10 @@ const handleAnalyzeDocument = async (docId: string) => {
                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                           {documents
                             .filter(d => (d.collectionId === activeLibraryId || (!d.collectionId && activeLibraryId === 'lib-personal')))
-                            .filter(d => searchQuery === '' || d.name.toLowerCase().includes(searchQuery.toLowerCase()))
+                            .filter(d => matchesSearch(d, searchQuery))
                             .map(doc => {
                               const isSelected = pickingMode === 'ai' 
-                                ? selectedDocIds.includes(doc.id)
+                                ? selectedSourceDocIds.includes(doc.id)
                                 : (editingTask?.linkedDocumentIds || []).includes(doc.id);
 
                               return (
@@ -5548,7 +6022,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                               );
                             })}
                        </div>
-                       {documents.filter(d => (d.collectionId === activeLibraryId || (!d.collectionId && activeLibraryId === 'lib-personal')) && (searchQuery === '' || d.name.toLowerCase().includes(searchQuery.toLowerCase()))).length === 0 && (
+                       {documents.filter(d => (d.collectionId === activeLibraryId || (!d.collectionId && activeLibraryId === 'lib-personal')) && matchesSearch(d, searchQuery)).length === 0 && (
                           <div className="py-20 text-center flex flex-col items-center">
                              <Database className="w-12 h-12 text-slate-100 mb-4" />
                              <p className="text-xs font-black text-slate-300 uppercase tracking-widest">Không tìm thấy tài liệu phù hợp</p>
@@ -5560,7 +6034,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                  <div className="p-6 border-t border-slate-100 bg-slate-50/50 flex items-center justify-between shrink-0">
                     <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
                        {pickingMode === 'ai' 
-                         ? `ĐANG CHỌN ${selectedDocIds.length} NGUỒN TÀI LIỆU`
+                         ? `ĐANG CHỌN ${selectedSourceDocIds.length} NGUỒN TÀI LIỆU`
                          : `ĐÃ GẮN ${editingTask?.linkedDocumentIds?.length || 0} TÀI LIỆU VÀO CÔNG VIỆC`}
                     </p>
                     <button 
@@ -5576,98 +6050,6 @@ const handleAnalyzeDocument = async (docId: string) => {
               </motion.div>
            </div>
         )}
-        {/* Document Preview Modal */}
-        {previewDocument && (
-           <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[130] flex items-center justify-center p-4">
-              <motion.div 
-                initial={{ opacity: 0, scale: 0.95 }}
-                animate={{ opacity: 1, scale: 1 }}
-                className="bg-white w-full max-w-4xl rounded-[40px] shadow-2xl flex flex-col max-h-[90vh] overflow-hidden"
-              >
-                 <div className="px-8 py-6 border-b border-slate-100 flex items-center justify-between shrink-0 bg-slate-50/50">
-                    <div className="flex items-center gap-4">
-                       <div className="p-3 bg-blue-50 rounded-2xl">
-                          <FileText className="w-6 h-6 text-[#002D56]" />
-                       </div>
-                       <div>
-                          <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight line-clamp-1">{previewDocument.name}</h3>
-                          <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">
-                             {previewDocument.type} • {formatLibraryDate(previewDocument.metadata?.modifiedTime || previewDocument.updatedAt)}
-                          </p>
-                       </div>
-                    </div>
-                    <button 
-                      onClick={() => setPreviewDocument(null)}
-                      className="p-2 hover:bg-slate-200 rounded-xl transition-all"
-                    >
-                       <X className="w-6 h-6 text-slate-400" />
-                    </button>
-                 </div>
-
-                 <div className="flex-1 overflow-y-auto p-8 custom-scrollbar">
-                    {previewDocument.content ? (
-                       <div className="markdown-body prose prose-slate max-w-none">
-                          <ReactMarkdown>{previewDocument.content}</ReactMarkdown>
-                       </div>
-                    ) : (
-                       <div className="py-20 flex flex-col items-center text-center">
-                          <div className="w-20 h-20 bg-amber-50 rounded-3xl flex items-center justify-center mb-6">
-                             <AlertTriangle className="w-10 h-10 text-amber-500" />
-                          </div>
-                          <h4 className="text-lg font-black text-slate-800 uppercase mb-4">Nội dung chưa khả dụng</h4>
-                          <p className="text-sm text-slate-500 max-w-md mx-auto leading-relaxed">
-                             Tài liệu này hiện là link tham khảo hoặc nguồn Drive chưa được đồng bộ nội dung. 
-                             AI chưa thể đọc nội dung trực tiếp. Vui lòng mở trong Google Drive hoặc đồng bộ thủ công.
-                          </p>
-                          <div className="mt-8 flex gap-3">
-                             <a 
-                               href={previewDocument.metadata?.driveWebViewLink || previewDocument.metadata?.url}
-                               target="_blank"
-                               rel="noreferrer"
-                               className="bg-[#002D56] text-white px-8 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-xl flex items-center gap-2"
-                             >
-                                Mở nguồn gốc <ExternalLink className="w-4 h-4" />
-                             </a>
-                             {previewDocument.type === 'drive' && (
-                                <button 
-                                  onClick={() => {
-                                     handleSyncDriveFolder(previewDocument.metadata?.driveId || '', previewDocument.name);
-                                     setPreviewDocument(null);
-                                  }}
-                                  className="bg-amber-500 text-white px-8 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-xl flex items-center gap-2"
-                                >
-                                   Đồng bộ ngay <RefreshCw className="w-4 h-4" />
-                                </button>
-                             )}
-                          </div>
-                       </div>
-                    )}
-                 </div>
-
-                 <div className="p-6 border-t border-slate-100 bg-slate-50/50 flex justify-between items-center shrink-0">
-                    <div className="flex gap-2">
-                       <button 
-                         onClick={() => {
-                            setSelectedDocIds(prev => prev.includes(previewDocument.id) ? prev : [...prev, previewDocument.id]);
-                            setPreviewDocument(null);
-                            toast.success('Đã chọn làm nguồn AI');
-                         }}
-                         className="px-6 py-2.5 bg-emerald-500 text-white rounded-xl text-[10px] font-black uppercase tracking-widest shadow-lg"
-                       >
-                          Dùng làm nguồn AI
-                       </button>
-                    </div>
-                    <button 
-                      onClick={() => setPreviewDocument(null)}
-                      className="px-6 py-2.5 bg-slate-200 text-slate-600 rounded-xl text-[10px] font-black uppercase tracking-widest"
-                    >
-                       Đóng
-                    </button>
-                 </div>
-              </motion.div>
-           </div>
-        )}
-
         {/* Edit Collection Modal */}
         {editingCollection && (
            <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[110] flex items-center justify-center p-4">
@@ -5804,6 +6186,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                </motion.div>
             </div>
          )}
+      </AnimatePresence>
 
          {/* Document Detail Drawer */}
       <AnimatePresence>
@@ -5951,9 +6334,37 @@ const handleAnalyzeDocument = async (docId: string) => {
 
                 {documentDetailTab === 'preview' && (
                   <div className="h-full min-h-[500px] bg-slate-100 rounded-[32px] overflow-hidden relative animate-in fade-in zoom-in-95 duration-500">
-                    {previewDocument.type === 'drive' || (previewDocument.type === 'link' && previewDocument.metadata?.url?.includes('drive.google.com')) ? (
+                    {previewDocument.driveMimeType === 'application/vnd.google-apps.folder' ? (
+                       <div className="py-20 flex flex-col items-center text-center p-8">
+                          <div className="w-20 h-20 bg-blue-50 rounded-3xl flex items-center justify-center mb-6">
+                             <Folder className="w-10 h-10 text-blue-500" />
+                          </div>
+                          <h4 className="text-lg font-black text-slate-800 uppercase mb-4">Thư mục Drive</h4>
+                          <p className="text-sm text-slate-500 max-w-md mx-auto leading-relaxed mb-8">
+                             Tính năng duyệt thư mục trực tiếp đang được nâng cấp. Vui lòng mở trong Google Drive.
+                          </p>
+                          <div className="flex gap-3">
+                             {(previewDocument.driveFileId || previewDocument.metadata?.driveId) && (
+                                <button 
+                                  onClick={() => handleSyncDriveFolder((previewDocument.driveFileId || previewDocument.metadata?.driveId)!, previewDocument.name)}
+                                  className="bg-emerald-500 text-white px-8 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-xl flex items-center gap-2"
+                                >
+                                   Đồng bộ lại <RefreshCw className="w-4 h-4" />
+                                </button>
+                             )}
+                             <a 
+                               href={getDocumentOpenUrl(previewDocument)}
+                               target="_blank"
+                               rel="noreferrer"
+                               className="bg-[#002D56] text-white px-8 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-xl flex items-center gap-2"
+                             >
+                                Mở Drive <ExternalLink className="w-4 h-4" />
+                             </a>
+                          </div>
+                       </div>
+                    ) : getDocumentPreviewUrl(previewDocument) ? (
                       <iframe 
-                        src={previewDocument.driveWebViewLink?.replace('/view', '/preview') || previewDocument.metadata?.url} 
+                        src={getDocumentPreviewUrl(previewDocument)} 
                         className="w-full h-full border-none"
                         title={previewDocument.name}
                         referrerPolicy="no-referrer"
@@ -5963,11 +6374,11 @@ const handleAnalyzeDocument = async (docId: string) => {
                         <div className="flex items-center gap-3 mb-6 p-4 bg-slate-50 rounded-2xl border border-slate-100">
                            <AlertCircle className="w-4 h-4 text-amber-500" />
                            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-tight italic">
-                              Hệ thống hiển thị nội dung thô đã được AI trích xuất.
+                              Không có link Preview. Hệ thống hiển thị nội dung thô đã được AI trích xuất.
                            </p>
                         </div>
                         <div className="flex-1 overflow-y-auto font-mono text-[11px] leading-relaxed text-slate-600 bg-slate-50/50 p-6 rounded-3xl border border-slate-50">
-                           <pre className="whitespace-pre-wrap">{previewDocument.content || 'Nội dung trống'}</pre>
+                           <pre className="whitespace-pre-wrap">{previewDocument.content || previewDocument.summary?.full || previewDocument.summary?.short || 'Nội dung trống'}</pre>
                         </div>
                       </div>
                     )}
@@ -5978,26 +6389,120 @@ const handleAnalyzeDocument = async (docId: string) => {
                   <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-500">
                     {previewDocument.summary && typeof previewDocument.summary === 'object' ? (
                       <>
+                        <div className="flex flex-wrap gap-2 mb-4">
+                           <span className="px-3 py-1 bg-[#002D56] text-white text-[9px] font-black uppercase rounded-lg tracking-widest">
+                              {DOCUMENT_KIND_LABELS[previewDocument.documentKind || ''] || previewDocument.documentKind || 'Tài liệu'}
+                           </span>
+                           {previewDocument.taskCategoryCode && (
+                              <span className="px-3 py-1 bg-blue-100 text-[#002D56] text-[9px] font-black uppercase rounded-lg tracking-widest">
+                                 {previewDocument.taskCategoryCode}
+                              </span>
+                           )}
+                        </div>
+
                         <div className="p-6 bg-slate-50/50 rounded-[32px] border border-slate-100">
-                           <h5 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">Chi tiết AI trích xuất</h5>
-                           <div className="prose prose-slate prose-sm text-slate-600 max-w-none font-medium leading-relaxed">
-                              {previewDocument.summary.full || previewDocument.summary.short}
+                           <h5 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">Tóm tắt nội dung</h5>
+                           <div className="prose prose-slate prose-sm text-slate-600 max-w-none font-medium leading-relaxed mb-4">
+                              <span className="font-bold text-[#002D56]">{previewDocument.summary.short}</span>
                            </div>
+                           <div className="prose prose-slate prose-sm text-slate-600 max-w-none leading-relaxed">
+                              {previewDocument.summary.full && previewDocument.summary.full !== previewDocument.summary.short && (
+                                 <p>{previewDocument.summary.full}</p>
+                              )}
+                           </div>
+                           {previewDocument.summary.sourceLimitNote && (
+                              <p className="mt-4 text-[10px] italic text-amber-600 font-medium">
+                                 ⚠️ {previewDocument.summary.sourceLimitNote}
+                              </p>
+                           )}
                         </div>
                         
                         <div className="grid grid-cols-1 gap-4">
-                           {previewDocument.summary.keyPoints?.map((point, idx) => (
-                              <div key={idx} className="flex gap-4 p-4 bg-white rounded-2xl border border-slate-100 shadow-sm">
-                                 <div className="w-6 h-6 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-[10px] font-black shrink-0">{idx + 1}</div>
+                           {(previewDocument.summary.mainPoints || previewDocument.summary.keyPoints)?.map((point: string, idx: number) => (
+                              <div key={idx} className="flex gap-4 p-4 bg-white rounded-2xl border border-slate-100 shadow-sm hover:border-blue-100 transition-colors group">
+                                 <div className="w-6 h-6 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-[10px] font-black shrink-0 group-hover:bg-[#002D56] group-hover:text-white transition-colors">
+                                    {idx + 1}
+                                 </div>
                                  <p className="text-xs font-medium text-slate-700 leading-relaxed">{point}</p>
                               </div>
                            ))}
                         </div>
 
-                        <div className="p-6 bg-blue-50/30 rounded-3xl border border-blue-100/50 flex items-center justify-between">
+                        {previewDocument.summary.actionItems && previewDocument.summary.actionItems.length > 0 && (
+                           <div className="space-y-3">
+                              <h5 className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">Yêu cầu thực hiện / Hành động</h5>
+                              <div className="grid grid-cols-1 gap-3">
+                                 {previewDocument.summary.actionItems.map((item: string, idx: number) => (
+                                    <div key={idx} className="flex gap-3 p-3 bg-emerald-50 rounded-xl border border-emerald-100 items-start">
+                                       <CheckSquare className="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" />
+                                       <p className="text-xs font-medium text-emerald-900 leading-relaxed">{item}</p>
+                                    </div>
+                                 ))}
+                              </div>
+                           </div>
+                        )}
+
+                        {previewDocument.summary.risks && previewDocument.summary.risks.length > 0 && (
+                           <div className="space-y-3">
+                              <h5 className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">Rủi ro / Cảnh báo</h5>
+                              <div className="grid grid-cols-1 gap-3">
+                                 {previewDocument.summary.risks.map((item: string, idx: number) => (
+                                    <div key={idx} className="flex gap-3 p-3 bg-rose-50 rounded-xl border border-rose-100 items-start">
+                                       <AlertTriangle className="w-4 h-4 text-rose-500 mt-0.5 shrink-0" />
+                                       <p className="text-xs font-medium text-rose-900 leading-relaxed">{item}</p>
+                                    </div>
+                                 ))}
+                              </div>
+                           </div>
+                        )}
+
+                        {previewDocument.summary.keywords && previewDocument.summary.keywords.length > 0 && (
+                           <div className="space-y-3">
+                              <h5 className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">Từ khóa</h5>
+                              <div className="flex flex-wrap gap-2">
+                                 {previewDocument.summary.keywords.map((kw: string, kidx: number) => (
+                                    <span key={kidx} className="px-3 py-1.5 bg-slate-50 text-slate-500 text-[10px] font-bold rounded-lg border border-slate-100 uppercase tracking-tighter">
+                                       #{kw}
+                                    </span>
+                                 ))}
+                              </div>
+                           </div>
+                        )}
+
+                        {previewDocument.summary.entities && (
+                           <div className="space-y-4">
+                              <h5 className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">Thực thể chính</h5>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                 {Object.entries(previewDocument.summary.entities).map(([key, vals]) => {
+                                    if (!Array.isArray(vals) || vals.length === 0) return null;
+                                    const labels: Record<string, string> = {
+                                       people: 'Nhân vật',
+                                       organizations: 'Tổ chức',
+                                       locations: 'Địa danh',
+                                       vessels: 'Tàu thuyền',
+                                       dates: 'Thời gian'
+                                    };
+                                    return (
+                                       <div key={key} className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                                          <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2">{labels[key] || key}</p>
+                                          <div className="flex flex-wrap gap-1">
+                                             {vals.map((v, vidx) => (
+                                                <span key={vidx} className="text-[11px] font-bold text-slate-700 bg-white px-2 py-0.5 rounded-md border border-slate-100">
+                                                   {v}
+                                                </span>
+                                             ))}
+                                          </div>
+                                       </div>
+                                    );
+                                 })}
+                              </div>
+                           </div>
+                        )}
+
+                        <div className="p-6 bg-blue-50/50 rounded-3xl border border-blue-100 flex items-center justify-between">
                            <div>
-                              <p className="text-[10px] font-black text-[#002D56] uppercase tracking-tight">Cần cập nhật tóm tắt?</p>
-                              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">AI sẽ đọc lại nội dung mới nhất</p>
+                              <p className="text-[10px] font-black text-[#002D56] uppercase tracking-tight">Cần cập nhật phân tích?</p>
+                              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">AI sẽ đọc lại & lập chỉ mục mới</p>
                            </div>
                            <button 
                              onClick={() => handleAnalyzeDocument(previewDocument.id)}
@@ -6053,10 +6558,44 @@ const handleAnalyzeDocument = async (docId: string) => {
                   </div>
                 )}
               </div>
+
+              {/* Fixed Footer for Drawer */}
+              <div className="p-6 border-t border-slate-100 bg-slate-50/50 flex justify-between items-center shrink-0">
+                 <div className="flex gap-2">
+                    <button 
+                      onClick={() => {
+                         setSelectedSourceDocIds(prev => prev.includes(previewDocument.id) ? prev : [...prev, previewDocument.id]);
+                         setPreviewDocument(null);
+                         toast.success('Đã chọn làm nguồn AI');
+                      }}
+                      className="px-6 py-2.5 bg-emerald-500 text-white rounded-xl text-[10px] font-black uppercase tracking-widest shadow-lg"
+                    >
+                       Dùng làm nguồn AI
+                    </button>
+                    <button 
+                      onClick={async (e) => {
+                         e.stopPropagation();
+                         if (await requestConfirmAsync('Xóa tài liệu này khỏi kho lưu trữ?')) {
+                            removeDocument(previewDocument.id);
+                         }
+                      }}
+                      className="px-6 py-2.5 bg-red-50 text-red-500 border border-red-100 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-red-500 hover:text-white transition-all shadow-sm"
+                    >
+                       Xóa tài liệu
+                    </button>
+                 </div>
+                 <button 
+                   onClick={() => setPreviewDocument(null)}
+                   className="px-6 py-2.5 bg-slate-200 text-slate-600 rounded-xl text-[10px] font-black uppercase tracking-widest"
+                 >
+                    Đóng
+                 </button>
+              </div>
             </motion.div>
           </div>
         )}
       </AnimatePresence>
+      <AnimatePresence>
          {isPickingFromLibrary && pickingMode === 'task' && editingTask && (
             <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-md z-[200] flex items-center justify-center p-4">
                <motion.div 
@@ -6094,7 +6633,7 @@ const handleAnalyzeDocument = async (docId: string) => {
 
                   <div className="flex-1 overflow-y-auto p-8 custom-scrollbar bg-slate-50/30">
                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        {documents.filter(d => !librarySearchQuery || d.name.toLowerCase().includes(librarySearchQuery.toLowerCase())).map(doc => (
+                        {documents.filter(d => matchesSearch(d, librarySearchQuery)).map(doc => (
                            <button 
                               key={doc.id}
                               disabled={editingTask.linkedDocumentIds?.includes(doc.id)}
@@ -6139,6 +6678,230 @@ const handleAnalyzeDocument = async (docId: string) => {
             </div>
          )}
       </AnimatePresence>
+
+      <AnimatePresence>
+         {isEditingDocModalOpen && editingDocument && (
+            <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
+               <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm"
+                  onClick={() => setIsEditingDocModalOpen(false)}
+               />
+               <motion.div
+                  initial={{ scale: 0.95, opacity: 0, y: 20 }}
+                  animate={{ scale: 1, opacity: 1, y: 0 }}
+                  exit={{ scale: 0.95, opacity: 0, y: 20 }}
+                  className="relative w-full max-w-lg bg-white rounded-[32px] shadow-2xl overflow-hidden"
+               >
+                  <div className="px-8 py-6 border-b border-slate-100 flex items-center justify-between bg-slate-50">
+                     <h3 className="text-sm font-black text-slate-800 uppercase tracking-widest">Sửa thông tin tài liệu</h3>
+                     <button 
+                        onClick={() => setIsEditingDocModalOpen(false)}
+                        className="p-2 hover:bg-slate-200 rounded-xl transition-all"
+                     >
+                        <X className="w-4 h-4 text-slate-500" />
+                     </button>
+                  </div>
+                  <div className="p-8 space-y-6 overflow-y-auto max-h-[60vh] custom-scrollbar">
+                     <div>
+                        <label className="block text-[10px] font-black uppercase text-slate-400 tracking-widest mb-2">Tên tài liệu</label>
+                        <input 
+                           type="text"
+                           value={docEditForm.name}
+                           onChange={e => setDocEditForm({...docEditForm, name: e.target.value})}
+                           className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold text-slate-800 focus:ring-4 focus:ring-blue-50 focus:border-blue-500 transition-all outline-none"
+                        />
+                     </div>
+                     <div>
+                        <label className="block text-[10px] font-black uppercase text-slate-400 tracking-widest mb-2">Kho lưu trữ</label>
+                        <select 
+                           value={docEditForm.collectionId || 'lib-personal'}
+                           onChange={e => setDocEditForm({...docEditForm, collectionId: e.target.value})}
+                           className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold text-slate-800 focus:ring-4 focus:ring-blue-50 focus:border-blue-500 transition-all outline-none"
+                        >
+                           {DEFAULT_LIBRARY_COLLECTIONS.map(coll => (
+                              <option key={coll.id} value={coll.id}>{coll.name}</option>
+                           ))}
+                        </select>
+                     </div>
+                     <div className="grid grid-cols-2 gap-4">
+                        <div>
+                           <label className="block text-[10px] font-black uppercase text-slate-400 tracking-widest mb-2">Loại tài liệu</label>
+                           <select 
+                              value={docEditForm.documentKind || ''}
+                              onChange={e => setDocEditForm({...docEditForm, documentKind: e.target.value})}
+                              className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold text-slate-800 focus:ring-4 focus:ring-blue-50 focus:border-blue-500 transition-all outline-none"
+                           >
+                              <option value="">(Không xác định)</option>
+                              {Object.entries(DOCUMENT_KIND_LABELS).map(([key, label]) => (
+                                 <option key={key} value={key}>{label}</option>
+                              ))}
+                           </select>
+                        </div>
+                        <div>
+                           <label className="block text-[10px] font-black uppercase text-slate-400 tracking-widest mb-2">Nghiệp vụ</label>
+                           <select 
+                              value={docEditForm.taskCategoryCode || ''}
+                              onChange={e => setDocEditForm({...docEditForm, taskCategoryCode: e.target.value})}
+                              className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold text-slate-800 focus:ring-4 focus:ring-blue-50 focus:border-blue-500 transition-all outline-none"
+                           >
+                              <option value="">(Không xác định)</option>
+                              {TASK_CATEGORIES.map(cat => (
+                                 <option key={cat.code} value={cat.code}>{cat.name}</option>
+                              ))}
+                           </select>
+                        </div>
+                     </div>
+                     <div>
+                        <label className="block text-[10px] font-black uppercase text-slate-400 tracking-widest mb-2">Ghi chú / Trích yếu</label>
+                        <textarea 
+                           rows={4}
+                           value={docEditForm.description}
+                           onChange={e => setDocEditForm({...docEditForm, description: e.target.value})}
+                           className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold text-slate-800 focus:ring-4 focus:ring-blue-50 focus:border-blue-500 transition-all outline-none resize-none"
+                        ></textarea>
+                     </div>
+                  </div>
+                  <div className="px-8 py-6 border-t border-slate-100 bg-slate-50 flex items-center justify-end gap-3">
+                     <button 
+                        onClick={() => setIsEditingDocModalOpen(false)}
+                        className="px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest text-slate-500 hover:bg-slate-200 transition-all"
+                     >
+                        Hủy
+                     </button>
+                     <button 
+                        onClick={saveDocumentEdit}
+                        className="px-6 py-3 bg-[#002D56] text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-900 transition-all shadow-xl shadow-[#002D56]/20"
+                     >
+                        Lưu Thay Đổi
+                     </button>
+                  </div>
+               </motion.div>
+            </div>
+         )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+         {documentExplorerFolder && (
+            <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
+               <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm"
+                  onClick={() => setDocumentExplorerFolder(null)}
+               />
+               <motion.div
+                  initial={{ scale: 0.95, opacity: 0, y: 20 }}
+                  animate={{ scale: 1, opacity: 1, y: 0 }}
+                  exit={{ scale: 0.95, opacity: 0, y: 20 }}
+                  className="relative w-full max-w-4xl max-h-[80vh] flex flex-col bg-white rounded-[32px] shadow-2xl overflow-hidden"
+               >
+                  <div className="px-8 py-6 border-b border-slate-100 flex items-center justify-between bg-slate-50 shrink-0">
+                     <div className="flex items-center gap-4">
+                        <div className="p-3 bg-blue-100 text-blue-600 rounded-2xl">
+                           <FolderOpen className="w-5 h-5" />
+                        </div>
+                        <div>
+                           <h3 className="text-sm font-black text-slate-800 uppercase tracking-tight">{documentExplorerFolder.name}</h3>
+                           <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">Duyệt File Google Drive</p>
+                        </div>
+                     </div>
+                     <button 
+                        onClick={() => setDocumentExplorerFolder(null)}
+                        className="p-2.5 hover:bg-slate-200 rounded-xl transition-all"
+                     >
+                        <X className="w-5 h-5 text-slate-500" />
+                     </button>
+                  </div>
+                  
+                  <div className="flex-1 overflow-y-auto p-8 bg-slate-50/50 custom-scrollbar">
+                     {isExplorerLoading ? (
+                        <div className="flex flex-col items-center justify-center h-40">
+                           <Loader2 className="w-8 h-8 animate-spin text-slate-400 mb-4" />
+                           <p className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Đang tải nội dung thư mục...</p>
+                        </div>
+                     ) : explorerFiles.length === 0 ? (
+                        <div className="flex flex-col items-center justify-center h-40">
+                           <p className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Thư mục trống</p>
+                        </div>
+                     ) : (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                           {explorerFiles.map((file) => {
+                              const isFolder = file.mimeType === 'application/vnd.google-apps.folder';
+                              return (
+                                 <div 
+                                    key={file.id}
+                                    className="flex flex-col p-4 bg-white border border-slate-100 rounded-2xl hover:border-blue-200 hover:shadow-lg transition-all group"
+                                 >
+                                    <div 
+                                       className="flex items-start gap-3 cursor-pointer mb-3"
+                                       onClick={(e) => {
+                                          if (isFolder) {
+                                             e.preventDefault();
+                                             openDocumentExplorer(file.id, file.name);
+                                          } else {
+                                             window.open(file.webViewLink, '_blank');
+                                          }
+                                       }}
+                                    >
+                                       <div className="shrink-0 p-2 bg-slate-50 rounded-xl group-hover:bg-blue-50 transition-colors">
+                                          {file.iconLink ? (
+                                             <img src={file.iconLink} alt="icon" className="w-5 h-5" referrerPolicy="no-referrer" />
+                                          ) : isFolder ? (
+                                             <FolderOpen className="w-5 h-5 text-slate-400" />
+                                          ) : (
+                                             <FileText className="w-5 h-5 text-slate-400" />
+                                          )}
+                                       </div>
+                                       <div className="min-w-0 flex-1">
+                                          <p className="text-xs font-bold text-slate-800 line-clamp-2 leading-tight group-hover:text-blue-600 transition-colors">{file.name}</p>
+                                          {file.size && (
+                                             <p className="text-[9px] font-black text-slate-400 mt-1">{(parseInt(file.size) / 1024 / 1024).toFixed(2)} MB</p>
+                                          )}
+                                       </div>
+                                    </div>
+                                    
+                                    <div className="flex items-center gap-2 mt-auto pt-2 border-t border-slate-50">
+                                       <a 
+                                          href={file.webViewLink}
+                                          target="_blank"
+                                          rel="noreferrer"
+                                          className="flex-1 text-center py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-600 rounded-lg text-[9px] font-black uppercase tracking-widest transition-colors"
+                                       >
+                                          Mở
+                                       </a>
+                                       {isFolder ? (
+                                          <button 
+                                             onClick={() => handleSyncDriveFolder(file.id, file.name)}
+                                             disabled={isSyncingDrive === file.id}
+                                             className="flex-[2] py-1.5 bg-blue-500 hover:bg-blue-600 text-white rounded-lg text-[9px] font-black uppercase tracking-widest transition-colors flex items-center justify-center gap-1 disabled:opacity-50"
+                                          >
+                                             {isSyncingDrive === file.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                                             Đồng bộ
+                                          </button>
+                                       ) : (
+                                          <button 
+                                             onClick={() => handleImportDriveLink(file.webViewLink)}
+                                             className="flex-[2] py-1.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg text-[9px] font-black uppercase tracking-widest transition-colors flex items-center justify-center gap-1"
+                                          >
+                                             <Plus className="w-3 h-3" />
+                                             Import
+                                          </button>
+                                       )}
+                                    </div>
+                                 </div>
+                              );
+                           })}
+                        </div>
+                     )}
+                  </div>
+               </motion.div>
+            </div>
+         )}
+      </AnimatePresence>
       
         {/* AI Chatbox - Only show if auth ready and user logged in */}
         {authReady && user && !activeModal && (
@@ -6148,7 +6911,7 @@ const handleAnalyzeDocument = async (docId: string) => {
             messages={chatMessages}
             input={chatInput}
             onInputChange={setChatInput}
-            onSend={() => handleSendChat()}
+            onSend={(atts) => handleSendChat(undefined, atts)}
             onClear={() => setChatMessages([])}
             onExecuteAction={handleExecuteAction}
             onCreateTasks={createTasksFromChatDrafts}
@@ -6159,8 +6922,58 @@ const handleAnalyzeDocument = async (docId: string) => {
             isAiReady={isAiCoreActive}
             disabledReason={!backendReady ? "Máy chủ đang khởi động..." : !isAiCoreActive ? "AI chưa sẵn sàng..." : undefined}
             currentModel={isPersonalAiActive ? (personalAIStatus?.model || health?.textModel) : (health?.textModel || 'gemini-2.5-flash')}
+            onUploadAttachment={handleUploadChatAttachment}
           />
         )}
+
+        <AnimatePresence>
+          {confirmDialog && (
+            <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4">
+               <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  className="absolute inset-0 bg-slate-900/40 backdrop-blur-[2px]"
+                  onClick={() => {
+                     confirmDialog.resolve(false);
+                     setConfirmDialog(null);
+                  }}
+               />
+               <motion.div
+                  initial={{ scale: 0.95, opacity: 0 }}
+                  animate={{ scale: 1, opacity: 1 }}
+                  exit={{ scale: 0.95, opacity: 0 }}
+                  className="relative bg-white w-full max-w-sm rounded-[32px] shadow-2xl overflow-hidden text-center p-8"
+               >
+                  <div className="w-16 h-16 bg-amber-50 rounded-3xl flex items-center justify-center mx-auto mb-6 text-amber-500">
+                     <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                  </div>
+                  <h3 className="text-lg font-black uppercase text-slate-800 mb-4 tracking-tight">Xác nhận</h3>
+                  <p className="text-sm text-slate-500 leading-relaxed font-semibold mb-8">{confirmDialog.message}</p>
+                  <div className="flex gap-3">
+                     <button
+                        onClick={() => {
+                           confirmDialog.resolve(false);
+                           setConfirmDialog(null);
+                        }}
+                        className="flex-1 py-3 px-4 bg-slate-100 text-slate-600 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-200 transition-colors"
+                     >
+                        Hủy
+                     </button>
+                     <button
+                        onClick={() => {
+                           confirmDialog.resolve(true);
+                           setConfirmDialog(null);
+                        }}
+                        className="flex-1 py-3 px-4 bg-red-500 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-red-600 transition-colors shadow-lg shadow-red-500/20"
+                     >
+                        Đồng ý
+                     </button>
+                  </div>
+               </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
     </div>
   </div>
    );

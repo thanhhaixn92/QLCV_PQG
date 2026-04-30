@@ -28,7 +28,7 @@ Tài liệu này dành cho nhân sự kỹ thuật quản lý và bảo trì h�
 ## 4. Bảo trì Hình ảnh (Storage)
 - Ảnh minh họa chiếm dung lượng lớn nhất.
 - Đường dẫn: `illustrations/{userId}/{sessionId}/`.
-- Người dùng chỉ tải được ảnh (image/*) và tối đa 10MB/file.
+- Người dùng chỉ tải được ảnh (image/*) và tối đa 5MB/file.
 
 ## 5. Xử lý sự cố
 - **Lỗi 429 Resource Exhausted**: Đề xuất người dùng sử dụng "Quét cục bộ" thay vì "Gợi ý AI" để giảm tần suất gọi API.

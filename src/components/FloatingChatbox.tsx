@@ -1,9 +1,9 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { MessageCircle, X, Send, Bot, User, Loader2, Trash2, Copy, Check, Sparkles, ExternalLink, Calendar, Tag, CheckSquare, Plus } from 'lucide-react';
+import { MessageCircle, X, Send, Bot, User, Loader2, Trash2, Copy, Check, Sparkles, ExternalLink, Calendar, Tag, CheckSquare, Plus, Paperclip, File, AlertCircle } from 'lucide-react';
 import { cn } from '../lib/utils';
 import toast from 'react-hot-toast';
-import { ChatMessage, ChatSuggestedAction } from '../types';
+import { ChatMessage, ChatSuggestedAction, ChatAttachment } from '../types';
 import ReactMarkdown from 'react-markdown';
 
 interface FloatingChatboxProps {
@@ -12,7 +12,7 @@ interface FloatingChatboxProps {
   messages: ChatMessage[];
   input: string;
   onInputChange: (val: string) => void;
-  onSend: () => void;
+  onSend: (attachments?: ChatAttachment[]) => void;
   loading: boolean;
   isAiReady: boolean;
   disabled?: boolean;
@@ -23,6 +23,7 @@ interface FloatingChatboxProps {
   onCreateTasks?: (messageIndex: number) => void;
   onToggleTaskDraft?: (messageIndex: number, clientId: string) => void;
   activeTab?: string;
+  onUploadAttachment?: (file: File, onStatusUpdate?: (status: any) => void) => Promise<ChatAttachment>;
 }
 
 export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
@@ -41,16 +42,110 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
   onExecuteAction,
   onCreateTasks,
   onToggleTaskDraft,
-  activeTab = 'home'
+  activeTab = 'home',
+  onUploadAttachment
 }) => {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [copiedIndex, setCopiedIndex] = React.useState<number | null>(null);
+  const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    
+    if (attachments.length + files.length > 3) {
+      toast.error('Chỉ được đính kèm tối đa 3 tệp mỗi lượt.');
+      return;
+    }
+
+    if (!onUploadAttachment) {
+      toast.error('Chức năng đính kèm chưa sẵn sàng.');
+      return;
+    }
+
+    for (const file of files) {
+      if (file.size > 10 * 1024 * 1024) {
+        toast.error(`Tệp ${file.name} vượt quá 10MB.`);
+        continue;
+      }
+      
+      const tempId = `temp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      const newAtt = {
+        id: tempId,
+        name: file.name,
+        originalName: file.name,
+        status: 'uploading',
+        contentStatus: 'pending',
+        mimeType: file.type || 'application/octet-stream',
+        extension: file.name.split('.').pop()?.toLowerCase() || '',
+        size: file.size,
+        ownerId: '',
+        storagePath: '',
+        createdAt: Date.now(),
+        updatedAt: Date.now()
+      } as ChatAttachment;
+
+      setAttachments(prev => [...prev, newAtt]);
+
+      try {
+        const att = await onUploadAttachment(file, (status) => {
+          setAttachments(prev => prev.map(a => 
+            a.id === tempId ? { ...a, status } : a
+          ));
+        });
+        setAttachments(prev => prev.map(a => 
+          a.id === tempId ? { ...att, status: att.status === 'error' ? 'error' : 'ready' } : a
+        ));
+      } catch (err: any) {
+        setAttachments(prev => prev.map(a => 
+          a.id === tempId ? { ...a, status: 'error', errorMessage: err.message, contentStatus: 'error' } : a
+        ));
+      }
+    }
+    
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  useEffect(() => {
+    if (process.env.NODE_ENV === 'development') {
+      console.info('[Chat Attachments]', attachments.map(a => ({
+        id: a.id,
+        name: a.name,
+        status: a.status,
+        contentStatus: a.contentStatus
+      })));
+    }
+  }, [attachments]);
+
+  const removeAttachment = (id: string) => {
+    setAttachments(prev => prev.filter(a => a.id !== id));
+  };
+
+  const hasPendingAttachment = attachments.some(a => ['uploading', 'uploaded', 'extracting', 'analyzing'].includes(a.status));
+  const hasUsableAttachment = attachments.some(a => ['ready', 'extracted', 'summary_only', 'metadata_only'].includes(a.status));
+  const hasText = input.trim().length > 0;
+  const canSend = !loading && !hasPendingAttachment && (hasText || hasUsableAttachment);
+
+  const handleSendWithAttachments = () => {
+    if (!canSend || disabled) return;
+    onSend(attachments.length > 0 ? attachments.filter(a => a.status !== 'error') : undefined);
+    setAttachments([]);
+  };
 
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages, loading]);
+
+  useEffect(() => {
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 120)}px`;
+    }
+  }, [input]);
 
   const getQuickPrompts = () => {
     switch (activeTab) {
@@ -230,28 +325,52 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                   </div>
                   <div className="flex flex-col gap-1 max-w-[90%]">
                     <div className={cn(
-                      "px-4 py-3 rounded-[20px] text-xs font-medium leading-relaxed shadow-sm whitespace-pre-wrap break-words",
+                      "px-4 py-3 rounded-[20px] font-medium shadow-sm whitespace-pre-wrap break-words",
                       msg.role === 'user' 
-                        ? "bg-[#002D56] text-white rounded-tr-none" 
-                        : "bg-white text-slate-700 rounded-tl-none border border-slate-100"
+                        ? "bg-[#002D56] text-white rounded-tr-none leading-[1.55] text-[14px]" 
+                        : "bg-white text-slate-700 rounded-tl-none border border-slate-100 leading-[1.65] text-[14px] space-y-2"
                     )}>
                       {msg.role === 'assistant' ? (
-                        <div className="prose prose-sm max-w-none prose-p:my-1.5 prose-ul:my-2 prose-ol:my-2 prose-li:my-1 prose-strong:text-[#002D56]">
+                        <div className="prose prose-sm max-w-none prose-strong:text-[#002D56]">
                           <ReactMarkdown
                             components={{
-                              p: ({ children }) => <p className="text-xs leading-6 text-slate-700 mb-2">{children}</p>,
-                              strong: ({ children }) => <strong className="font-black text-[#002D56]">{children}</strong>,
-                              ul: ({ children }) => <ul className="list-disc pl-5 space-y-1 my-2">{children}</ul>,
-                              ol: ({ children }) => <ol className="list-decimal pl-5 space-y-1 my-2">{children}</ol>,
-                              li: ({ children }) => <li className="text-xs leading-5 text-slate-700">{children}</li>,
-                              code: ({ children }) => <code className="px-1.5 py-0.5 rounded bg-slate-100 text-[11px] text-slate-700">{children}</code>
+                              p: ({ children }) => <p className="mb-3 last:mb-0 leading-[1.65] text-[14px]">{children}</p>,
+                              strong: ({ children }) => <strong className="font-semibold text-[#002D56]">{children}</strong>,
+                              ul: ({ children }) => <ul className="my-2 list-disc pl-5 space-y-1 text-[14px] leading-[1.6]">{children}</ul>,
+                              ol: ({ children }) => <ol className="my-2 list-decimal pl-5 space-y-1 text-[14px] leading-[1.6]">{children}</ol>,
+                              li: ({ children, ...props }) => (
+                                <li className="leading-[1.6] pl-1 marker:text-slate-400" {...props}>
+                                  {children}
+                                </li>
+                              ),
+                              code: ({ children, ...props }: any) => {
+                                const match = /language-(\w+)/.exec(props.className || '');
+                                const isInline = !match && !props.node?.properties?.className?.includes('language-');
+                                if (isInline) {
+                                  return <code className="rounded bg-slate-100 px-1 py-0.5 text-[13px] font-mono mx-0.5 text-slate-800" {...props}>{children}</code>;
+                                }
+                                return <code className="text-[13px] font-mono leading-[1.6]" {...props}>{children}</code>;
+                              },
+                              pre: ({ children }) => <pre className="my-3 overflow-x-auto rounded-lg bg-slate-900 p-3 text-[13px] leading-[1.6] text-white shadow-sm">{children}</pre>
                             }}
                           >
                             {msg.content}
                           </ReactMarkdown>
                         </div>
                       ) : (
-                        msg.content
+                        <>
+                          {msg.content}
+                          {msg.attachments && msg.attachments.length > 0 && (
+                            <div className="mt-2 flex flex-col gap-1.5">
+                              {msg.attachments.map(att => (
+                                <div key={att.id} className="flex items-center gap-2 bg-blue-900/30 border border-blue-800/30 py-1.5 px-3 rounded-xl max-w-full">
+                                  <File className="w-3.5 h-3.5 text-blue-300 shrink-0" />
+                                  <span className="text-[11px] font-bold text-blue-100 truncate">{att.originalName || att.name}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </>
                       )}
                     </div>
 
@@ -260,8 +379,8 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                         <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">
                           Công việc AI đề xuất - cần duyệt
                         </div>
-                        {msg.taskDrafts.map(draft => (
-                          <div key={draft.clientId} className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm hover:shadow-md transition-shadow">
+                        {msg.taskDrafts.map((draft, dIdx) => (
+                          <div key={`${draft.clientId}-${dIdx}`} className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm hover:shadow-md transition-shadow">
                             <div className="flex items-start gap-3">
                               <input
                                 type="checkbox"
@@ -301,8 +420,8 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                                       Checklist chi tiết
                                     </p>
                                     <div className="space-y-1.5">
-                                      {draft.checklist.map(item => (
-                                        <div key={item.id} className="flex items-start gap-2.5">
+                                      {draft.checklist.map((item, itemIdx) => (
+                                        <div key={`${item.id}-${itemIdx}`} className="flex items-start gap-2.5">
                                           <div className="w-3.5 h-3.5 rounded border border-slate-300 mt-0.5 shrink-0" />
                                           <span className="text-[10px] text-slate-600 font-bold leading-relaxed">{item.title}</span>
                                         </div>
@@ -383,24 +502,83 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                   </p>
                 </div>
               )}
-              <div className="relative group">
+
+              {attachments.length > 0 && (
+                <div className="flex flex-wrap gap-2 mb-3">
+                  {attachments.map(att => (
+                    <div key={att.id} className="flex items-center gap-2 bg-blue-50 border border-blue-100 py-1.5 px-3 rounded-xl max-w-full">
+                      {(att.status === 'uploading' || att.contentStatus === 'pending' || att.contentStatus === 'extracting') ? (
+                        <Loader2 className="w-3.5 h-3.5 text-blue-500 animate-spin shrink-0" />
+                      ) : (att.status === 'error' || att.contentStatus === 'error') ? (
+                        <span title={att.errorMessage || 'Lỗi đính kèm'} className="flex items-center shrink-0">
+                          <AlertCircle className="w-3.5 h-3.5 text-red-500" />
+                        </span>
+                      ) : (
+                        <File className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                      )}
+                      
+                      <span className={cn("text-[11px] font-bold truncate max-w-[150px]", att.status === 'error' ? 'text-red-600' : 'text-blue-700')}>
+                        {att.originalName || att.name}
+                      </span>
+                      
+                      <button onClick={() => removeAttachment(att.id)} className={cn("p-0.5 rounded-md shrink-0", att.status === 'error' ? "hover:bg-red-200/50 text-red-400 hover:text-red-600" : "hover:bg-blue-200/50 text-blue-400 hover:text-blue-600")}>
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                  {hasPendingAttachment && (
+                    <div className="flex items-center gap-2 px-3 py-1.5">
+                       <Loader2 className="w-3.5 h-3.5 text-[#002D56] animate-spin" />
+                       <span className="text-[11px] font-bold text-slate-500 uppercase">Đang xử lý tệp...</span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="relative group flex items-end gap-2">
                 <input 
-                  type="text"
+                  type="file" 
+                  ref={fileInputRef} 
+                  onChange={handleFileChange} 
+                  className="hidden" 
+                  multiple 
+                  accept=".pdf,.docx,.xlsx,.xls,.csv,.txt,.md"
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={disabled || loading || hasPendingAttachment || attachments.length >= 3}
+                  className="p-3 bg-slate-50 border border-slate-200 text-slate-500 rounded-xl hover:bg-slate-100 transition-colors disabled:opacity-50 shrink-0 mb-0.5"
+                  title="Đính kèm tệp"
+                >
+                  <Paperclip className="w-4 h-4" />
+                </button>
+                <textarea 
+                  ref={textareaRef}
                   value={input}
                   onChange={e => onInputChange(e.target.value)}
                   onKeyDown={e => {
-                    if (e.key === 'Enter' && !disabled && isAiReady && !loading && input.trim()) {
-                      onSend();
+                    if (e.key === 'Enter' && !e.shiftKey && canSend && isAiReady) {
+                      e.preventDefault();
+                      handleSendWithAttachments();
                     }
                   }}
-                  disabled={disabled || loading}
-                  placeholder={disabledReason ? disabledReason : (disabled || !isAiReady) ? "AI chưa sẵn sàng..." : loading ? "AI đang trả lời..." : "Hỏi Hoa Tiêu AI..."}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-2xl pl-5 pr-14 py-3.5 text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10 transition-all disabled:opacity-50"
+                  rows={1}
+                  disabled={disabled || loading || hasPendingAttachment}
+                  placeholder={
+                    disabledReason ? disabledReason : 
+                    (disabled || !isAiReady) ? "AI chưa sẵn sàng..." : 
+                    loading ? "AI đang trả lời..." : 
+                    hasPendingAttachment ? "Đang đọc tệp đính kèm..." : 
+                    attachments.some(a => a.status === 'error') ? "Tệp lỗi, bạn có thể xóa tệp hoặc gửi câu hỏi khác..." : 
+                    "Hỏi Hoa Tiêu AI..."
+                  }
+                  className="w-full bg-slate-50 border border-slate-200 rounded-2xl pl-4 pr-12 py-3 text-[14px] leading-[1.5] font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10 transition-all disabled:opacity-50 resize-none max-h-[120px] custom-scrollbar min-h-[46px]"
                 />
                 <button 
-                  onClick={onSend}
-                  disabled={disabled || !isAiReady || !input.trim() || loading}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 p-2 bg-[#002D56] text-white rounded-xl hover:shadow-lg disabled:opacity-30 disabled:grayscale transition-all active:scale-90"
+                  onClick={handleSendWithAttachments}
+                  disabled={!canSend || !isAiReady}
+                  className="absolute right-2 bottom-2 p-2 bg-[#002D56] text-white rounded-xl hover:shadow-lg disabled:opacity-30 disabled:grayscale transition-all active:scale-90"
                 >
                   <Send className="w-4 h-4" />
                 </button>

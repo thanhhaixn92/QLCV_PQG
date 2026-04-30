@@ -35,44 +35,54 @@ export async function apiFetchJson<T = any>(
       const contentType = res.headers.get('content-type') || '';
 
       let data: any = null;
+      let isStartingServer = false;
 
-      try {
-        data = raw ? JSON.parse(raw) : null;
-      } catch {
+      // Handle HTML strictly
+      if (contentType.includes('text/html') || raw.trim().startsWith('<')) {
         const trimmedRaw = raw.trim();
-        const isHtml = trimmedRaw.startsWith('<!doctype html') || trimmedRaw.startsWith('<html') || trimmedRaw.startsWith('<!DOCTYPE html');
-        const isStartingServer =
-          raw.includes('Starting Server') ||
-          raw.includes('starting server') ||
-          raw.includes('<title>Starting Server');
+        isStartingServer =
+          trimmedRaw.includes('Starting Server') ||
+          trimmedRaw.includes('starting server') ||
+          trimmedRaw.includes('<title>Starting Server');
 
-        if (allowHtmlRetry && isHtml && isStartingServer && attempt < retries) {
+        if (allowHtmlRetry && isStartingServer && attempt < retries) {
           console.warn('[API] Backend chưa sẵn sàng, retry...', {
             url,
             attempt: attempt + 1,
-            status: res.status,
-            contentType
+            status: res.status
           });
-
           await sleep(retryDelayMs * (attempt + 1));
           continue;
         }
 
-        console.error('[API] Non-JSON response', {
-          url,
-          status: res.status,
-          contentType,
-          rawPreview: raw.slice(0, 300)
-        });
+        console.error('[API] HTML instead of JSON', { url, status: res.status, rawPreview: trimmedRaw.slice(0, 300) });
+        throw new Error('Máy chủ API đang trả HTML thay vì JSON. Kiểm tra route/proxy backend.');
+      }
 
-        throw new Error('Máy chủ API chưa trả dữ liệu JSON hợp lệ. Vui lòng thử lại sau vài giây.');
+      try {
+        data = raw ? JSON.parse(raw) : null;
+      } catch {
+        console.error('[API] Parse Error', { url, status: res.status, rawPreview: raw.slice(0, 200) });
+        throw new Error('Máy chủ API trả dữ liệu không hợp lệ (không phải JSON).');
       }
 
       if (!res.ok || data?.success === false) {
-        const err: any = new Error(data?.message || `API lỗi HTTP ${res.status}`);
+        const errorMessage = data?.message || data?.error || data?.errorType || 'Đã xảy ra lỗi.';
+        const err: any = new Error(errorMessage);
         err.status = res.status;
-        err.errorType = data?.errorType;
+        err.errorType = data?.errorType || data?.error;
         err.data = data;
+
+        // Skip retry for definitively failing client errors (400, 401, 403, 404) or application-level errors
+        const isClientError = res.status >= 400 && res.status < 500;
+        const isDocNotFound = res.status === 404;
+        const isAppError = data?.success === false && !isStartingServer;
+
+        if ((isClientError && !isStartingServer) || isAppError || isDocNotFound) {
+          throw err; // Stop retrying immediately
+        }
+        
+        // Let it fall through to catch block for potential retry
         throw err;
       }
 
@@ -81,13 +91,25 @@ export async function apiFetchJson<T = any>(
       lastError = err;
 
       if (err?.name === 'AbortError') {
-        lastError = new Error('API phản hồi quá lâu. Vui lòng thử lại.');
+        const timeoutErr: any = new Error('Yêu cầu hết thời gian. Vui lòng thử lại.');
+        timeoutErr.status = 408;
+        lastError = timeoutErr;
+      }
+
+      // If it's a definitive error we shouldn't retry, re-throw it
+      if (err.status && ((err.status >= 400 && err.status < 500) || err.status === 410)) {
+        throw err;
       }
 
       if (attempt < retries) {
-        await sleep(retryDelayMs * (attempt + 1));
-        continue;
+        // Only retry on network errors, 5xx server errors, or timeouts
+        const shouldRetry = !err.status || (err.status >= 500);
+        if (shouldRetry) {
+          await sleep(retryDelayMs * (attempt + 1));
+          continue;
+        }
       }
+      throw lastError;
     } finally {
       window.clearTimeout(timeoutId);
     }

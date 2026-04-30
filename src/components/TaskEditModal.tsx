@@ -129,11 +129,11 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
             <div className="space-y-3 pt-2">
               <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Tài liệu liên quan ({editingTask.linkedDocumentIds?.length || 0})</label>
               <div className="flex flex-wrap gap-2">
-                {editingTask.linkedDocumentIds?.map(docId => {
+                {editingTask.linkedDocumentIds?.map((docId, idx) => {
                   const doc = documents.find(d => d.id === docId);
                   if (!doc) return null;
                   return (
-                    <div key={docId} className="flex items-center gap-2 bg-[#002D56] text-white px-3 py-1.5 rounded-xl text-[10px] font-black uppercase shadow-sm">
+                    <div key={`${docId}-${idx}`} className="flex items-center gap-2 bg-[#002D56] text-white px-3 py-1.5 rounded-xl text-[10px] font-black uppercase shadow-sm">
                       <span className="truncate max-w-[120px] sm:max-w-[150px]">{doc.name}</span>
                       <button 
                         onClick={() => setEditingTask({
