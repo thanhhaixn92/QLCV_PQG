@@ -58,29 +58,29 @@ export const UserProfileSection: React.FC<UserProfileSectionProps> = ({ user, pr
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* Left Column: Avatar & Summary */}
         <div className="lg:col-span-1 space-y-6">
-          <div className="bg-white rounded-[32px] border border-slate-200 p-8 text-center flex flex-col items-center">
-            <div className="w-24 h-24 rounded-[32px] bg-[#002D56] text-white flex items-center justify-center text-3xl font-black mb-4 shadow-xl shadow-[#002D56]/20">
+          <div className="bg-white rounded-md border border-slate-200 p-8 text-center flex flex-col items-center">
+            <div className="w-24 h-24 rounded-md bg-[#002D56] text-white flex items-center justify-center text-3xl font-black mb-4 shadow-xl shadow-[#002D56]/20">
               {formData.avatarText || (formData.displayName?.[0] || 'U').toUpperCase()}
             </div>
             <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight">{formData.displayName || 'Người dùng'}</h3>
             <p className="text-sm font-bold text-slate-400 uppercase tracking-widest mt-1">{formData.title || 'Chưa cập nhật chức danh'}</p>
             <div className="mt-6 flex flex-wrap justify-center gap-2">
-              <span className="px-3 py-1 bg-emerald-50 text-emerald-600 rounded-full text-[10px] font-black uppercase tracking-wider flex items-center gap-1">
+              <span className="px-3 py-1 bg-emerald-50 text-emerald-600 rounded-md text-[10px] font-black uppercase tracking-wider flex items-center gap-1">
                 <CheckCircle2 className="w-3 h-3" /> Đã xác thực
               </span>
-              <span className="px-3 py-1 bg-slate-100 text-slate-500 rounded-full text-[10px] font-black uppercase tracking-wider">
+              <span className="px-3 py-1 bg-slate-100 text-slate-500 rounded-md text-[10px] font-black uppercase tracking-wider">
                 {user?.email}
               </span>
             </div>
           </div>
 
-          <div className="bg-slate-900 rounded-[32px] p-6 text-white overflow-hidden relative group">
+          <div className="bg-slate-900 rounded-md p-6 text-white overflow-hidden relative group">
              <div className="absolute top-0 right-0 p-6 opacity-10 group-hover:scale-125 transition-transform duration-500">
                 <Shield className="w-24 h-24" />
              </div>
              <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/40 mb-2 relative z-10">Bảo mật hệ thống</p>
              <h4 className="text-lg font-bold mb-4 relative z-10 leading-tight">Dữ liệu của bạn được mã hóa an toàn</h4>
-             <button className="text-[10px] font-black uppercase bg-white/10 hover:bg-white/20 px-4 py-2 rounded-xl transition-all relative z-10">
+             <button className="text-[10px] font-black uppercase bg-white/10 hover:bg-white/20 px-4 py-2 rounded-md transition-all relative z-10">
                 Xem chi tiết
              </button>
           </div>
@@ -88,9 +88,9 @@ export const UserProfileSection: React.FC<UserProfileSectionProps> = ({ user, pr
 
         {/* Right Column: Fields */}
         <div className="lg:col-span-2 space-y-6">
-          <div className="bg-white rounded-[32px] border border-slate-200 p-8">
+          <div className="bg-white rounded-md border border-slate-200 p-8">
             <div className="flex items-center gap-3 mb-8">
-               <div className="p-3 bg-blue-50 rounded-2xl">
+               <div className="p-3 bg-blue-50 rounded-md">
                   <User className="w-6 h-6 text-[#002D56]" />
                </div>
                <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight">Hồ sơ cá nhân</h3>
@@ -105,7 +105,7 @@ export const UserProfileSection: React.FC<UserProfileSectionProps> = ({ user, pr
                     type="text" 
                     value={formData.displayName}
                     onChange={e => setFormData({ ...formData, displayName: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-2xl pl-11 pr-5 py-4 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-md pl-11 pr-5 py-4 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
                     placeholder="VD: Nguyễn Văn A"
                   />
                 </div>
@@ -118,7 +118,7 @@ export const UserProfileSection: React.FC<UserProfileSectionProps> = ({ user, pr
                   maxLength={2}
                   value={formData.avatarText}
                   onChange={e => setFormData({ ...formData, avatarText: e.target.value.toUpperCase() })}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-4 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-md px-5 py-4 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
                   placeholder="VD: NV"
                 />
               </div>
@@ -131,7 +131,7 @@ export const UserProfileSection: React.FC<UserProfileSectionProps> = ({ user, pr
                     type="text" 
                     value={formData.title}
                     onChange={e => setFormData({ ...formData, title: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-2xl pl-11 pr-5 py-4 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-md pl-11 pr-5 py-4 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
                     placeholder="VD: Chuyên viên CNTT"
                   />
                 </div>
@@ -143,7 +143,7 @@ export const UserProfileSection: React.FC<UserProfileSectionProps> = ({ user, pr
                   type="text" 
                   value={formData.department}
                   onChange={e => setFormData({ ...formData, department: e.target.value })}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-4 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-md px-5 py-4 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
                   placeholder="VD: Phòng Kế hoạch - Kinh doanh"
                 />
               </div>
@@ -156,7 +156,7 @@ export const UserProfileSection: React.FC<UserProfileSectionProps> = ({ user, pr
                     type="tel" 
                     value={formData.phone}
                     onChange={e => setFormData({ ...formData, phone: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-2xl pl-11 pr-5 py-4 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-md pl-11 pr-5 py-4 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
                     placeholder="09xx..."
                   />
                 </div>
@@ -166,7 +166,7 @@ export const UserProfileSection: React.FC<UserProfileSectionProps> = ({ user, pr
             <div className="h-px bg-slate-100 my-8" />
 
             <div className="flex items-center gap-3 mb-6">
-               <div className="p-3 bg-orange-50 rounded-2xl">
+               <div className="p-3 bg-orange-50 rounded-md">
                   <Tag className="w-6 h-6 text-orange-600" />
                </div>
                <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight">Thiết lập mặc định</h3>
@@ -179,7 +179,7 @@ export const UserProfileSection: React.FC<UserProfileSectionProps> = ({ user, pr
                   type="text" 
                   value={formData.defaultAssigneeName}
                   onChange={e => setFormData({ ...formData, defaultAssigneeName: e.target.value })}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-4 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-md px-5 py-4 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
                   placeholder="Tên người nhận việc..."
                 />
               </div>
@@ -189,7 +189,7 @@ export const UserProfileSection: React.FC<UserProfileSectionProps> = ({ user, pr
                 <select 
                   value={formData.defaultTaskCategoryCode}
                   onChange={e => setFormData({ ...formData, defaultTaskCategoryCode: e.target.value })}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-4 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-md px-5 py-4 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
                 >
                   {TASK_CATEGORIES.map(c => <option key={c.code} value={c.code}>{c.name}</option>)}
                 </select>
@@ -200,10 +200,10 @@ export const UserProfileSection: React.FC<UserProfileSectionProps> = ({ user, pr
               <button 
                 onClick={handleSave}
                 disabled={isSaving}
-                className="bg-[#002D56] text-white px-10 py-4 rounded-2xl text-xs font-black uppercase tracking-[0.2em] shadow-2xl hover:shadow-[#002D56]/20 transition-all active:scale-95 flex items-center gap-2 disabled:opacity-50"
+                className="bg-[#002D56] text-white px-10 py-4 rounded-md text-xs font-black uppercase tracking-[0.2em] shadow-2xl hover:shadow-[#002D56]/20 transition-all active:scale-95 flex items-center gap-2 disabled:opacity-50"
               >
                 {isSaving ? (
-                  <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-md animate-spin" />
                 ) : (
                   <Save className="w-4 h-4" />
                 )}

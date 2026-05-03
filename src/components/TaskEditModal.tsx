@@ -29,13 +29,13 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
         initial={{ opacity: 0, scale: 0.9, y: 20 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.9, y: 20 }}
-        className="bg-white w-full max-w-4xl rounded-[32px] sm:rounded-[40px] shadow-2xl overflow-hidden flex flex-col max-h-[calc(100dvh-24px)]"
+        className="bg-white w-full max-w-4xl rounded-md lg:rounded-lg shadow-2xl overflow-hidden flex flex-col max-h-[calc(100dvh-24px)]"
         onClick={e => e.stopPropagation()}
       >
         {/* Header */}
         <div className="px-6 py-4 sm:px-8 sm:py-6 bg-slate-50 border-b border-slate-100 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-4">
-            <div className="bg-[#002D56] p-2 sm:p-3 rounded-2xl">
+            <div className="bg-[#002D56] p-2 sm:p-3 rounded-md">
               {editingTask.id ? <Edit3 className="text-white w-5 h-5" /> : <Plus className="text-white w-5 h-5" />}
             </div>
             <div>
@@ -59,7 +59,7 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
               value={editingTask.title}
               onChange={e => setEditingTask({ ...editingTask, title: e.target.value })}
               placeholder="VD: Kiểm tra mớn nước tàu HTMB 01..."
-              className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-4 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
+              className="w-full bg-slate-50 border border-slate-200 rounded-md px-5 py-4 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
             />
           </div>
 
@@ -71,7 +71,7 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
                 value={editingTask.assignee}
                 onChange={e => setEditingTask({ ...editingTask, assignee: e.target.value })}
                 placeholder="Tên hoặc mã định danh..."
-                className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-3 text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
+                className="w-full bg-slate-50 border border-slate-200 rounded-md px-5 py-3 text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
               />
             </div>
             <div className="space-y-2">
@@ -79,7 +79,7 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
               <select 
                 value={editingTask.categoryCode}
                 onChange={e => setEditingTask({ ...editingTask, categoryCode: e.target.value })}
-                className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
+                className="w-full bg-slate-50 border border-slate-200 rounded-md px-4 py-3 text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
               >
                 {TASK_CATEGORIES.map(c => <option key={c.code} value={c.code}>{c.name}</option>)}
               </select>
@@ -93,7 +93,7 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
                 type="date" 
                 value={editingTask.dueDate}
                 onChange={e => setEditingTask({ ...editingTask, dueDate: e.target.value })}
-                className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-3 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
+                className="w-full bg-slate-50 border border-slate-200 rounded-md px-5 py-3 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
               />
             </div>
             <div className="space-y-2">
@@ -101,7 +101,7 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
               <select 
                 value={editingTask.priority}
                 onChange={e => setEditingTask({ ...editingTask, priority: e.target.value as any })}
-                className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
+                className="w-full bg-slate-50 border border-slate-200 rounded-md px-4 py-3 text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
               >
                 <option value="low">Thấp</option>
                 <option value="medium">Trung bình</option>
@@ -117,7 +117,7 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
               <select 
                 value={editingTask.status}
                 onChange={e => setEditingTask({ ...editingTask, status: e.target.value as any })}
-                className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
+                className="w-full bg-slate-50 border border-slate-200 rounded-md px-4 py-3 text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
               >
                 <option value="todo">Cần làm</option>
                 <option value="doing">Đang làm</option>
@@ -133,7 +133,7 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
                   const doc = documents.find(d => d.id === docId);
                   if (!doc) return null;
                   return (
-                    <div key={`${docId}-${idx}`} className="flex items-center gap-2 bg-[#002D56] text-white px-3 py-1.5 rounded-xl text-[10px] font-black uppercase shadow-sm">
+                    <div key={`${docId}-${idx}`} className="flex items-center gap-2 bg-[#002D56] text-white px-3 py-1.5 rounded-md text-[10px] font-black uppercase shadow-sm">
                       <span className="truncate max-w-[120px] sm:max-w-[150px]">{doc.name}</span>
                       <button 
                         onClick={() => setEditingTask({
@@ -149,7 +149,7 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
                 })}
                 <button 
                   onClick={() => setIsPickingFromLibrary(true)}
-                  className="flex items-center gap-2 bg-white text-[#002D56] px-3 py-1.5 rounded-xl text-[10px] font-black uppercase border border-dashed border-[#002D56]/30 hover:bg-[#002D56]/5 transition-all"
+                  className="flex items-center gap-2 bg-white text-[#002D56] px-3 py-1.5 rounded-md text-[10px] font-black uppercase border border-dashed border-[#002D56]/30 hover:bg-[#002D56]/5 transition-all"
                 >
                   <Plus className="w-3 h-3" /> Gắn tài liệu
                 </button>
@@ -159,7 +159,7 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <div className="flex flex-col justify-center gap-2 pt-2">
-              <label className="flex items-center gap-3 cursor-pointer select-none bg-slate-50 p-4 rounded-2xl border border-slate-100 hover:border-[#002D56]/20 transition-all">
+              <label className="flex items-center gap-3 cursor-pointer select-none bg-slate-50 p-4 rounded-md border border-slate-100 hover:border-[#002D56]/20 transition-all">
                 <input 
                   type="checkbox"
                   checked={editingTask.isDeputy}
@@ -183,7 +183,7 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
                   value={editingTask.assignmentCode || ''}
                   onChange={e => setEditingTask({ ...editingTask, assignmentCode: e.target.value })}
                   placeholder="VD: DH01"
-                  className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-3 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-md px-5 py-3 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
                 />
               </div>
               <div className="space-y-2">
@@ -193,7 +193,7 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
                   value={editingTask.assignmentName || ''}
                   onChange={e => setEditingTask({ ...editingTask, assignmentName: e.target.value })}
                   placeholder="Phó ca, hỗ trợ..."
-                  className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-3 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-md px-5 py-3 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
                 />
               </div>
             </div>
@@ -206,7 +206,7 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
               value={editingTask.description}
               onChange={e => setEditingTask({ ...editingTask, description: e.target.value })}
               placeholder="Ghi chú thêm về yêu cầu, tài liệu đính kèm hoặc các vướng mắc..."
-              className="w-full bg-slate-50 border border-slate-200 rounded-3xl px-5 py-4 text-sm font-medium text-slate-600 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10 resize-none custom-scrollbar"
+              className="w-full bg-slate-50 border border-slate-200 rounded-lg px-5 py-4 text-sm font-medium text-slate-600 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10 resize-none custom-scrollbar"
             />
           </div>
         </div>
@@ -217,21 +217,21 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
             {editingTask.id && (
               <button 
                 onClick={() => onDelete(editingTask.id)}
-                className="flex-1 sm:flex-none px-6 py-3 rounded-2xl text-[10px] font-black uppercase text-red-500 hover:bg-red-50 transition-all border border-red-100"
+                className="flex-1 sm:flex-none px-6 py-3 rounded-md text-[10px] font-black uppercase text-red-500 hover:bg-red-50 transition-all border border-red-100"
               >
                 Xóa công việc
               </button>
             )}
             <button 
               onClick={onClose}
-              className="flex-1 sm:flex-none px-6 py-3 rounded-2xl text-[10px] font-black uppercase text-slate-400 hover:bg-slate-200 transition-all"
+              className="flex-1 sm:flex-none px-6 py-3 rounded-md text-[10px] font-black uppercase text-slate-400 hover:bg-slate-200 transition-all"
             >
               Hủy bỏ
             </button>
           </div>
           <button 
             onClick={() => onSave(editingTask)}
-            className="w-full sm:w-auto bg-[#002D56] text-white px-10 py-4 rounded-2xl text-xs font-black uppercase tracking-[0.2em] shadow-2xl hover:shadow-[#002D56]/20 transition-all active:scale-95 flex items-center justify-center gap-2"
+            className="w-full sm:w-auto bg-[#002D56] text-white px-10 py-4 rounded-md text-xs font-black uppercase tracking-[0.2em] shadow-2xl hover:shadow-[#002D56]/20 transition-all active:scale-95 flex items-center justify-center gap-2"
           >
             <Save className="w-4 h-4" />
             {editingTask.id ? 'CẬP NHẬT DỮ LIỆU' : 'LƯU CÔNG VIỆC MỚI'}

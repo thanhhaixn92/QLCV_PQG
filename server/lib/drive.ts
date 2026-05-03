@@ -2,7 +2,7 @@ import axios from 'axios';
 import * as pdfNamespace from 'pdf-parse';
 import mammoth from 'mammoth';
 
-const pdf = (pdfNamespace as any).default || pdfNamespace;
+const pdf = (pdfNamespace as any).default || (pdfNamespace as any).pdf || pdfNamespace;
 import * as xlsx from 'xlsx';
 
 export function parseDriveUrl(url: string): string | null {

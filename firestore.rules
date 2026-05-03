@@ -123,6 +123,13 @@ service cloud.firestore {
       match /chatAttachments/{attachmentId} {
         allow read, write: if isOwner(userId);
       }
+
+      // 10. Activity Logs Sub-collection
+      match /activityLogs/{logId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId);
+        allow update, delete: if false;
+      }
     }
   }
 }

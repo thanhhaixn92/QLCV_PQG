@@ -149,6 +149,8 @@ import { buildEditorialPrompt } from './lib/editorialPrompts';
 import { EditorialKindSelector } from './components/editorial/EditorialKindSelector';
 import { EditorialInputForm } from './components/editorial/EditorialInputForm';
 import { EditorialPreflightPanel } from './components/editorial/EditorialPreflightPanel';
+import { ActivityLogView } from './components/activity/ActivityLogView';
+import { logActivity } from './lib/activityLog';
 
 const TASK_STATUS_LABELS: Record<string, string> = {
   todo: 'Cần làm',
@@ -229,7 +231,7 @@ function getUserDisplayName(user: FirebaseUser | null, profile?: any) {
 function NoTasksMessage({ setTaskFilters }: { setTaskFilters: (f: any) => void }) {
   return (
     <div className="flex flex-col items-center gap-3 py-10 w-full">
-      <div className="p-4 bg-slate-50 rounded-full">
+      <div className="p-4 bg-slate-50 rounded-md">
         <ListTodo className="w-10 h-10 text-slate-200" />
       </div>
       <p className="text-slate-400 font-bold text-sm">Chưa có công việc nào thỏa mãn điều kiện lọc.</p>
@@ -312,7 +314,7 @@ function TaskStatusCell({ task, updateTaskStatus }: { task: any, updateTaskStatu
         value={task.status}
         onChange={(e) => updateTaskStatus(task.id, e.target.value as any)}
         className={cn(
-          "px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-wider border-2 transition-all cursor-pointer",
+          "px-3 py-1.5 rounded-md text-[10px] font-black uppercase tracking-wider border-2 transition-all cursor-pointer",
           task.status === 'done' ? "bg-emerald-50 border-emerald-200 text-emerald-600" :
           task.status === 'doing' ? "bg-blue-50 border-blue-200 text-blue-600" :
           task.status === 'blocked' ? "bg-red-50 border-red-200 text-red-600" :
@@ -447,7 +449,7 @@ function App() {
   const [isParsing, setIsParsing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copySuccess, setCopySuccess] = useState(false);
-  const [activeTab, setActiveTab] = useState<'home' | 'tasks' | 'editor' | 'library' | 'history' | 'settings'>('home');
+  const [activeTab, setActiveTab] = useState<'home' | 'tasks' | 'editor' | 'library' | 'history' | 'settings' | 'activity'>('home');
 
   const [backendReady, setBackendReady] = useState(false);
   const [backendError, setBackendError] = useState<string | null>(null);
@@ -598,6 +600,20 @@ function App() {
       }
       
       toast.success('Đã import tài liệu từ Google Drive thành công');
+      
+      if (data.document) {
+          await logActivity({
+             module: 'library',
+             action: 'created',
+             entityType: data.document.driveMimeType === 'application/vnd.google-apps.folder' ? 'drive_folder' : 'drive_file',
+             entityId: data.document.id,
+             entityTitle: data.document.name,
+             title: 'Import tài liệu từ Drive',
+             summary: `Đã import thành công "${data.document.name}".`,
+             metadata: { source: 'client' }
+          });
+      }
+
       setNewLinkUrl('');
       setIsAddingLink(false);
     } catch (err: any) {
@@ -1606,6 +1622,18 @@ function App() {
       try {
         const docRef = await addDoc(collection(db, 'users', user.uid, 'documents'), finalData);
         const newDoc = { id: docRef.id, ...finalData } as DocumentSource;
+        
+        await logActivity({
+           module: 'library',
+           action: 'created',
+           entityType: finalData.type === 'drive' ? 'drive_file' : 'document',
+           entityId: docRef.id,
+           entityTitle: finalData.name,
+           title: 'Thêm tài liệu mới',
+           summary: `Đã thêm tài liệu "${finalData.name}" vào Kho tư liệu.`,
+           metadata: { source: 'client' }
+        });
+
         // avoid optimistic update when user is logged in, let onSnapshot handle it
         return newDoc;
       } catch (err: any) {
@@ -1629,11 +1657,35 @@ function App() {
         if (existingId) {
           const sessionRef = doc(db, 'users', user.uid, 'sessions', existingId);
           await updateDoc(sessionRef, { ...sessionData, updatedAt: Date.now() });
+          
+          await logActivity({
+             module: 'editorial',
+             action: 'updated',
+             entityType: 'editorial_session',
+             entityId: existingId,
+             entityTitle: sessionData.title,
+             title: 'Cập nhật phiên biên tập',
+             summary: `Đã lưu cập nhật cho phiên bản bài viết "${sessionData.title}".`,
+             metadata: { source: 'client' }
+          });
+
           setSessions(prev => prev.map(s => s.id === existingId ? { ...s, ...sessionData, updatedAt: Date.now() } : s));
           return existingId;
         } else {
           const dataToInsert = { ...sessionData, createdAt: Date.now(), updatedAt: Date.now() };
           const sessionRef = await addDoc(collection(db, 'users', user.uid, 'sessions'), dataToInsert);
+          
+          await logActivity({
+             module: 'editorial',
+             action: 'created',
+             entityType: 'editorial_session',
+             entityId: sessionRef.id,
+             entityTitle: sessionData.title,
+             title: 'Tạo phiên biên tập mới',
+             summary: `Đã tạo lưu nháp bài viết mới "${sessionData.title}".`,
+             metadata: { source: 'client' }
+          });
+
           const newSession = { id: sessionRef.id, ...dataToInsert } as ProjectSession;
           // onSnapshot handles it
           return sessionRef.id;
@@ -1760,6 +1812,17 @@ const handleSyncDriveFolder = async (folderId: string, folderName: string) => {
     } else {
       toast.success('Dữ liệu thư mục đã được cập nhật bản mới nhất.');
     }
+    
+    await logActivity({
+       module: 'library',
+       action: 'synced',
+       entityType: 'drive_folder',
+       entityId: folderId,
+       entityTitle: folderName,
+       title: 'Đồng bộ Google Drive',
+       summary: `Đã đồng bộ thư mục "${folderName}": thêm ${data.stats?.added || 0}, cập nhật ${data.stats?.updated || 0}, lỗi ${data.stats?.failed || 0}.`,
+       metadata: { source: 'drive_sync' }
+    });
   } catch (err: any) {
     console.error('Sync Error:', err);
     toast.error('Lỗi đồng bộ: ' + err.message);
@@ -1803,6 +1866,18 @@ const handleAnalyzeDocument = async (docId: string) => {
     }
     
     toast.success('Phân tích tài liệu hoàn tất');
+    
+    const docTitle = documents.find(d => d.id === docId)?.name || 'Tài liệu';
+    await logActivity({
+       module: 'library',
+       action: 'analyzed',
+       entityType: 'document',
+       entityId: docId,
+       entityTitle: docTitle,
+       title: 'AI phân tích tài liệu',
+       summary: `Đã dùng AI phân tích & tóm tắt tài liệu "${docTitle}".`,
+       metadata: { source: 'ai' }
+    });
   } catch (err: any) {
     console.error('Analyze Error:', err);
     toast.error('Lỗi phân tích: ' + err.message);
@@ -1985,6 +2060,18 @@ const handleAnalyzeDocument = async (docId: string) => {
       };
 
       const docRef = await addDoc(collection(db, 'users', user.uid, 'tasks'), finalData);
+      
+      await logActivity({
+         module: 'task',
+         action: 'created',
+         entityType: 'task',
+         entityId: docRef.id,
+         entityTitle: finalData.title,
+         title: 'Tạo nhiệm vụ',
+         summary: `Đã tạo nhiệm vụ "${finalData.title}".`,
+         metadata: { source: 'client' }
+      });
+
       return docRef.id;
     } catch (err: any) {
       handleFirestoreError(err, 'create', 'tasks');
@@ -2000,6 +2087,20 @@ const handleAnalyzeDocument = async (docId: string) => {
         ...updates,
         updatedAt: Date.now()
       });
+      
+      const updatedTaskTitle = updates.title || allTasks.find(t => t.id === taskId)?.title || 'Nhiệm vụ';
+      await logActivity({
+         module: 'task',
+         action: 'updated',
+         entityType: 'task',
+         entityId: taskId,
+         entityTitle: updatedTaskTitle,
+         title: 'Cập nhật nhiệm vụ',
+         summary: `Đã cập nhật thông tin nhiệm vụ "${updatedTaskTitle}".`,
+         changedFields: Object.keys(updates),
+         metadata: { source: 'client' }
+      });
+
       toast.success('Đã cập nhật công việc.');
       setActiveModal(null);
       setEditingTask(null);
@@ -2020,6 +2121,26 @@ const handleAnalyzeDocument = async (docId: string) => {
         updateData.completedAt = Date.now();
       }
       await updateDoc(taskRef, updateData);
+
+      const task = allTasks.find(t => t.id === taskId);
+      if (task) {
+         await logActivity({
+            module: 'task',
+            action: 'status_changed',
+            entityType: 'task',
+            entityId: taskId,
+            entityTitle: task.title,
+            title: 'Đổi trạng thái nhiệm vụ',
+            summary: `Đã đổi trạng thái nhiệm vụ "${task.title}" từ "${TASK_STATUS_LABELS[task.status] || task.status}" sang "${TASK_STATUS_LABELS[status] || status}".`,
+            changedFields: ['status'],
+            metadata: {
+               statusFrom: task.status,
+               statusTo: status,
+               source: 'client'
+            }
+         });
+      }
+
       toast.success('Đã cập nhật trạng thái công việc.');
     } catch (err: any) {
       handleFirestoreError(err, 'update', `tasks/${taskId}`);
@@ -2406,6 +2527,20 @@ const handleAnalyzeDocument = async (docId: string) => {
         setActiveModal(null);
         setEditingTask(null);
       }
+      
+      if (task) {
+         await logActivity({
+            module: 'task',
+            action: 'deleted',
+            entityType: 'task',
+            entityId: taskId,
+            entityTitle: task.title,
+            title: 'Xóa nhiệm vụ',
+            summary: `Đã xóa nhiệm vụ "${task.title}".`,
+            metadata: { source: 'client' }
+         });
+      }
+
       toast.success('Đã xóa công việc.');
     } catch (err: any) {
       handleFirestoreError(err, 'delete' as any, `tasks/${taskId}`);
@@ -2441,6 +2576,7 @@ const handleAnalyzeDocument = async (docId: string) => {
         const data = await res.json();
         if (!res.ok) throw new Error(data.message || 'Lỗi từ máy chủ');
       }
+      const docToDelete = documents.find(d => d.id === id);
       setDocuments(prev => {
         const updated = prev.filter(d => d.id !== id);
         if (!user) localStorage.setItem('vms_documents', JSON.stringify(updated));
@@ -2450,6 +2586,19 @@ const handleAnalyzeDocument = async (docId: string) => {
       setBulkSelectedDocIds(prev => prev.filter(did => did !== id));
       if (previewDocument?.id === id) setPreviewDocument(null);
       toast.success('Đã xóa tài liệu.');
+      
+      if (docToDelete) {
+         await logActivity({
+            module: 'library',
+            action: 'deleted',
+            entityType: docToDelete.type === 'drive' ? 'drive_file' : 'document',
+            entityId: id,
+            entityTitle: docToDelete.name,
+            title: 'Xóa tài liệu',
+            summary: `Đã xóa tài liệu "${docToDelete.name}" khỏi Kho tư liệu.`,
+            metadata: { source: 'client' }
+         });
+      }
     } catch (err: any) {
       console.error('Delete error:', err);
       toast.error('Lỗi khi xóa: ' + err.message);
@@ -2804,7 +2953,7 @@ const handleAnalyzeDocument = async (docId: string) => {
         <nav className="fixed top-0 left-0 right-0 z-50 bg-white/80 backdrop-blur-md border-b border-slate-100 px-6 py-4">
           <div className="max-w-7xl mx-auto flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <div className="bg-[#002D56] p-2.5 rounded-xl text-white shadow-lg">
+              <div className="bg-[#002D56] p-2.5 rounded-md text-white shadow-lg">
                 <Ship className="w-6 h-6" />
               </div>
               <div className="flex flex-col">
@@ -2815,7 +2964,7 @@ const handleAnalyzeDocument = async (docId: string) => {
             
             <button 
               onClick={() => setActiveModal('auth')}
-              className="px-6 py-2.5 bg-[#002D56] text-white rounded-2xl text-xs font-black uppercase tracking-widest shadow-xl hover:shadow-[#002D56]/20 transition-all active:scale-95 flex items-center gap-2"
+              className="px-6 py-2.5 bg-[#002D56] text-white rounded-md text-xs font-black uppercase tracking-widest shadow-xl hover:shadow-[#002D56]/20 transition-all active:scale-95 flex items-center gap-2"
             >
               <User className="w-4 h-4" /> Đăng nhập
             </button>
@@ -2837,8 +2986,8 @@ const handleAnalyzeDocument = async (docId: string) => {
                 { title: 'Kho tư liệu số', desc: 'Lưu trữ và trích xuất dữ liệu từ PDF, Word, Excel trung tâm.', icon: Database, color: 'bg-indigo-600' },
                 { title: 'Xuất bản tự động', desc: 'Hỗ trợ xuất Word, PDF theo chuẩn văn phòng nghiệp vụ.', icon: FileDown, color: 'bg-orange-500' },
               ].map((f, i) => (
-                <div key={i} className="bg-white p-10 rounded-[40px] shadow-sm hover:shadow-xl transition-all border border-slate-100 group">
-                  <div className={cn("inline-flex p-4 rounded-2xl text-white mb-8 shadow-lg group-hover:scale-110 transition-transform", f.color)}>
+                <div key={i} className="bg-white p-10 rounded-md shadow-sm hover:shadow-xl transition-all border border-slate-100 group">
+                  <div className={cn("inline-flex p-4 rounded-md text-white mb-8 shadow-lg group-hover:scale-110 transition-transform", f.color)}>
                     <f.icon className="w-6 h-6" />
                   </div>
                   <h4 className="text-xl font-black text-[#002D56] mb-4 uppercase tracking-tight">{f.title}</h4>
@@ -2852,7 +3001,7 @@ const handleAnalyzeDocument = async (docId: string) => {
         {/* Hero Section */}
         <section className="relative pt-40 pb-20 px-6 overflow-hidden">
           <div className="absolute top-0 right-0 -z-10 translate-x-1/4 -translate-y-1/3 blur-[120px] opacity-20">
-            <div className="w-[800px] h-[800px] rounded-full bg-gradient-to-br from-blue-600 to-[#002D56]" />
+            <div className="w-[800px] h-[800px] rounded-md bg-gradient-to-br from-blue-600 to-[#002D56]" />
           </div>
 
           <div className="max-w-4xl mx-auto items-center">
@@ -2861,7 +3010,7 @@ const handleAnalyzeDocument = async (docId: string) => {
               animate={{ opacity: 1, x: 0 }}
               transition={{ duration: 0.8 }}
             >
-              <div className="inline-flex items-center gap-2 px-4 py-1.5 bg-blue-50 border border-blue-100 rounded-full text-[#002D56] text-[10px] font-black uppercase tracking-widest mb-8">
+              <div className="inline-flex items-center gap-2 px-4 py-1.5 bg-blue-50 border border-blue-100 rounded-md text-[#002D56] text-[10px] font-black uppercase tracking-widest mb-8">
                 <Sparkles className="w-4 h-4" /> Trợ lý AI Thông minh
               </div>
               <h1 className="text-5xl lg:text-7xl font-black text-[#002D56] leading-[1.1] mb-8 uppercase tracking-tighter">
@@ -2876,11 +3025,11 @@ const handleAnalyzeDocument = async (docId: string) => {
               <div className="flex flex-col sm:flex-row gap-4">
                 <button 
                   onClick={() => setActiveModal('auth')}
-                  className="px-10 py-4.5 bg-[#002D56] text-white rounded-3xl text-sm font-black uppercase tracking-widest shadow-2xl hover:shadow-[#002D56]/30 transition-all hover:scale-105 active:scale-95 flex items-center justify-center gap-3"
+                  className="px-10 py-4.5 bg-[#002D56] text-white rounded-lg text-sm font-black uppercase tracking-widest shadow-2xl hover:shadow-[#002D56]/30 transition-all hover:scale-105 active:scale-95 flex items-center justify-center gap-3"
                 >
                   Bắt đầu ngay <Plus className="w-5 h-5" />
                 </button>
-                <div className="px-10 py-4.5 border-2 border-slate-100 text-slate-500 rounded-3xl text-sm font-black flex items-center justify-center gap-3 bg-white/50">
+                <div className="px-10 py-4.5 border-2 border-slate-100 text-slate-500 rounded-lg text-sm font-black flex items-center justify-center gap-3 bg-white/50">
                    Chỉ dành cho cán bộ Hoa Tiêu Miền Bắc
                 </div>
               </div>
@@ -2891,7 +3040,7 @@ const handleAnalyzeDocument = async (docId: string) => {
         {/* Security Warning Footer */}
         <footer className="py-12 border-t border-slate-100">
            <div className="max-w-7xl mx-auto px-6 text-center">
-              <div className="inline-flex items-center gap-3 px-6 py-2 bg-red-100 border border-red-200 rounded-full text-red-600 text-[10px] font-black uppercase tracking-widest animate-pulse mb-6">
+              <div className="inline-flex items-center gap-3 px-6 py-2 bg-red-100 border border-red-200 rounded-md text-red-600 text-[10px] font-black uppercase tracking-widest animate-pulse mb-6">
                  <ShieldCheck className="w-4 h-4" /> Cảnh báo bảo mật: Hệ thống phục vụ nội bộ
               </div>
               <p className="text-slate-400 font-bold text-xs uppercase tracking-tighter">
@@ -2915,10 +3064,10 @@ const handleAnalyzeDocument = async (docId: string) => {
                 initial={{ opacity: 0, scale: 0.95, y: 20 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.95, y: 20 }}
-                className="relative w-full max-w-md bg-white rounded-[40px] shadow-2xl overflow-hidden p-10 border border-white/20"
+                className="relative w-full max-w-md bg-white rounded-md shadow-2xl overflow-hidden p-10 border border-white/20"
               >
                 <div className="text-center mb-8">
-                  <div className="w-16 h-16 bg-[#002D56] text-white rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-xl">
+                  <div className="w-16 h-16 bg-[#002D56] text-white rounded-md flex items-center justify-center mx-auto mb-6 shadow-xl">
                     <Ship className="w-8 h-8" />
                   </div>
                   <h3 className="text-2xl font-black text-[#002D56] uppercase tracking-tight">Xác thực người dùng</h3>
@@ -2929,7 +3078,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                   <button 
                     onClick={handleGoogleAuth}
                     disabled={isLoading}
-                    className="w-full h-14 bg-white border-2 border-slate-100 rounded-2xl flex items-center justify-center gap-4 hover:border-[#002D56] transition-all group relative overflow-hidden"
+                    className="w-full h-14 bg-white border-2 border-slate-100 rounded-md flex items-center justify-center gap-4 hover:border-[#002D56] transition-all group relative overflow-hidden"
                   >
                     <div className="absolute inset-0 bg-blue-50 opacity-0 group-hover:opacity-100 transition-opacity" />
                     <img src="https://www.google.com/favicon.ico" alt="Google" className="w-5 h-5 relative z-10" />
@@ -2949,7 +3098,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                         name="email"
                         type="email"
                         required
-                        className="w-full h-14 bg-slate-50 border-2 border-slate-100 rounded-2xl px-6 font-bold text-sm focus:outline-none focus:border-[#002D56] transition-all"
+                        className="w-full h-14 bg-slate-50 border-2 border-slate-100 rounded-md px-6 font-bold text-sm focus:outline-none focus:border-[#002D56] transition-all"
                       />
                     </div>
                     <div>
@@ -2958,13 +3107,13 @@ const handleAnalyzeDocument = async (docId: string) => {
                         name="password"
                         type="password"
                         required
-                        className="w-full h-14 bg-slate-50 border-2 border-slate-100 rounded-2xl px-6 font-bold text-sm focus:outline-none focus:border-[#002D56] transition-all"
+                        className="w-full h-14 bg-slate-50 border-2 border-slate-100 rounded-md px-6 font-bold text-sm focus:outline-none focus:border-[#002D56] transition-all"
                       />
                     </div>
                     <button 
                       type="submit"
                       disabled={isLoading}
-                      className="w-full h-14 bg-[#002D56] text-white rounded-2xl font-black text-sm uppercase tracking-[0.2em] shadow-xl hover:shadow-[#002D56]/30 transition-all active:scale-95 flex items-center justify-center"
+                      className="w-full h-14 bg-[#002D56] text-white rounded-md font-black text-sm uppercase tracking-[0.2em] shadow-xl hover:shadow-[#002D56]/30 transition-all active:scale-95 flex items-center justify-center"
                     >
                       {isLoading ? <Loader2 className="w-6 h-6 animate-spin" /> : (authMode === 'login' ? 'ĐĂNG NHẬP' : 'ĐĂNG KÝ')}
                     </button>
@@ -3087,7 +3236,7 @@ const handleAnalyzeDocument = async (docId: string) => {
 
   // --- MAIN APP LAYOUT (LOGGED IN) ---
   return (
-    <div className="min-h-screen bg-[#F1F5F9] flex font-sans text-slate-900 overflow-hidden">
+    <div className="h-dvh w-full bg-[#F1F5F9] flex font-sans text-slate-900 overflow-hidden">
       <Toaster position="top-right" />
 
       {/* Mobile Sidebar Overlay */}
@@ -3106,9 +3255,9 @@ const handleAnalyzeDocument = async (docId: string) => {
       {/* Sidebar Navigation */}
       <aside 
         className={cn(
-          "fixed inset-y-0 left-0 z-[50] bg-[#002D56] text-white transition-all duration-300 ease-in-out shadow-2xl flex flex-col",
+          "fixed inset-y-0 left-0 z-[50] bg-[#002D56] text-white transition-all duration-300 ease-in-out shadow-2xl flex flex-col w-[280px]",
           isSidebarCollapsed ? "md:w-20" : "md:w-72",
-          isSidebarOpen ? "translate-x-0 w-[280px]" : "-translate-x-full md:translate-x-0"
+          isSidebarOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"
         )}
       >
         {/* Sidebar Header / Logo */}
@@ -3118,7 +3267,7 @@ const handleAnalyzeDocument = async (docId: string) => {
         )}>
           {(!isSidebarCollapsed || isSidebarOpen) && (
             <div className="flex items-center gap-3 flex-1 min-w-0">
-              <div className="bg-white/10 p-2 rounded-xl backdrop-blur-md border border-white/20 shrink-0">
+              <div className="bg-white/10 p-2 rounded-md backdrop-blur-md border border-white/20 shrink-0">
                 <Ship className="text-white w-5 h-5 lg:w-6 lg:h-6" />
               </div>
               <motion.div 
@@ -3134,7 +3283,7 @@ const handleAnalyzeDocument = async (docId: string) => {
 
           {isSidebarCollapsed && !isSidebarOpen && (
             <div 
-              className="bg-white/10 p-2 rounded-xl backdrop-blur-md border border-white/20 shrink-0 cursor-pointer hover:bg-white/20 transition-all group"
+              className="bg-white/10 p-2 rounded-md backdrop-blur-md border border-white/20 shrink-0 cursor-pointer hover:bg-white/20 transition-all group"
               onClick={() => setIsSidebarCollapsed(false)}
               title="Mở rộng menu"
             >
@@ -3171,6 +3320,7 @@ const handleAnalyzeDocument = async (docId: string) => {
               { id: 'editor', label: 'Trợ lý biên tập', icon: Edit3 },
               { id: 'library', label: 'Kho tư liệu', icon: Database },
               { id: 'history', label: 'Lịch sử bài viết', icon: History },
+              { id: 'activity', label: 'Nhật ký hoạt động', icon: Clock },
               { id: 'settings', label: 'Cài đặt / Tài khoản', icon: Settings },
             ].map((item) => (
             <button
@@ -3184,7 +3334,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                 }
               }}
               className={cn(
-                "w-full flex items-center gap-3 px-4 py-3.5 rounded-2xl transition-all relative group",
+                "w-full flex items-center gap-3 px-4 py-3.5 rounded-md transition-all relative group",
                 activeTab === item.id 
                   ? "bg-white text-[#002D56] shadow-xl" 
                   : "text-white/70 hover:bg-white/10 hover:text-white"
@@ -3197,7 +3347,7 @@ const handleAnalyzeDocument = async (docId: string) => {
               )}
               {item.badge > 0 && (
                 <span className={cn(
-                  "absolute flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-black border-2 border-[#002D56]",
+                  "absolute flex h-5 w-5 items-center justify-center rounded-md text-[10px] font-black border-2 border-[#002D56]",
                   activeTab === item.id ? "bg-red-500 text-white -top-1 -right-1" : "bg-red-500 text-white top-2 right-2",
                   isSidebarCollapsed && activeTab !== item.id ? "top-1 right-1" : ""
                 )}>
@@ -3220,7 +3370,7 @@ const handleAnalyzeDocument = async (docId: string) => {
             <button 
               onClick={createNewSession}
               className={cn(
-                "w-full flex items-center gap-3 px-4 py-3.5 rounded-2xl bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500 hover:text-white transition-all group",
+                "w-full flex items-center gap-3 px-4 py-3.5 rounded-md bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500 hover:text-white transition-all group",
                 isSidebarCollapsed ? "justify-center" : ""
               )}
               title={isSidebarCollapsed ? "Bài viết mới" : ""}
@@ -3231,7 +3381,7 @@ const handleAnalyzeDocument = async (docId: string) => {
             <button 
               onClick={openCreateTask}
               className={cn(
-                "w-full flex items-center gap-3 px-4 py-3.5 rounded-2xl bg-blue-500/10 text-blue-400 hover:bg-blue-500 hover:text-white transition-all group",
+                "w-full flex items-center gap-3 px-4 py-3.5 rounded-md bg-blue-500/10 text-blue-400 hover:bg-blue-500 hover:text-white transition-all group",
                 isSidebarCollapsed ? "justify-center" : ""
               )}
               title={isSidebarCollapsed ? "Thêm việc" : ""}
@@ -3242,7 +3392,7 @@ const handleAnalyzeDocument = async (docId: string) => {
             <button 
               onClick={openAiTaskBuilder}
               className={cn(
-                "w-full flex items-center gap-3 px-4 py-3.5 rounded-2xl bg-orange-500/10 text-orange-400 hover:bg-orange-500 hover:text-white transition-all group",
+                "w-full flex items-center gap-3 px-4 py-3.5 rounded-md bg-orange-500/10 text-orange-400 hover:bg-orange-500 hover:text-white transition-all group",
                 isSidebarCollapsed ? "justify-center" : ""
               )}
               title={isSidebarCollapsed ? "Tạo công việc" : ""}
@@ -3256,8 +3406,8 @@ const handleAnalyzeDocument = async (docId: string) => {
         {/* User Profile / Status */}
         <div className="p-4 border-t border-white/10 shrink-0">
           {user ? (
-            <div className={cn("flex items-center gap-3 p-2 rounded-2xl bg-white/5 border border-white/10", isSidebarCollapsed ? "justify-center" : "")}>
-              <div className="w-8 h-8 rounded-xl bg-white/10 flex items-center justify-center text-xs font-black text-white shrink-0 border border-white/10 uppercase">
+            <div className={cn("flex items-center gap-3 p-2 rounded-md bg-white/5 border border-white/10", isSidebarCollapsed ? "justify-center" : "")}>
+              <div className="w-8 h-8 rounded-md bg-white/10 flex items-center justify-center text-xs font-black text-white shrink-0 border border-white/10 uppercase">
                 {profile?.avatarText || user.email?.[0]}
               </div>
               {!isSidebarCollapsed && (
@@ -3279,7 +3429,7 @@ const handleAnalyzeDocument = async (docId: string) => {
             <button 
               onClick={() => setActiveModal('auth')}
               className={cn(
-                "w-full flex items-center gap-3 px-4 py-3.5 rounded-2xl bg-white/10 text-white font-bold hover:bg-white/20 transition-all border border-white/10",
+                "w-full flex items-center gap-3 px-4 py-3.5 rounded-md bg-white/10 text-white font-bold hover:bg-white/20 transition-all border border-white/10",
                 isSidebarCollapsed ? "justify-center" : ""
               )}
             >
@@ -3314,7 +3464,7 @@ const handleAnalyzeDocument = async (docId: string) => {
         <div className="h-16 flex items-center px-4">
           <button 
             onClick={() => setIsSidebarOpen(true)}
-            className="p-2 hover:bg-white/10 rounded-xl transition-colors active:scale-95"
+            className="p-2 hover:bg-white/10 rounded-md transition-colors active:scale-95"
           >
             <Menu className="w-6 h-6" />
           </button>
@@ -3325,7 +3475,7 @@ const handleAnalyzeDocument = async (docId: string) => {
           {user ? (
             <button 
               onClick={() => { closeMobileDrawer(); setActiveModal('account'); }}
-              className="ml-auto w-8 h-8 rounded-xl bg-white/10 flex items-center justify-center border border-white/20 shrink-0"
+              className="ml-auto w-8 h-8 rounded-md bg-white/10 flex items-center justify-center border border-white/20 shrink-0"
             >
               <User className="w-4 h-4" />
             </button>
@@ -3343,7 +3493,7 @@ const handleAnalyzeDocument = async (docId: string) => {
       {/* Main Content Area */}
       <div 
         className={cn(
-          "flex-1 flex flex-col min-h-screen transition-all duration-300 ease-in-out min-w-0 overflow-x-hidden pt-16 md:pt-0",
+          "flex-1 flex flex-col h-dvh transition-all duration-300 ease-in-out min-w-0 overflow-x-hidden pt-16 md:pt-0",
           isSidebarCollapsed ? "md:ml-20" : "md:ml-72"
         )}
       >
@@ -3365,9 +3515,9 @@ const handleAnalyzeDocument = async (docId: string) => {
                     <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
                       <div>
                         <h2 className="text-xl sm:text-3xl font-black text-[#002D56] tracking-tight mb-1 sm:mb-2 leading-tight py-1">
-                          {getGreeting()}, {getUserDisplayName(user, profile)}!
+                          {getGreeting()}, {getUserDisplayName(user, profile).split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ')}!
                         </h2>
-                        <p className="text-slate-500 font-medium text-xs sm:text-base">Hệ thống sẵn sàng hỗ trợ bạn hoàn thành công việc.</p>
+                        <p className="text-slate-400 font-medium text-xs sm:text-base">Hệ thống sẵn sàng hỗ trợ bạn hoàn thành công việc.</p>
                       </div>
                     </div>
 
@@ -3384,14 +3534,14 @@ const handleAnalyzeDocument = async (docId: string) => {
                         <button 
                           key={i} 
                           onClick={stat.onClick}
-                          className="bg-white p-3 sm:p-5 rounded-[20px] sm:rounded-[24px] border border-slate-200 flex flex-col gap-2 shadow-sm hover:shadow-md transition-all group min-w-0 text-left cursor-pointer active:scale-95"
+                          className="bg-white p-3 sm:p-5 rounded-md lg:rounded-lg border border-slate-200 flex flex-col gap-2 shadow-sm hover:shadow-md transition-all group min-w-0 text-left cursor-pointer active:scale-95"
                         >
                           <div className={cn("p-1.5 sm:p-2 rounded-lg w-fit group-hover:scale-110 transition-transform shrink-0", stat.bg)}>
                             <stat.icon className={cn("w-3.5 h-3.5 sm:w-5 sm:h-5", stat.color)} />
                           </div>
                           <div className="min-w-0">
-                            <p className="text-[9px] sm:text-[11px] font-black text-slate-500 tracking-wider mb-0.5 leading-tight">{stat.label}</p>
-                            <p className="text-base sm:text-2xl font-black text-slate-800 leading-tight">{stat.value}</p>
+                            <p className="text-[10px] sm:text-[12px] font-bold text-slate-400 tracking-wide mb-1 leading-tight">{stat.label}</p>
+                            <p className="text-xl sm:text-3xl font-black text-slate-800 leading-tight">{stat.value}</p>
                           </div>
                         </button>
                       ))}
@@ -3400,7 +3550,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                     <div className="grid grid-cols-2 gap-4">
                        <button 
                         onClick={() => setActiveTab('history')}
-                        className="bg-white p-4 rounded-[24px] border border-slate-200 flex items-center justify-between shadow-sm hover:shadow-md transition-all active:scale-[0.98]"
+                        className="bg-white p-4 rounded-md border border-slate-200 flex items-center justify-between shadow-sm hover:shadow-md transition-all active:scale-[0.98]"
                        >
                           <div className="flex items-center gap-3">
                             <div className="p-2 bg-indigo-50 rounded-lg">
@@ -3412,7 +3562,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                        </button>
                        <button 
                         onClick={() => setActiveTab('library')}
-                        className="bg-white p-4 rounded-[24px] border border-slate-200 flex items-center justify-between shadow-sm hover:shadow-md transition-all active:scale-[0.98]"
+                        className="bg-white p-4 rounded-md border border-slate-200 flex items-center justify-between shadow-sm hover:shadow-md transition-all active:scale-[0.98]"
                        >
                           <div className="flex items-center gap-3">
                             <div className="p-2 bg-emerald-50 rounded-lg">
@@ -3428,9 +3578,9 @@ const handleAnalyzeDocument = async (docId: string) => {
                     <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
                       <button 
                         onClick={openCreateTask}
-                        className="p-4 sm:p-6 bg-[#002D56] text-white rounded-[24px] flex flex-col sm:flex-row items-center sm:items-start text-center sm:text-left gap-3 sm:gap-4 hover:shadow-xl transition-all group active:scale-95"
+                        className="p-4 sm:p-6 bg-[#002D56] text-white rounded-md flex flex-col sm:flex-row items-center sm:items-start text-center sm:text-left gap-3 sm:gap-4 hover:shadow-xl transition-all group active:scale-95"
                       >
-                        <div className="p-2 sm:p-3 bg-white/10 rounded-xl sm:rounded-2xl group-hover:bg-white/20 transition-colors shrink-0">
+                        <div className="p-2 sm:p-3 bg-white/10 rounded-md lg:rounded-lg group-hover:bg-white/20 transition-colors shrink-0">
                           <CheckSquare className="w-5 h-5 sm:w-6 sm:h-6" />
                         </div>
                         <div className="min-w-0">
@@ -3441,9 +3591,9 @@ const handleAnalyzeDocument = async (docId: string) => {
 
                       <button 
                         onClick={createNewSession}
-                        className="p-4 sm:p-6 bg-white border border-slate-200 rounded-[24px] flex flex-col sm:flex-row items-center sm:items-start text-center sm:text-left gap-3 sm:gap-4 hover:shadow-xl transition-all group active:scale-95"
+                        className="p-4 sm:p-6 bg-white border border-slate-200 rounded-md flex flex-col sm:flex-row items-center sm:items-start text-center sm:text-left gap-3 sm:gap-4 hover:shadow-xl transition-all group active:scale-95"
                       >
-                        <div className="p-2 sm:p-3 bg-emerald-100 rounded-xl sm:rounded-2xl group-hover:bg-emerald-200 transition-colors shrink-0">
+                        <div className="p-2 sm:p-3 bg-emerald-100 rounded-md lg:rounded-lg group-hover:bg-emerald-200 transition-colors shrink-0">
                           <Edit3 className="w-5 h-5 sm:w-6 sm:h-6 text-emerald-600" />
                         </div>
                         <div className="min-w-0">
@@ -3454,9 +3604,9 @@ const handleAnalyzeDocument = async (docId: string) => {
 
                       <button 
                         onClick={openAiTaskBuilder}
-                        className="p-4 sm:p-6 bg-white border border-slate-200 rounded-[24px] flex flex-col sm:flex-row items-center sm:items-start text-center sm:text-left gap-3 sm:gap-4 hover:shadow-xl transition-all group active:scale-95"
+                        className="p-4 sm:p-6 bg-white border border-slate-200 rounded-md flex flex-col sm:flex-row items-center sm:items-start text-center sm:text-left gap-3 sm:gap-4 hover:shadow-xl transition-all group active:scale-95"
                       >
-                        <div className="p-2 sm:p-3 bg-orange-100 rounded-xl sm:rounded-2xl group-hover:bg-orange-200 transition-colors shrink-0">
+                        <div className="p-2 sm:p-3 bg-orange-100 rounded-md lg:rounded-lg group-hover:bg-orange-200 transition-colors shrink-0">
                           <Target className="w-5 h-5 sm:w-6 sm:h-6 text-orange-600" />
                         </div>
                         <div className="min-w-0">
@@ -3469,11 +3619,11 @@ const handleAnalyzeDocument = async (docId: string) => {
                     {/* Lists Grid */}
                     <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
                       {/* Upcoming Tasks */}
-                      <div className="bg-white rounded-[32px] sm:rounded-[40px] border border-slate-200 overflow-hidden flex flex-col shadow-sm">
-                        <div className="p-8 border-b border-slate-100 flex items-center justify-between">
+                      <div className="bg-white rounded-md shadow-md overflow-hidden flex flex-col">
+                        <div className="p-8 border-b border-slate-50 flex items-center justify-between">
                           <div className="flex items-center gap-3">
                             <Clock className="w-5 h-5 text-[#002D56]" />
-                            <h3 className="font-black text-xs uppercase tracking-widest text-[#002D56]">Công việc gần hạn</h3>
+                            <h3 className="font-bold text-sm text-slate-800 tracking-wide">Công việc gần hạn</h3>
                           </div>
                           <button 
                             onClick={() => setActiveTab('tasks')}
@@ -3507,7 +3657,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                                 </div>
                                 <button 
                                   onClick={() => { closeMobileDrawer(); setEditingTask(task); setActiveModal('task-edit'); }}
-                                  className="p-2.5 rounded-xl border border-slate-200 text-slate-400 group-hover:border-[#002D56] group-hover:text-[#002D56] transition-all"
+                                  className="p-2.5 rounded-md border border-slate-200 text-slate-400 group-hover:border-[#002D56] group-hover:text-[#002D56] transition-all"
                                 >
                                   <ArrowLeft className="w-4 h-4 rotate-180" />
                                 </button>
@@ -3523,7 +3673,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                       </div>
 
                       {/* Recent Sessions */}
-                      <div className="bg-white rounded-[40px] border border-slate-200 overflow-hidden flex flex-col shadow-sm">
+                      <div className="bg-white rounded-md border border-slate-200 overflow-hidden flex flex-col shadow-sm">
                         <div className="p-8 border-b border-slate-100 flex items-center justify-between">
                           <div className="flex items-center gap-3">
                             <History className="w-5 h-5 text-[#002D56]" />
@@ -3587,7 +3737,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                   <button 
                     key={i} 
                     onClick={stat.onClick}
-                    className="bg-white p-5 rounded-[24px] border border-slate-200 flex flex-col gap-2 shadow-sm hover:shadow-md transition-all active:scale-[0.98] text-left"
+                    className="bg-white p-5 rounded-md border border-slate-200 flex flex-col gap-2 shadow-sm hover:shadow-md transition-all active:scale-[0.98] text-left"
                   >
                     <div className={cn("p-2 rounded-lg w-fit", stat.bg)}>
                       <stat.icon className={cn("w-4 h-4", stat.color)} />
@@ -3601,7 +3751,7 @@ const handleAnalyzeDocument = async (docId: string) => {
              </div>
 
                {/* Task List Header */}
-              <div className="flex flex-col gap-4 bg-white p-4 sm:p-6 rounded-[24px] sm:rounded-[32px] border border-slate-200">
+              <div className="flex flex-col gap-4 bg-white p-4 sm:p-6 rounded-md lg:rounded-lg border border-slate-200">
                  <div className="flex flex-row items-center justify-between gap-4">
                     <div className="flex items-center gap-3 px-1 min-w-0">
                        <LayoutDashboard className="w-5 h-5 text-[#002D56] shrink-0" />
@@ -3628,7 +3778,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                          });
                          setActiveModal('task-edit');
                       }}
-                      className="flex items-center gap-2 bg-[#002D56] text-white px-4 py-2 rounded-xl text-[10px] font-black shadow-lg hover:shadow-[#002D56]/20 transition-all active:scale-95 shrink-0"
+                      className="flex items-center gap-2 bg-[#002D56] text-white px-4 py-2 rounded-md text-[10px] font-black shadow-lg hover:shadow-[#002D56]/20 transition-all active:scale-95 shrink-0"
                     >
                       <Plus className="w-3.5 h-3.5" /> MỚI
                     </button>
@@ -3642,7 +3792,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                          placeholder="Tìm kiếm..."
                          value={taskFilters.search}
                          onChange={(e) => setTaskFilters(prev => ({ ...prev, search: e.target.value }))}
-                         className="pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-xs font-bold w-full focus:outline-none focus:ring-2 ring-[#002D56]/10"
+                         className="pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-md text-xs font-bold w-full focus:outline-none focus:ring-2 ring-[#002D56]/10"
                        />
                     </div>
                     
@@ -3650,7 +3800,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                       <select 
                         value={taskFilters.status}
                         onChange={(e) => setTaskFilters(prev => ({ ...prev, status: e.target.value }))}
-                        className="px-3 py-2 bg-white border border-slate-200 rounded-xl text-[10px] font-black uppercase tracking-tight shrink-0 focus:border-[#002D56] outline-none"
+                        className="px-3 py-2 bg-white border border-slate-200 rounded-md text-[10px] font-black uppercase tracking-tight shrink-0 focus:border-[#002D56] outline-none"
                       >
                         <option value="all">Trạng thái</option>
                         <option value="todo">Cần làm</option>
@@ -3664,7 +3814,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                       <select 
                         value={taskFilters.priority}
                         onChange={(e) => setTaskFilters(prev => ({ ...prev, priority: e.target.value }))}
-                        className="px-3 py-2 bg-white border border-slate-200 rounded-xl text-[10px] font-black uppercase tracking-tight shrink-0 focus:border-[#002D56] outline-none"
+                        className="px-3 py-2 bg-white border border-slate-200 rounded-md text-[10px] font-black uppercase tracking-tight shrink-0 focus:border-[#002D56] outline-none"
                       >
                         <option value="all">Ưu tiên</option>
                         <option value={HIGH_PRIORITY_FILTER}>Cao/khẩn</option>
@@ -3677,7 +3827,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                       <select 
                         value={taskFilters.category}
                         onChange={(e) => setTaskFilters(prev => ({ ...prev, category: e.target.value }))}
-                        className="px-3 py-2 bg-white border border-slate-200 rounded-xl text-[10px] font-black uppercase tracking-tight shrink-0 focus:border-[#002D56] outline-none"
+                        className="px-3 py-2 bg-white border border-slate-200 rounded-md text-[10px] font-black uppercase tracking-tight shrink-0 focus:border-[#002D56] outline-none"
                       >
                         <option value="all">Lĩnh vực</option>
                         {TASK_CATEGORIES.map(c => (
@@ -3689,7 +3839,7 @@ const handleAnalyzeDocument = async (docId: string) => {
               </div>
 
              {/* Tasks Table/List */}
-             <div className="bg-white rounded-[32px] sm:rounded-[40px] shadow-sm border border-slate-200 overflow-hidden">
+             <div className="bg-white rounded-md lg:rounded-lg shadow-sm border border-slate-200 overflow-hidden">
                 {/* Desktop View */}
                 <div className="hidden lg:block overflow-x-auto">
                    <table className="w-full text-left border-collapse">
@@ -3753,7 +3903,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                     <NoTasksMessage setTaskFilters={setTaskFilters} />
                   ) : (
                     filteredTasks.map(t => (
-                      <div key={t.id} className="bg-white border border-slate-200 rounded-3xl p-5 space-y-4 shadow-sm active:scale-[0.98] transition-all">
+                      <div key={t.id} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 shadow-sm active:scale-[0.98] transition-all">
                         <div className="flex items-start justify-between gap-4">
                           <div className="flex-1 min-w-0" onClick={() => { closeMobileDrawer(); setEditingTask(t); setActiveModal('task-edit'); }}>
                             <h3 className="text-sm font-black text-[#002D56] leading-tight mb-2 line-clamp-2 uppercase tracking-tight">{t.title}</h3>
@@ -3811,7 +3961,7 @@ const handleAnalyzeDocument = async (docId: string) => {
             {/* Sidebar: Controls & Sources */}
             <aside className="lg:col-span-4 xl:col-span-3 space-y-4 sm:space-y-6">
               {/* Task Types */}
-              <section className="bg-white rounded-3xl p-5 shadow-sm border border-slate-200">
+              <section className="bg-white rounded-lg p-5 shadow-sm border border-slate-200">
                 <div className="flex items-center gap-2 mb-4 px-1">
                   <Target className="w-4 h-4 text-[#002D56]" />
                   <h2 className="text-xs font-black text-slate-800 uppercase tracking-widest">Nhiệm vụ AI</h2>
@@ -3822,14 +3972,14 @@ const handleAnalyzeDocument = async (docId: string) => {
                       key={opt.id}
                       onClick={() => setTaskType(opt.id as TaskType)}
                       className={cn(
-                        "w-full flex items-center gap-3 p-3.5 rounded-2xl transition-all group text-left",
+                        "w-full flex items-center gap-3 p-3.5 rounded-md transition-all group text-left",
                         taskType === opt.id 
                           ? "bg-[#002D56] text-white shadow-xl scale-[1.02]" 
                           : "hover:bg-slate-50 text-slate-600"
                       )}
                     >
                       <div className={cn(
-                        "p-2 rounded-xl",
+                        "p-2 rounded-md",
                         taskType === opt.id ? "bg-white/10" : "bg-slate-100 group-hover:bg-white"
                       )}>
                         <opt.icon className="w-4 h-4" />
@@ -3846,7 +3996,7 @@ const handleAnalyzeDocument = async (docId: string) => {
               </section>
 
               {/* Output Format Selector */}
-              <section className="bg-white rounded-3xl p-5 shadow-sm border border-slate-200">
+              <section className="bg-white rounded-lg p-5 shadow-sm border border-slate-200">
                 <div className="flex items-center gap-2 mb-4 px-1">
                   <Type className="w-4 h-4 text-[#002D56]" />
                   <h2 className="text-xs font-black text-slate-800 uppercase tracking-widest">Loại kết quả</h2>
@@ -3855,7 +4005,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                   <select 
                     value={outputFormat}
                     onChange={(e) => setOutputFormat(e.target.value as OutputFormat)}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-[#002D56]"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-md px-4 py-3 text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-[#002D56]"
                   >
                     {formatOptions.map(opt => (
                       <option key={opt.id} value={opt.id}>{opt.label}</option>
@@ -3865,7 +4015,7 @@ const handleAnalyzeDocument = async (docId: string) => {
               </section>
 
               {/* Project Specific Sources */}
-              <section className="bg-white rounded-3xl p-5 shadow-sm border border-slate-200">
+              <section className="bg-white rounded-lg p-5 shadow-sm border border-slate-200">
                 <div className="flex flex-col xl:flex-row items-start xl:items-center justify-between gap-3 mb-4 px-1">
                   <div className="flex items-center gap-2 shrink-0">
                     <Files className="w-5 h-5 text-[#002D56]" />
@@ -3901,7 +4051,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                             initial={{ opacity: 0, y: -10, scale: 0.95 }}
                             animate={{ opacity: 1, y: 0, scale: 1 }}
                             exit={{ opacity: 0, y: -10, scale: 0.95 }}
-                            className="absolute right-0 top-full mt-2 w-80 bg-white rounded-2xl shadow-2xl border border-slate-200 p-4 z-50 ring-4 ring-[#002D56]/10"
+                            className="absolute right-0 top-full mt-2 w-80 bg-white rounded-md shadow-2xl border border-slate-200 p-4 z-50 ring-4 ring-[#002D56]/10"
                           >
                             <div className="flex items-center gap-2 mb-3">
                                <Globe className="w-3.5 h-3.5 text-[#002D56]" />
@@ -3915,13 +4065,13 @@ const handleAnalyzeDocument = async (docId: string) => {
                                  placeholder="VD: Quy định mớn nước luồng Lạch Huyện..."
                                  value={searchQuery}
                                  onChange={(e) => setSearchQuery(e.target.value)}
-                                 className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-[#002D56] font-medium"
+                                 className="flex-1 bg-slate-50 border border-slate-200 rounded-md px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-[#002D56] font-medium"
                                  onKeyDown={(e) => e.key === 'Enter' && handleWebSearch()}
                                />
                                <button 
                                  onClick={handleWebSearch}
                                  disabled={isLoading}
-                                 className="bg-[#002D56] text-white p-2 rounded-xl hover:bg-slate-900 disabled:opacity-50"
+                                 className="bg-[#002D56] text-white p-2 rounded-md hover:bg-slate-900 disabled:opacity-50"
                                >
                                  {isLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Search className="w-3.5 h-3.5" />}
                                </button>
@@ -3929,7 +4079,7 @@ const handleAnalyzeDocument = async (docId: string) => {
 
                             {searchResults && (
                               <div className="space-y-3 max-h-[300px] overflow-y-auto pr-1">
-                                 <p className="text-[11px] text-slate-600 font-medium leading-relaxed bg-blue-50 p-3 rounded-xl border border-blue-100 italic">
+                                 <p className="text-[11px] text-slate-600 font-medium leading-relaxed bg-blue-50 p-3 rounded-md border border-blue-100 italic">
                                     {searchResults.text.substring(0, 200)}...
                                  </p>
                                  <div className="space-y-2">
@@ -3938,7 +4088,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                                       const uri = chunk.web?.uri;
 
                                       return (
-                                        <div key={`web-chunk-${idx}`} className="group/res bg-slate-50 hover:bg-white p-3 rounded-xl border border-slate-100 hover:border-[#002D56] transition-all">
+                                        <div key={`web-chunk-${idx}`} className="group/res bg-slate-50 hover:bg-white p-3 rounded-md border border-slate-100 hover:border-[#002D56] transition-all">
                                           <div className="flex items-center gap-1.5 mb-1 opacity-60">
                                             <Globe className="w-2.5 h-2.5" />
                                             <span className="text-[8px] font-bold truncate">{uri ? getHostname(uri) : 'Nguồn Web'}</span>
@@ -3958,7 +4108,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                                          <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Tiến hành tóm tắt từ AI để làm nguồn...</p>
                                          <button 
                                             onClick={() => addSearchResultAsSource(`Tìm kiếm: ${searchQuery}`, searchResults.text)}
-                                            className="mt-3 bg-emerald-500 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-emerald-600"
+                                            className="mt-3 bg-emerald-500 text-white px-4 py-2 rounded-md text-[10px] font-black uppercase tracking-widest hover:bg-emerald-600"
                                          >
                                             Dùng kết quả này làm nguồn
                                          </button>
@@ -3994,7 +4144,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                             initial={{ opacity: 0, y: -10, scale: 0.95 }}
                             animate={{ opacity: 1, y: 0, scale: 1 }}
                             exit={{ opacity: 0, y: -10, scale: 0.95 }}
-                            className="absolute right-0 top-full mt-2 w-[280px] sm:w-72 bg-white rounded-xl shadow-2xl border border-slate-200 p-4 z-50 ring-4 ring-slate-900/5"
+                            className="absolute right-0 top-full mt-2 w-[280px] sm:w-72 bg-white rounded-md shadow-2xl border border-slate-200 p-4 z-50 ring-4 ring-slate-900/5"
                           >
                             <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 px-1">Dán văn bản nguồn</p>
                             <div className="flex flex-col gap-3">
@@ -4054,7 +4204,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                             initial={{ opacity: 0, y: -10, scale: 0.95 }}
                             animate={{ opacity: 1, y: 0, scale: 1 }}
                             exit={{ opacity: 0, y: -10, scale: 0.95 }}
-                            className="absolute right-0 top-full mt-2 w-[260px] sm:w-64 bg-white rounded-xl shadow-2xl border border-slate-200 p-3 z-50 ring-4 ring-slate-900/5"
+                            className="absolute right-0 top-full mt-2 w-[260px] sm:w-64 bg-white rounded-md shadow-2xl border border-slate-200 p-3 z-50 ring-4 ring-slate-900/5"
                           >
                             <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 px-1">Nhập địa chỉ Link</p>
                             <div className="flex flex-col gap-2">
@@ -4101,7 +4251,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                 
                 <div className="space-y-2 max-h-[300px] overflow-y-auto pr-1">
                   {selectedSourceDocIds.length === 0 ? (
-                    <div className="py-8 text-center bg-slate-50 rounded-2xl border-2 border-dashed border-slate-100 px-4">
+                    <div className="py-8 text-center bg-slate-50 rounded-md border-2 border-dashed border-slate-100 px-4">
                        <Database className="w-10 h-10 text-slate-100 mx-auto mb-4" />
                        <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest leading-relaxed">
                           Chưa chọn tài liệu nguồn cho AI. <br/> Hãy chọn từ Thư viện hoặc dán link.
@@ -4111,10 +4261,10 @@ const handleAnalyzeDocument = async (docId: string) => {
                     documents.filter(d => selectedSourceDocIds.includes(d.id)).map(doc => (
                       <div 
                         key={doc.id}
-                        className="flex items-center gap-3 p-3 rounded-2xl border bg-white border-emerald-200 shadow-sm transition-all"
+                        className="flex items-center gap-3 p-3 rounded-md border bg-white border-emerald-200 shadow-sm transition-all"
                       >
                          <div className={cn(
-                           "p-2 rounded-xl shrink-0",
+                           "p-2 rounded-md shrink-0",
                            doc.type === 'drive' ? "bg-slate-50 text-[#002D56]" : "bg-emerald-50 text-emerald-600"
                          )}>
                             {doc.driveIconUrl ? (
@@ -4145,10 +4295,10 @@ const handleAnalyzeDocument = async (docId: string) => {
             <div className="xl:col-span-9 space-y-6">
               
               {/* Input Area */}
-              <section className="bg-white rounded-[32px] shadow-sm border border-slate-200 overflow-hidden flex flex-col min-h-[400px]">
+              <section className="bg-white rounded-md shadow-sm border border-slate-200 overflow-hidden flex flex-col min-h-[400px]">
                 <div className="px-5 sm:px-6 py-4 sm:py-5 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
                   <div className="flex items-center gap-3">
-                    <div className="p-2 sm:p-2.5 bg-[#002D56] rounded-xl shadow-lg shadow-[#002D56]/10">
+                    <div className="p-2 sm:p-2.5 bg-[#002D56] rounded-md shadow-lg shadow-[#002D56]/10">
                       <Edit3 className="w-4 h-4 sm:w-5 sm:h-5 text-white" />
                     </div>
                     <div>
@@ -4162,14 +4312,14 @@ const handleAnalyzeDocument = async (docId: string) => {
                   </div>
                   <div className="flex items-center gap-2 sm:gap-3">
                     {isParsing && (
-                       <span className="text-[9px] font-black text-amber-600 animate-pulse flex items-center gap-1.5 bg-amber-50 px-3 py-1.5 rounded-full border border-amber-200 uppercase tracking-widest">
+                       <span className="text-[9px] font-black text-amber-600 animate-pulse flex items-center gap-1.5 bg-amber-50 px-3 py-1.5 rounded-md border border-amber-200 uppercase tracking-widest">
                          <Loader2 className="w-3 h-3 animate-spin" /> 
                          Parsing...
                        </span>
                     )}
                     <button 
                       onClick={() => { setInput(''); setOutput(''); setError(null); }}
-                      className="text-slate-300 hover:text-red-500 p-2 sm:p-2.5 rounded-xl transition-all hover:bg-red-50"
+                      className="text-slate-300 hover:text-red-500 p-2 sm:p-2.5 rounded-md transition-all hover:bg-red-50"
                       title="Làm mới vùng biên tập"
                     >
                       <Trash2 className="w-4 h-4 sm:w-5 sm:h-5" />
@@ -4207,7 +4357,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                       disabled={(!input.trim() && selectedSourceDocIds.length === 0) || isLoading || isParsing || isBuildingTasks}
                       onClick={taskType === 'TASK_BUILDER' ? handleBuildTasks : handleProcess}
                       className={cn(
-                        "w-full sm:w-auto flex items-center justify-center gap-2 px-8 py-3.5 rounded-2xl font-black text-[13px] uppercase tracking-widest transition-all duration-300 shadow-xl active:scale-95 pointer-events-auto shrink-0",
+                        "w-full sm:w-auto flex items-center justify-center gap-2 px-8 py-3.5 rounded-md font-black text-[13px] uppercase tracking-widest transition-all duration-300 shadow-xl active:scale-95 pointer-events-auto shrink-0",
                         ((!input.trim() && selectedSourceDocIds.length === 0) || isLoading || isParsing || isBuildingTasks)
                           ? "bg-slate-200 text-slate-500 cursor-not-allowed shadow-none"
                           : "bg-[#002D56] text-white hover:bg-slate-900 shadow-[#002D56]/30 hover:shadow-2xl"
@@ -4247,11 +4397,11 @@ const handleAnalyzeDocument = async (docId: string) => {
                     initial={{ opacity: 0, y: 30 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: 30 }}
-                    className="bg-white rounded-[40px] shadow-2xl border-2 border-slate-100 overflow-hidden"
+                    className="bg-white rounded-md shadow-2xl border-2 border-slate-100 overflow-hidden"
                   >
                     <div className="px-6 sm:px-8 py-6 bg-slate-50 border-b border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-6">
                       <div className="flex items-center gap-4 w-full sm:w-auto">
-                        <div className="bg-[#002D56] p-3 rounded-2xl shadow-lg shrink-0">
+                        <div className="bg-[#002D56] p-3 rounded-md shadow-lg shrink-0">
                           <Target className="text-white w-6 h-6" />
                         </div>
                         <div>
@@ -4265,20 +4415,20 @@ const handleAnalyzeDocument = async (docId: string) => {
                              const allSelected = (builtTasks as any[]).every(t => t.selected);
                              setBuiltTasks(prev => prev.map(t => ({ ...t, selected: !allSelected })));
                           }}
-                          className="bg-slate-100 text-slate-600 px-4 py-3 rounded-xl font-bold text-[10px] sm:text-xs uppercase tracking-widest hover:bg-slate-200 transition-all whitespace-nowrap"
+                          className="bg-slate-100 text-slate-600 px-4 py-3 rounded-md font-bold text-[10px] sm:text-xs uppercase tracking-widest hover:bg-slate-200 transition-all whitespace-nowrap"
                         >
                           {(builtTasks as any[]).every(t => t.selected) ? 'Bỏ chọn hết' : 'Chọn tất cả'}
                         </button>
                         <button 
                           onClick={() => setBuiltTasks([])}
-                          className="bg-red-50 text-red-500 p-3 rounded-xl hover:bg-red-100 transition-all shrink-0"
+                          className="bg-red-50 text-red-500 p-3 rounded-md hover:bg-red-100 transition-all shrink-0"
                         >
                           <Trash2 className="w-5 h-5" />
                         </button>
                         <button 
                           onClick={saveBuiltTasks}
                           disabled={isBuildingTasks}
-                          className="bg-emerald-500 text-white px-6 py-3 rounded-xl font-black text-[10px] sm:text-xs uppercase tracking-widest hover:bg-emerald-600 transition-all flex items-center justify-center gap-2 shrink-0 flex-1 sm:flex-initial"
+                          className="bg-emerald-500 text-white px-6 py-3 rounded-md font-black text-[10px] sm:text-xs uppercase tracking-widest hover:bg-emerald-600 transition-all flex items-center justify-center gap-2 shrink-0 flex-1 sm:flex-initial"
                         >
                           <Save className="w-4 h-4" /> Lưu đã chọn
                         </button>
@@ -4287,7 +4437,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                     
                     <div className="p-4 sm:p-8 grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 bg-slate-50/50">
                       {(builtTasks as any[]).map((task, idx) => (
-                        <div key={task.id} className={`bg-white p-6 rounded-[32px] shadow-sm border transition-all relative ${task.selected ? 'border-[#002D56] shadow-md ring-4 ring-[#002D56]/5' : 'border-slate-200 shadow-slate-200/50'}`}>
+                        <div key={task.id} className={`bg-white p-6 rounded-md shadow-sm border transition-all relative ${task.selected ? 'border-[#002D56] shadow-md ring-4 ring-[#002D56]/5' : 'border-slate-200 shadow-slate-200/50'}`}>
                           <div className="absolute top-6 left-6 z-10 flex items-center gap-3">
                             <input 
                               type="checkbox"
@@ -4303,7 +4453,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                                 <select 
                                   value={task.categoryCode}
                                   onChange={(e) => setBuiltTasks(prev => prev.map(t => t.id === task.id ? { ...t, categoryCode: e.target.value } : t))}
-                                  className="bg-blue-50 text-[#002D56] text-[9px] font-black uppercase tracking-widest px-3 py-1 rounded-full border-none focus:ring-1 focus:ring-blue-300 outline-none cursor-pointer"
+                                  className="bg-blue-50 text-[#002D56] text-[9px] font-black uppercase tracking-widest px-3 py-1 rounded-md border-none focus:ring-1 focus:ring-blue-300 outline-none cursor-pointer"
                                 >
                                   {TASK_CATEGORIES.map(c => (
                                     <option key={c.code} value={c.code}>{c.name}</option>
@@ -4313,7 +4463,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                                     value={task.priority}
                                     onChange={(e) => setBuiltTasks(prev => prev.map(t => t.id === task.id ? { ...t, priority: e.target.value as any } : t))}
                                     className={cn(
-                                      "text-[9px] font-black uppercase tracking-widest px-3 py-1 rounded-full border-none outline-none cursor-pointer",
+                                      "text-[9px] font-black uppercase tracking-widest px-3 py-1 rounded-md border-none outline-none cursor-pointer",
                                       task.priority === 'urgent' ? "bg-red-50 text-red-600" :
                                       task.priority === 'high' ? "bg-orange-50 text-orange-600" :
                                       "bg-slate-100 text-slate-500"
@@ -4341,14 +4491,14 @@ const handleAnalyzeDocument = async (docId: string) => {
                                       setBuiltTasks(prev => prev.filter(t => t.id !== task.id));
                                     }
                                   }}
-                                  className="text-emerald-500 hover:bg-emerald-50 p-2 rounded-xl transition-all shadow-sm active:scale-95"
+                                  className="text-emerald-500 hover:bg-emerald-50 p-2 rounded-md transition-all shadow-sm active:scale-95"
                                   title="Lưu riêng nhiệm vụ này"
                                 >
                                   <Check className="w-5 h-5" />
                                 </button>
                                 <button 
                                   onClick={() => setBuiltTasks(prev => prev.filter(t => t.id !== task.id))}
-                                  className="text-slate-300 hover:text-red-500 transition-all p-2 rounded-xl active:scale-95"
+                                  className="text-slate-300 hover:text-red-500 transition-all p-2 rounded-md active:scale-95"
                                 >
                                   <Trash2 className="w-4 h-4" />
                                 </button>
@@ -4357,7 +4507,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                           
                           <div className="space-y-4">
                             <div className="grid grid-cols-2 gap-4">
-                               <div className="space-y-1.5 p-3 bg-slate-50 rounded-2xl border border-slate-100">
+                               <div className="space-y-1.5 p-3 bg-slate-50 rounded-md border border-slate-100">
                                   <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
                                     <User className="w-3 h-3" /> Phụ trách
                                   </label>
@@ -4368,7 +4518,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                                     className="w-full bg-transparent border-none p-0 text-xs font-black text-[#002D56] uppercase tracking-tight focus:ring-0 focus:outline-none placeholder:text-slate-300"
                                   />
                                </div>
-                               <div className="space-y-1.5 p-3 bg-slate-50 rounded-2xl border border-slate-100">
+                               <div className="space-y-1.5 p-3 bg-slate-50 rounded-md border border-slate-100">
                                   <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
                                     <Calendar className="w-3 h-3" /> Hạn xử lý
                                   </label>
@@ -4380,7 +4530,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                                   />
                                </div>
                             </div>
-                            <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                            <div className="p-4 bg-slate-50 rounded-md border border-slate-100">
                                <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 block">Chi tiết nghiệp vụ</label>
                                <textarea 
                                  value={task.description}
@@ -4418,7 +4568,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                     initial={{ opacity: 0, scale: 0.95 }}
                     animate={{ opacity: 1, scale: 1 }}
                     exit={{ opacity: 0, scale: 0.95 }}
-                    className="bg-red-50 border-2 border-red-100 text-red-600 p-5 rounded-[24px] flex items-start gap-4 shadow-sm"
+                    className="bg-red-50 border-2 border-red-100 text-red-600 p-5 rounded-md flex items-start gap-4 shadow-sm"
                   >
                     <AlertCircle className="w-6 h-6 flex-shrink-0" />
                     <div className="flex-1">
@@ -4437,7 +4587,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                     ref={outputRef}
                     initial={{ opacity: 0, y: 30 }}
                     animate={{ opacity: 1, y: 0 }}
-                    className="bg-white rounded-[40px] shadow-2xl border-2 border-slate-100 overflow-hidden"
+                    className="bg-white rounded-md shadow-2xl border-2 border-slate-100 overflow-hidden"
                   >
                     <div className="px-5 sm:px-8 py-5 border-b border-slate-100 flex flex-col gap-4 bg-slate-50/30">
                       <div className="flex items-center justify-between">
@@ -4449,7 +4599,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                                  <button 
                                    onClick={() => setIsEditing(!isEditing)}
                                    className={cn(
-                                     "text-[10px] font-black px-3 py-1.5 rounded-xl transition-all flex items-center gap-2 uppercase tracking-tight",
+                                     "text-[10px] font-black px-3 py-1.5 rounded-md transition-all flex items-center gap-2 uppercase tracking-tight",
                                      isEditing ? "bg-[#002D56] text-white shadow-lg" : "bg-white border border-slate-200 text-[#002D56] hover:bg-slate-50"
                                    )}
                                  >
@@ -4469,7 +4619,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                            <button 
                               onClick={handleCopy}
                               className={cn(
-                                "p-2.5 rounded-xl transition-all shadow-sm active:scale-90 border",
+                                "p-2.5 rounded-md transition-all shadow-sm active:scale-90 border",
                                 copySuccess 
                                   ? "bg-emerald-600 text-white border-emerald-500" 
                                   : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
@@ -4484,7 +4634,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                                  saveCurrentToSession();
                                  setIsEditing(false);
                                }}
-                               className="p-2.5 rounded-xl bg-emerald-600 text-white shadow-lg shadow-emerald-200 active:scale-90 border border-emerald-500"
+                               className="p-2.5 rounded-md bg-emerald-600 text-white shadow-lg shadow-emerald-200 active:scale-90 border border-emerald-500"
                                title="Lưu phiên bản"
                              >
                                <Save className="w-4 h-4" />
@@ -4504,7 +4654,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                         <button 
                           onClick={handleLocalIllustrationScan}
                           disabled={isLoading || isPlanningImages || !output}
-                          className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-[10px] font-black border-2 border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100 transition-all active:scale-95 disabled:opacity-50 uppercase tracking-widest shrink-0"
+                          className="flex items-center gap-2 px-4 py-2.5 rounded-md text-[10px] font-black border-2 border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100 transition-all active:scale-95 disabled:opacity-50 uppercase tracking-widest shrink-0"
                         >
                           <Search className="w-3.5 h-3.5 text-amber-600" />
                           QUÉT VỊ TRÍ HÌNH
@@ -4513,7 +4663,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                         <button 
                           onClick={handleAIIllustrationSuggestions}
                           disabled={isLoading || isPlanningImages || !output}
-                          className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-[10px] font-black border-2 border-blue-100 text-[#002D56] hover:bg-[#002D56]/5 transition-all active:scale-95 disabled:opacity-50 uppercase tracking-widest shrink-0 bg-white"
+                          className="flex items-center gap-2 px-4 py-2.5 rounded-md text-[10px] font-black border-2 border-blue-100 text-[#002D56] hover:bg-[#002D56]/5 transition-all active:scale-95 disabled:opacity-50 uppercase tracking-widest shrink-0 bg-white"
                         >
                           <Sparkles className="w-3.5 h-3.5 text-blue-500" />
                           GỢI Ý BẰNG AI
@@ -4532,7 +4682,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                             input.click();
                           }}
                           disabled={isLoading || !output}
-                          className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-[10px] font-black bg-[#002D56] text-white hover:bg-slate-900 transition-all active:scale-95 disabled:opacity-50 shadow-md uppercase tracking-widest shrink-0"
+                          className="flex items-center gap-2 px-4 py-2.5 rounded-md text-[10px] font-black bg-[#002D56] text-white hover:bg-slate-900 transition-all active:scale-95 disabled:opacity-50 shadow-md uppercase tracking-widest shrink-0"
                         >
                           <FileUp className="w-4 h-4" />
                           TẢI ẢNH TỰ DO
@@ -4545,7 +4695,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                             if (window.innerWidth >= 1024) window.scrollTo({ top: 0, behavior: 'smooth' });
                           }}
                           disabled={isLoading || !output}
-                          className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-[10px] font-black bg-indigo-50 text-indigo-600 border border-indigo-200 hover:bg-indigo-100 transition-all active:scale-95 disabled:opacity-50 uppercase tracking-widest shrink-0"
+                          className="flex items-center gap-2 px-4 py-2.5 rounded-md text-[10px] font-black bg-indigo-50 text-indigo-600 border border-indigo-200 hover:bg-indigo-100 transition-all active:scale-95 disabled:opacity-50 uppercase tracking-widest shrink-0"
                         >
                           <CheckCircle2 className="w-4 h-4" />
                           TẠO TASK
@@ -4563,11 +4713,24 @@ const handleAnalyzeDocument = async (docId: string) => {
                             try {
                               toast("Tính năng xuất PDF dạng văn bản (text searchable) đang được nâng cấp ở server. Hệ thống sẽ tạm xuất file dạng hình ảnh (Visual Snapshot).", { icon: "ℹ️", duration: 5000 });
                               await exportVisualSnapshotPDF('printable-article', `Bai_viet_HTMB_${Date.now()}`);
+                              
+                              if (currentSessionId) {
+                                await logActivity({
+                                   module: 'editorial',
+                                   action: 'exported',
+                                   entityType: 'editorial_session',
+                                   entityId: currentSessionId,
+                                   entityTitle: (sessions.find(s => s.id === currentSessionId)?.title) || 'Bài viết',
+                                   title: 'Xuất PDF',
+                                   summary: 'Đã xuất bài viết ra định dạng PDF (Visual Snapshot).',
+                                   metadata: { exportFormat: 'pdf', source: 'client' }
+                                });
+                              }
                             } catch (err: any) {
                               setError(err.message);
                             }
                           }}
-                          className="flex items-center gap-2 p-2.5 rounded-xl bg-white text-red-600 border border-red-100 hover:bg-red-50 transition-all shrink-0 active:scale-95"
+                          className="flex items-center gap-2 p-2.5 rounded-md bg-white text-red-600 border border-red-100 hover:bg-red-50 transition-all shrink-0 active:scale-95"
                           title="Xuất PDF"
                         >
                           <FileDown className="w-4 h-4" />
@@ -4590,11 +4753,24 @@ const handleAnalyzeDocument = async (docId: string) => {
                                 `Bai_viet_HTMB_${Date.now()}`, 
                                 illustrations
                               );
+                              
+                              if (currentSessionId) {
+                                await logActivity({
+                                   module: 'editorial',
+                                   action: 'exported',
+                                   entityType: 'editorial_session',
+                                   entityId: currentSessionId,
+                                   entityTitle: (sessions.find(s => s.id === currentSessionId)?.title) || 'Bài viết',
+                                   title: 'Xuất Word',
+                                   summary: 'Đã xuất bài viết ra định dạng Word (DOCX).',
+                                   metadata: { exportFormat: 'docx', source: 'client' }
+                                });
+                              }
                             } catch (err: any) {
                               setError(err.message);
                             }
                           }}
-                          className="flex items-center gap-2 p-2.5 rounded-xl bg-white text-blue-600 border border-blue-100 hover:bg-blue-50 transition-all shrink-0 active:scale-95"
+                          className="flex items-center gap-2 p-2.5 rounded-md bg-white text-blue-600 border border-blue-100 hover:bg-blue-50 transition-all shrink-0 active:scale-95"
                           title="Xuất Word"
                         >
                           <FileText className="w-4 h-4" />
@@ -4605,10 +4781,10 @@ const handleAnalyzeDocument = async (docId: string) => {
 
                     {/* Illustration Progress / Dashboard - MOVED OUT OF PRINTABLE AREA */}
                     { (illustrations.length > 0 || imagePlans.length > 0) && (
-                      <div className="mx-8 md:mx-12 mt-8 p-8 bg-slate-50 border-2 border-slate-100 rounded-[40px]">
+                      <div className="mx-8 md:mx-12 mt-8 p-8 bg-slate-50 border-2 border-slate-100 rounded-md">
                         <div className="flex flex-col sm:flex-row items-center justify-between gap-6 mb-8">
                           <div className="flex items-center gap-4 w-full sm:w-auto">
-                            <div className="bg-[#002D56] p-3 rounded-2xl shadow-lg shrink-0">
+                            <div className="bg-[#002D56] p-3 rounded-md shadow-lg shrink-0">
                               <ImageIcon className="w-6 h-6 text-white" />
                             </div>
                             <div>
@@ -4620,17 +4796,17 @@ const handleAnalyzeDocument = async (docId: string) => {
                             {illustrations.some(img => img.reviewStatus === 'suggested' && img.status === 'ready') && (
                               <button 
                                 onClick={approveAllValidIllustrations}
-                                className="flex-1 sm:flex-initial bg-emerald-500/10 text-emerald-600 px-5 py-2.5 rounded-2xl font-black text-[10px] uppercase tracking-wider hover:bg-emerald-500 hover:text-white transition-all flex items-center justify-center gap-2 whitespace-nowrap"
+                                className="flex-1 sm:flex-initial bg-emerald-500/10 text-emerald-600 px-5 py-2.5 rounded-md font-black text-[10px] uppercase tracking-wider hover:bg-emerald-500 hover:text-white transition-all flex items-center justify-center gap-2"
                               >
-                                <CheckCircle className="w-4 h-4" /> Duyệt tất cả
+                                <CheckCircle className="w-4 h-4 shrink-0" /> Duyệt tất cả
                               </button>
                             )}
                             {illustrations.some(img => img.status === 'error' || img.qualityStatus === 'failed' || img.reviewStatus === 'rejected') && (
                               <button 
                                 onClick={clearErrorImages}
-                                className="flex-1 sm:flex-initial bg-red-500/10 text-red-600 px-5 py-2.5 rounded-2xl font-black text-[10px] uppercase tracking-wider hover:bg-red-500 hover:text-white transition-all flex items-center justify-center gap-2 whitespace-nowrap"
+                                className="flex-1 sm:flex-initial bg-red-500/10 text-red-600 px-5 py-2.5 rounded-md font-black text-[10px] uppercase tracking-wider hover:bg-red-500 hover:text-white transition-all flex items-center justify-center gap-2"
                               >
-                                <Trash2 className="w-4 h-4" /> Dọn ảnh lỗi/loại
+                                <Trash2 className="w-4 h-4 shrink-0" /> Dọn ảnh loại
                               </button>
                             )}
                           </div>
@@ -4648,9 +4824,9 @@ const handleAnalyzeDocument = async (docId: string) => {
                                    const hasImage = illustrations.some(img => img.planId === plan.id);
                                    if (hasImage) return null;
                                    return (
-                                     <div key={plan.id} className="bg-white p-5 rounded-[32px] border-2 border-slate-100 shadow-sm hover:shadow-md transition-all group border-dashed">
+                                     <div key={plan.id} className="bg-white p-5 rounded-md border-2 border-slate-100 shadow-sm hover:shadow-md transition-all group border-dashed">
                                         <div className="flex items-start justify-between mb-4">
-                                           <div className="w-10 h-10 rounded-2xl bg-amber-50 flex items-center justify-center font-black text-amber-600 text-xs">
+                                           <div className="w-10 h-10 rounded-md bg-amber-50 flex items-center justify-center font-black text-amber-600 text-xs">
                                               P{plan.paragraphIndex}
                                            </div>
                                            <button 
@@ -4664,7 +4840,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                                                };
                                                input.click();
                                              }}
-                                             className="w-10 h-10 rounded-2xl bg-[#002D56] text-white flex items-center justify-center hover:bg-slate-900 transition-all shadow-md group-hover:scale-110 active:scale-95"
+                                             className="w-10 h-10 rounded-md bg-[#002D56] text-white flex items-center justify-center hover:bg-slate-900 transition-all shadow-md group-hover:scale-110 active:scale-95"
                                              title="Tải ảnh cho vị trí này"
                                            >
                                               <FileUp className="w-5 h-5" />
@@ -4679,13 +4855,13 @@ const handleAnalyzeDocument = async (docId: string) => {
                                    );
                                  })}
                                  {imagePlans.every(plan => illustrations.some(img => img.planId === plan.id)) && imagePlans.length > 0 && (
-                                   <div className="col-span-full py-8 text-center bg-white rounded-[32px] border-2 border-emerald-50 border-dashed">
+                                   <div className="col-span-full py-8 text-center bg-white rounded-md border-2 border-emerald-50 border-dashed">
                                        <CheckCircle className="w-10 h-10 text-emerald-300 mx-auto mb-3" />
                                        <p className="text-xs font-bold text-emerald-600 uppercase tracking-widest">Tất cả vị trí kế hoạch đã được đăng tải ảnh</p>
                                    </div>
                                  )}
                                  {imagePlans.length === 0 && (
-                                   <div className="col-span-full py-8 text-center bg-white/50 rounded-[32px] border-2 border-slate-100 border-dashed">
+                                   <div className="col-span-full py-8 text-center bg-white/50 rounded-md border-2 border-slate-100 border-dashed">
                                        <p className="text-xs font-bold text-slate-300 uppercase tracking-widest italic">Bấm "LẬP KẾ HOẠCH HÌNH" để AI đề xuất các vị trí cần minh họa</p>
                                    </div>
                                  )}
@@ -4700,20 +4876,20 @@ const handleAnalyzeDocument = async (docId: string) => {
                               </div>
                               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
                                  {illustrations.filter(img => img.reviewStatus === 'suggested').map((img, idx) => (
-                                   <div key={`${img.id}-${idx}`} className="bg-white p-4 rounded-[32px] border-2 border-blue-50 shadow-sm relative group overflow-hidden">
-                                      <div className="aspect-video rounded-2xl overflow-hidden mb-4 relative">
+                                   <div key={`${img.id}-${idx}`} className="bg-white p-4 rounded-md border-2 border-blue-50 shadow-sm relative group overflow-hidden">
+                                      <div className="aspect-video rounded-md overflow-hidden mb-4 relative">
                                          <img src={img.url} alt={img.caption} className="w-full h-full object-cover" />
                                          <div className="absolute inset-0 bg-blue-600/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-3">
                                             <button 
                                               onClick={() => approveIllustration(img.id)}
-                                              className="w-10 h-10 bg-emerald-500 text-white rounded-2xl shadow-xl flex items-center justify-center hover:scale-110 active:scale-95 transition-all"
+                                              className="w-10 h-10 bg-emerald-500 text-white rounded-md shadow-xl flex items-center justify-center hover:scale-110 active:scale-95 transition-all"
                                               title="Duyệt ảnh"
                                             >
                                                <Check className="w-5 h-5" />
                                             </button>
                                             <button 
                                               onClick={() => rejectIllustration(img.id)}
-                                              className="w-10 h-10 bg-red-500 text-white rounded-2xl shadow-xl flex items-center justify-center hover:scale-110 active:scale-95 transition-all"
+                                              className="w-10 h-10 bg-red-500 text-white rounded-md shadow-xl flex items-center justify-center hover:scale-110 active:scale-95 transition-all"
                                               title="Từ chối"
                                             >
                                                <X className="w-5 h-5" />
@@ -4730,7 +4906,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                                    </div>
                                  ))}
                                  {illustrations.filter(img => img.reviewStatus === 'suggested').length === 0 && (
-                                   <div className="col-span-full py-8 text-center text-slate-300 font-bold uppercase text-[10px] tracking-widest border-2 border-slate-100 border-dashed rounded-[32px]">
+                                   <div className="col-span-full py-8 text-center text-slate-300 font-bold uppercase text-[10px] tracking-widest border-2 border-slate-100 border-dashed rounded-md">
                                       Không có ảnh chờ duyệt
                                    </div>
                                  )}
@@ -4745,16 +4921,16 @@ const handleAnalyzeDocument = async (docId: string) => {
                               </div>
                               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
                                  {illustrations.filter(img => img.reviewStatus === 'approved').map((img, idx) => (
-                                   <div key={`${img.id}-${idx}`} className="bg-white p-4 rounded-[32px] border-2 border-emerald-50 shadow-sm relative group overflow-hidden">
-                                      <div className="aspect-video rounded-2xl overflow-hidden mb-4 relative">
+                                   <div key={`${img.id}-${idx}`} className="bg-white p-4 rounded-md border-2 border-emerald-50 shadow-sm relative group overflow-hidden">
+                                      <div className="aspect-video rounded-md overflow-hidden mb-4 relative">
                                          <img src={img.url} alt={img.caption} className="w-full h-full object-cover" />
-                                         <div className="absolute top-2 right-2 bg-emerald-500 text-white p-1.5 rounded-xl shadow-lg">
+                                         <div className="absolute top-2 right-2 bg-emerald-500 text-white p-1.5 rounded-md shadow-lg">
                                             <Check className="w-3 h-3" />
                                          </div>
                                          <div className="absolute inset-0 bg-emerald-900/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-3">
                                             <button 
                                               onClick={() => rejectIllustration(img.id)}
-                                              className="w-10 h-10 bg-white text-red-500 rounded-2xl shadow-xl flex items-center justify-center hover:scale-110 active:scale-95 transition-all"
+                                              className="w-10 h-10 bg-white text-red-500 rounded-md shadow-xl flex items-center justify-center hover:scale-110 active:scale-95 transition-all"
                                               title="Hủy duyệt"
                                             >
                                                <X className="w-5 h-5" />
@@ -4769,7 +4945,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                                    </div>
                                  ))}
                                   {illustrations.filter(img => img.reviewStatus === 'approved').length === 0 && (
-                                   <div className="col-span-full py-8 text-center text-slate-300 font-bold uppercase text-[10px] tracking-widest border-2 border-slate-100 border-dashed rounded-[32px]">
+                                   <div className="col-span-full py-8 text-center text-slate-300 font-bold uppercase text-[10px] tracking-widest border-2 border-slate-100 border-dashed rounded-md">
                                       Chưa có ảnh nào được duyệt
                                    </div>
                                  )}
@@ -4786,14 +4962,14 @@ const handleAnalyzeDocument = async (docId: string) => {
                           <textarea 
                             value={output}
                             onChange={(e) => setOutput(e.target.value)}
-                            className="w-full h-[600px] p-6 bg-slate-50 border-2 border-dashed border-slate-200 rounded-3xl text-lg leading-relaxed font-serif focus:outline-none focus:border-[#002D56] transition-all"
+                            className="w-full h-[600px] p-6 bg-slate-50 border-2 border-dashed border-slate-200 rounded-lg text-lg leading-relaxed font-serif focus:outline-none focus:border-[#002D56] transition-all"
                           />
                         ) : (
                           <ReactMarkdown
                             components={{
                               h1: ({node, ...props}) => <h1 className="text-3xl md:text-5xl font-black text-[#002D56] mb-8 leading-tight tracking-tighter uppercase" {...props} />,
                               h2: ({node, ...props}) => <h2 className="text-2xl md:text-3xl mt-14 mb-6 pb-4 border-b-4 border-[#002D56]/10 font-black" {...props} />,
-                              h3: ({node, ...props}) => <h3 className="text-xl font-bold text-slate-800 mt-10 mb-4 flex items-center gap-3 bg-slate-50 p-4 rounded-2xl border-l-8 border-[#002D56]" {...props} />,
+                              h3: ({node, ...props}) => <h3 className="text-xl font-bold text-slate-800 mt-10 mb-4 flex items-center gap-3 bg-slate-50 p-4 rounded-md border-l-8 border-[#002D56]" {...props} />,
                               p: ({node, children, ...props}) => {
                                 return <p className="mb-8 text-justify" {...props}>{children}</p>
                               },
@@ -4816,7 +4992,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                                       src={src} 
                                       alt={alt || 'Hình minh họa'} 
                                       className={cn(
-                                        "rounded-[32px] shadow-2xl border-4 border-white mx-auto w-full transition-all",
+                                        "rounded-md shadow-2xl border-4 border-white mx-auto w-full transition-all",
                                         meta?.reviewStatus === 'suggested' && "opacity-75 grayscale-[20%] ring-8 ring-[#002D56]/10"
                                       )}
                                       onLoad={() => meta && updateImageLoadStatus(meta.id, 'loaded')}
@@ -4824,7 +5000,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                                       {...props} 
                                     />
                                     {meta?.reviewStatus === 'suggested' && (
-                                      <div className="absolute top-6 left-6 bg-[#002D56] text-white px-4 py-2 rounded-2xl text-[10px] font-black uppercase shadow-xl flex items-center gap-2">
+                                      <div className="absolute top-6 left-6 bg-[#002D56] text-white px-4 py-2 rounded-md text-[10px] font-black uppercase shadow-xl flex items-center gap-2">
                                         <Loader2 className="w-3 h-3 animate-spin" /> Ảnh chờ duyệt
                                       </div>
                                     )}
@@ -4856,7 +5032,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                                 setIllustrations(v.illustrations || []);
                               }}
                               className={cn(
-                                "flex items-center gap-2 px-3 py-1.5 rounded-full text-[10px] font-bold transition-all border",
+                                "flex items-center gap-2 px-3 py-1.5 rounded-md text-[10px] font-bold transition-all border",
                                 output === v.content 
                                   ? "bg-[#002D56] text-white border-[#002D56]" 
                                   : "bg-white text-slate-500 border-slate-200 hover:border-slate-400"
@@ -4880,9 +5056,9 @@ const handleAnalyzeDocument = async (docId: string) => {
           </div>
         ) : activeTab === 'history' ? (
           <div className="space-y-4 sm:space-y-6">
-            <div className="flex flex-col sm:flex-row items-center justify-between bg-white px-6 sm:px-8 py-5 sm:py-6 rounded-[24px] sm:rounded-[32px] border border-slate-200 shadow-sm gap-4">
+            <div className="flex flex-col sm:flex-row items-center justify-between bg-white px-6 sm:px-8 py-5 sm:py-6 rounded-md lg:rounded-lg border border-slate-200 shadow-sm gap-4">
                 <div className="flex items-center gap-4 w-full sm:w-auto">
-                   <div className="bg-[#002D56] p-2.5 sm:p-3 rounded-xl sm:rounded-2xl shadow-lg shrink-0">
+                   <div className="bg-[#002D56] p-2.5 sm:p-3 rounded-md lg:rounded-lg shadow-lg shrink-0">
                       <History className="text-white w-5 h-5 sm:w-6 sm:h-6" />
                    </div>
                    <div className="min-w-0">
@@ -4899,12 +5075,12 @@ const handleAnalyzeDocument = async (docId: string) => {
                        placeholder="Tìm kiếm bài viết..."
                        value={historySearchQuery}
                        onChange={(e) => setHistorySearchQuery(e.target.value)}
-                       className="w-full pl-10 pr-4 py-3 bg-slate-50 border-none rounded-xl text-xs font-semibold focus:ring-2 focus:ring-[#002D56]/20 transition-all"
+                       className="w-full pl-10 pr-4 py-3 bg-slate-50 border-none rounded-md text-xs font-semibold focus:ring-2 focus:ring-[#002D56]/20 transition-all"
                      />
                    </div>
                    <button 
                      onClick={createNewSession}
-                     className="w-full sm:w-auto bg-[#002D56] text-white px-6 py-3 rounded-xl font-black text-xs uppercase tracking-widest hover:bg-slate-900 transition-all flex items-center justify-center gap-2 shadow-lg shadow-[#002D56]/20 shrink-0"
+                     className="w-full sm:w-auto bg-[#002D56] text-white px-6 py-3 rounded-md font-black text-xs uppercase tracking-widest hover:bg-slate-900 transition-all flex items-center justify-center gap-2 shadow-lg shadow-[#002D56]/20 shrink-0"
                    >
                      <Plus className="w-4 h-4" /> Soạn bài mới
                    </button>
@@ -4917,7 +5093,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                  s.title?.toLowerCase().includes(historySearchQuery.toLowerCase()) || 
                  s.versions[0]?.content?.toLowerCase().includes(historySearchQuery.toLowerCase())
                )).length === 0 ? (
-                  <div className="col-span-full py-20 sm:py-32 flex flex-col items-center justify-center bg-white rounded-[32px] sm:rounded-[40px] border-2 border-dashed border-slate-200">
+                  <div className="col-span-full py-20 sm:py-32 flex flex-col items-center justify-center bg-white rounded-md lg:rounded-lg border-2 border-dashed border-slate-200">
                      <Clock className="w-16 h-16 sm:w-20 sm:h-20 text-slate-200 mb-4 sm:mb-6" />
                      <p className="text-slate-400 font-black uppercase tracking-widest text-xs">Không tìm thấy bài viết</p>
                   </div>
@@ -4929,12 +5105,12 @@ const handleAnalyzeDocument = async (docId: string) => {
                   ).map(session => (
                     <div 
                       key={session.id}
-                      className="bg-white rounded-[32px] p-5 sm:p-6 shadow-sm border border-slate-200 hover:border-[#002D56] hover:shadow-xl transition-all group flex flex-col h-full relative overflow-hidden"
+                      className="bg-white rounded-md p-5 sm:p-6 shadow-sm border border-slate-200 hover:border-[#002D56] hover:shadow-xl transition-all group flex flex-col h-full relative overflow-hidden"
                     >
                       <div className="flex items-start justify-between mb-4">
                          <div className="flex flex-wrap items-center gap-2">
                             <span className={cn(
-                              "px-2.5 py-1 text-[#002D56] text-[8px] font-black rounded-full uppercase tracking-widest border",
+                              "px-2.5 py-1 text-[#002D56] text-[8px] font-black rounded-md uppercase tracking-widest border",
                               session.taskType === 'WRITE_NEW' ? "bg-blue-50 border-blue-100" : "bg-teal-50 border-teal-100"
                             )}>
                                {session.taskType === 'WRITE_NEW' ? 'Viết mới' : 'Rà soát'}
@@ -4962,7 +5138,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                       <div className="pt-4 border-t border-slate-100 flex items-center gap-3 mt-auto">
                          <button 
                            onClick={() => loadSession(session)}
-                           className="flex-1 bg-[#002D56] text-white py-2.5 rounded-xl text-[12px] font-bold hover:bg-slate-900 shadow-md shadow-[#002D56]/10 transition-all flex items-center justify-center gap-2"
+                           className="flex-1 bg-[#002D56] text-white py-2.5 rounded-md text-[12px] font-bold hover:bg-slate-900 shadow-md shadow-[#002D56]/10 transition-all flex items-center justify-center gap-2"
                          >
                             <Edit3 className="w-4 h-4" /> Tiếp tục
                          </button>
@@ -4976,6 +5152,17 @@ const handleAnalyzeDocument = async (docId: string) => {
                                      await deleteDoc(doc(db, 'users', user.uid, 'sessions', session.id));
                                      setSessions(prev => prev.filter(s => s.id !== session.id));
                                      toast.success('Đã xóa bài viết.');
+                                     
+                                     await logActivity({
+                                        module: 'editorial',
+                                        action: 'deleted',
+                                        entityType: 'editorial_session',
+                                        entityId: session.id,
+                                        entityTitle: session.title,
+                                        title: 'Xóa bài viết',
+                                        summary: `Đã xóa bài viết "${session.title}".`,
+                                        metadata: { source: 'client' }
+                                     });
                                   } catch (err) {
                                      console.error('Delete session error:', err);
                                      toast.error('Không thể xóa bài viết trên hệ thống.');
@@ -4985,7 +5172,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                                }
                              }
                            }}
-                           className="px-3 py-2.5 rounded-xl text-slate-400 bg-slate-50 hover:bg-rose-50 hover:text-rose-600 transition-all border border-slate-100"
+                           className="px-3 py-2.5 rounded-md text-slate-400 bg-slate-50 hover:bg-rose-50 hover:text-rose-600 transition-all border border-slate-100"
                            title="Xóa bài viết"
                          >
                             <Trash2 className="w-4 h-4" />
@@ -4996,6 +5183,36 @@ const handleAnalyzeDocument = async (docId: string) => {
                )}
             </div>
           </div>
+        ) : activeTab === 'activity' ? (
+          <ActivityLogView 
+            onOpenEntity={(type, id) => {
+               if (type === 'document' || type === 'drive_file' || type === 'drive_folder') {
+                  const docMatch = documents.find(d => d.id === id || d.driveFileId === id);
+                  if (docMatch) {
+                     setActiveTab('library');
+                     setPreviewDocument(docMatch);
+                  } else {
+                     toast.error('Nội dung không còn tồn tại hoặc không tìm thấy.');
+                  }
+               } else if (type === 'task') {
+                  const t = allTasks.find(t => t.id === id);
+                  if (t) {
+                     setActiveTab('tasks');
+                     setEditingTask(t);
+                     setActiveModal('task-edit');
+                  } else {
+                     toast.error('Nhiệm vụ không còn tồn tại.');
+                  }
+               } else if (type === 'editorial_session') {
+                  const s = sessions.find(s => s.id === id);
+                  if (s) {
+                     loadSession(s);
+                  } else {
+                     toast.error('Bài viết/Phiên biên tập không còn tồn tại.');
+                  }
+               }
+            }}
+          />
         ) : activeTab === 'settings' ? (
           <UserProfileSection 
             user={user}
@@ -5007,7 +5224,7 @@ const handleAnalyzeDocument = async (docId: string) => {
           <div className="flex flex-col lg:flex-row gap-6 items-start">
             {/* Left Sidebar: Collections - Horizontal on Mobile */}
             <aside className="w-full lg:w-72 shrink-0 lg:sticky lg:top-8">
-              <div className="bg-white rounded-[24px] lg:rounded-[32px] p-4 lg:p-6 shadow-sm border border-slate-200">
+              <div className="bg-white rounded-md lg:rounded-md p-4 lg:p-6 shadow-sm border border-slate-200">
                 <div className="flex items-center justify-between mb-4 lg:mb-6 px-1 shrink-0">
                   <h3 className="text-[11px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
                     <Layers className="w-3.5 h-3.5" /> Kho lưu trữ
@@ -5026,7 +5243,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                       key={coll.id}
                       onClick={() => setActiveLibraryId(coll.id)}
                       className={cn(
-                        "flex shrink-0 items-center justify-between px-3.5 py-2.5 lg:py-3 rounded-2xl transition-all group border",
+                        "flex shrink-0 items-center justify-between px-3.5 py-2.5 lg:py-3 rounded-md transition-all group border",
                         activeLibraryId === coll.id 
                           ? "bg-[#002D56] text-white shadow-lg shadow-[#002D56]/20 border-[#002D56]" 
                           : "text-slate-600 hover:bg-slate-50 border-transparent hover:border-slate-100 bg-slate-50/50"
@@ -5034,7 +5251,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                     >
                       <div className="flex items-center gap-3">
                         <div className={cn(
-                          "p-2 rounded-xl transition-colors shrink-0",
+                          "p-2 rounded-md transition-colors shrink-0",
                           activeLibraryId === coll.id ? "bg-white/10" : "bg-slate-100 group-hover:bg-white shadow-sm"
                         )}>
                           {coll.type === 'personal' && <User className="w-3.5 h-3.5 lg:w-4 lg:h-4" />}
@@ -5048,7 +5265,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                       </div>
                       <div className="hidden lg:flex items-center gap-2">
                         <span className={cn(
-                          "text-[10px] font-black px-2 py-0.5 rounded-full",
+                          "text-[10px] font-black px-2 py-0.5 rounded-md",
                           activeLibraryId === coll.id ? "bg-white/20 text-white" : "bg-slate-100 text-slate-400"
                         )}>
                           {documents.filter(d => d.collectionId === coll.id || (!d.collectionId && coll.id === 'lib-personal')).length}
@@ -5075,7 +5292,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                 </nav>
               </div>
 
-              <div className="hidden lg:block bg-[#002D56] rounded-[32px] p-6 text-white shadow-xl">
+              <div className="hidden lg:block bg-[#002D56] rounded-md p-6 text-white shadow-xl">
                  <h4 className="text-[10px] font-black uppercase tracking-widest mb-4 opacity-60">Thống kê lưu trữ</h4>
                  <div className="space-y-4">
                     <div className="flex items-center justify-between">
@@ -5097,7 +5314,7 @@ const handleAnalyzeDocument = async (docId: string) => {
             {/* Main Content: Document List */}
             <main className="flex-1 w-full space-y-6">
               {/* Toolbar */}
-              <div className="bg-white rounded-[32px] p-4 sm:p-5 shadow-sm border border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-4">
+              <div className="bg-white rounded-md p-4 sm:p-5 shadow-sm border border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-4">
                 <div className="relative w-full sm:max-w-md">
                    <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                    <input 
@@ -5105,7 +5322,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                      placeholder="Tìm kiếm tài liệu trong kho..."
                      value={librarySearchQuery}
                      onChange={(e) => setLibrarySearchQuery(e.target.value)}
-                     className="w-full pl-12 pr-4 py-3 bg-slate-50 border border-slate-100 rounded-2xl text-[13px] font-bold text-slate-800 focus:outline-none focus:ring-4 focus:ring-blue-50 transition-all placeholder:text-slate-400"
+                     className="w-full pl-12 pr-4 py-3 bg-slate-50 border border-slate-100 rounded-md text-[13px] font-bold text-slate-800 focus:outline-none focus:ring-4 focus:ring-blue-50 transition-all placeholder:text-slate-400"
                    />
                 </div>
                 <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
@@ -5115,7 +5332,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                            e.stopPropagation();
                            deleteSelectedDocuments();
                          }}
-                         className="flex-1 sm:flex-initial bg-red-50 text-red-600 border border-red-100 px-4 py-2.5 rounded-xl text-[13px] font-bold hover:bg-red-500 hover:text-white transition-all flex items-center justify-center gap-2 shadow-sm"
+                         className="flex-1 sm:flex-initial bg-red-50 text-red-600 border border-red-100 px-4 py-2.5 rounded-md text-[13px] font-bold hover:bg-red-500 hover:text-white transition-all flex items-center justify-center gap-2 shadow-sm"
                        >
                          <Trash2 className="w-4 h-4" /> Xóa ({bulkSelectedDocIds.length})
                        </button>
@@ -5123,7 +5340,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                     {documents.some(d => (d.type as string) === 'link' && (d.metadata?.url?.includes('drive.google.com') || d.metadata?.url?.includes('docs.google.com'))) && (
                        <button 
                          onClick={repairLegacyDriveLinks}
-                         className="flex-1 sm:flex-initial bg-amber-50 text-amber-700 border border-amber-100 px-4 py-2.5 rounded-xl text-[13px] font-bold hover:bg-amber-100 transition-all flex items-center justify-center gap-2"
+                         className="flex-1 sm:flex-initial bg-amber-50 text-amber-700 border border-amber-100 px-4 py-2.5 rounded-md text-[13px] font-bold hover:bg-amber-100 transition-all flex items-center justify-center gap-2"
                          title="Chuyển đổi các link Drive cũ sang định dạng chuẩn"
                        >
                          <Zap className="w-4 h-4" /> Sửa link cũ
@@ -5131,19 +5348,19 @@ const handleAnalyzeDocument = async (docId: string) => {
                     )}
                     <button 
                       onClick={() => { closeMobileDrawer(); setIsAddingText(true); }}
-                      className="flex-1 sm:flex-initial bg-white border border-slate-200 text-slate-600 px-4 py-2.5 rounded-xl text-[13px] font-bold hover:bg-slate-50 hover:text-[#002D56] transition-all flex items-center justify-center gap-2"
+                      className="flex-1 sm:flex-initial bg-white border border-slate-200 text-slate-600 px-4 py-2.5 rounded-md text-[13px] font-bold hover:bg-slate-50 hover:text-[#002D56] transition-all flex items-center justify-center gap-2"
                     >
                       <Type className="w-4 h-4" /> Ghi chú
                     </button>
                     <button 
                       onClick={() => { closeMobileDrawer(); setIsAddingLink(true); }}
-                      className="flex-1 sm:flex-initial bg-white border border-slate-200 text-slate-600 px-4 py-2.5 rounded-xl text-[13px] font-bold hover:bg-slate-50 hover:text-[#002D56] transition-all flex items-center justify-center gap-2"
+                      className="flex-1 sm:flex-initial bg-white border border-slate-200 text-slate-600 px-4 py-2.5 rounded-md text-[13px] font-bold hover:bg-slate-50 hover:text-[#002D56] transition-all flex items-center justify-center gap-2"
                     >
                       <LinkIcon className="w-4 h-4" /> Liên kết
                     </button>
                     <button 
                       onClick={() => fileInputRef.current?.click()}
-                      className="flex-1 sm:flex-initial bg-[#002D56] text-white px-5 py-2.5 rounded-xl text-[13px] font-bold hover:bg-slate-900 transition-all shadow-lg shadow-[#002D56]/10 flex items-center justify-center gap-2"
+                      className="flex-1 sm:flex-initial bg-[#002D56] text-white px-5 py-2.5 rounded-md text-[13px] font-bold hover:bg-slate-900 transition-all shadow-lg shadow-[#002D56]/10 flex items-center justify-center gap-2"
                     >
                       <FileUp className="w-4 h-4" /> Tải tệp
                     </button>
@@ -5153,8 +5370,8 @@ const handleAnalyzeDocument = async (docId: string) => {
               {/* Document Grid */}
               <div className="grid grid-cols-1 sm:grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-4 sm:gap-5">
                 {filteredDocs.length === 0 ? (
-                  <div className="col-span-full py-32 flex flex-col items-center justify-center bg-white rounded-[40px] border-2 border-dashed border-slate-100 text-center">
-                    <div className="w-20 h-20 bg-slate-50 rounded-3xl flex items-center justify-center mb-6">
+                  <div className="col-span-full py-32 flex flex-col items-center justify-center bg-white rounded-md border-2 border-dashed border-slate-100 text-center">
+                    <div className="w-20 h-20 bg-slate-50 rounded-lg flex items-center justify-center mb-6">
                       <Database className="w-10 h-10 text-slate-200" />
                     </div>
                     <h4 className="text-sm font-black text-slate-500 uppercase tracking-[0.2em] mb-2">Kho tư liệu đang trống</h4>
@@ -5167,7 +5384,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                     <motion.div
                       layout
                       key={doc.id}
-                      className="bg-white rounded-[32px] border border-slate-200 p-5 shadow-sm hover:shadow-xl hover:border-[#002D56]/20 transition-all group relative overflow-hidden flex flex-col justify-between"
+                      className="bg-white rounded-md border border-slate-200 p-5 shadow-sm hover:shadow-xl hover:border-[#002D56]/20 transition-all group relative overflow-hidden flex flex-col justify-between"
                     >
                       <div>
                         {/* Status/Type Badge */}
@@ -5196,7 +5413,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                                   setBulkSelectedDocIds(prev => prev.includes(doc.id) ? prev.filter(id => id !== doc.id) : [...prev, doc.id]);
                                 }}
                                 className={cn(
-                                  "p-2 rounded-xl transition-all shadow-sm border",
+                                  "p-2 rounded-md transition-all shadow-sm border",
                                   bulkSelectedDocIds.includes(doc.id) ? "bg-blue-500 text-white border-blue-400" : "bg-white text-slate-400 border-slate-100 hover:bg-slate-50"
                                 )}
                                 title={bulkSelectedDocIds.includes(doc.id) ? "Đã chọn lưới" : "Chọn nhiều"}
@@ -5210,14 +5427,14 @@ const handleAnalyzeDocument = async (docId: string) => {
                                      e.stopPropagation();
                                      setDocumentMenuDocId(documentMenuDocId === doc.id ? null : doc.id);
                                    }}
-                                   className="p-2 bg-white border border-slate-100 text-slate-400 hover:text-blue-500 hover:bg-blue-50 rounded-xl transition-all shadow-sm"
+                                   className="p-2 bg-white border border-slate-100 text-slate-400 hover:text-blue-500 hover:bg-blue-50 rounded-md transition-all shadow-sm"
                                    title="Thao tác"
                                  >
                                    <MoreHorizontal className="w-3.5 h-3.5" />
                                  </button>
                                  
                                  {documentMenuDocId === doc.id && (
-                                    <div className="absolute right-0 top-full mt-2 w-48 bg-white rounded-2xl shadow-xl border border-slate-100 py-1.5 z-[200]">
+                                    <div className="absolute right-0 top-full mt-2 w-48 bg-white rounded-md shadow-xl border border-slate-100 py-1.5 z-[200]">
                                        {!doc.summary && (
                                          <button 
                                             onClick={(e) => {
@@ -5306,7 +5523,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                         {/* Content Info */}
                         <div className="space-y-4">
                            <div className="flex items-start gap-4">
-                              <div className="p-3 bg-slate-50 rounded-2xl group-hover:bg-blue-50 transition-colors shrink-0">
+                              <div className="p-3 bg-slate-50 rounded-md group-hover:bg-blue-50 transition-colors shrink-0">
                                  {doc.driveIconUrl ? (
                                     <img src={doc.driveIconUrl} alt="icon" className="w-5 h-5 opacity-70" referrerPolicy="no-referrer" />
                                  ) : (
@@ -5377,7 +5594,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                          <div className="flex items-center gap-2">
                             <button 
                               onClick={(e) => { e.stopPropagation(); closeMobileDrawer(); setIsPickingTaskForDoc(doc); }}
-                              className="px-3 py-1.5 bg-emerald-50 text-emerald-700 border border-emerald-100 rounded-xl hover:bg-emerald-100 transition-all flex items-center gap-1.5 group/btn"
+                              className="px-3 py-1.5 bg-emerald-50 text-emerald-700 border border-emerald-100 rounded-md hover:bg-emerald-100 transition-all flex items-center gap-1.5 group/btn"
                             >
                               <Plus className="w-3.5 h-3.5 group-hover/btn:rotate-90 transition-transform" />
                               <span className="text-[11px] font-bold">Dùng làm nguồn</span>
@@ -5390,7 +5607,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                          </div>
                          <button 
                            onClick={() => openDocumentPreview(doc)}
-                           className="text-[11px] font-bold text-[#002D56] hover:underline flex items-center gap-1.5 group/link bg-slate-50 px-3 py-1.5 rounded-xl hover:bg-slate-100"
+                           className="text-[11px] font-bold text-[#002D56] hover:underline flex items-center gap-1.5 group/link bg-slate-50 px-3 py-1.5 rounded-md hover:bg-slate-100"
                          >
                              Xem <ArrowRight className="w-3.5 h-3.5 group-hover/link:translate-x-0.5 transition-transform" />
                          </button>
@@ -5405,6 +5622,26 @@ const handleAnalyzeDocument = async (docId: string) => {
       </motion.div>
     </AnimatePresence>
           </div>
+
+      <footer className="bg-white border-t border-slate-200 py-6 px-4">
+        <div className="max-w-7xl mx-auto flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="md:text-left text-center">
+            <h2 className="text-[#002D56] font-black text-sm tracking-tighter uppercase">Biên tập Hoa Tiêu Miền Bắc</h2>
+            <p className="text-[9px] font-black text-slate-400 uppercase tracking-[0.2em] mt-0.5">THE FUTURE OF MARITIME PILOTING</p>
+          </div>
+          
+          <div className="flex flex-wrap justify-center gap-x-6 gap-y-2">
+            <a href="#" className="text-[9px] font-black text-slate-400 hover:text-slate-800 uppercase tracking-widest transition-all">Sơ đồ luồng</a>
+            <a href="#" className="text-[9px] font-black text-slate-400 hover:text-slate-800 uppercase tracking-widest transition-all">Quy định biên tập</a>
+            <a href="#" className="text-[9px] font-black text-slate-400 hover:text-slate-800 uppercase tracking-widest transition-all">Liên hệ kỹ thuật</a>
+            <a href="#" className="text-[9px] font-black text-emerald-600 hover:text-emerald-800 uppercase tracking-widest transition-all italic underline underline-offset-4 decoration-2 decoration-emerald-200">Bộ Xây dựng 2025</a>
+          </div>
+        </div>
+
+        <div className="max-w-7xl mx-auto mt-6 pt-6 border-t border-slate-100 text-[9px] font-bold text-slate-400 text-center uppercase tracking-widest">
+           <span>© {new Date().getFullYear()} TỔNG CÔNG TY BẢO ĐẢM AN TOÀN HÀNG HẢI VIỆT NAM</span>
+        </div>
+      </footer>
         </main>
 
       {/* Modals Container */}
@@ -5421,13 +5658,13 @@ const handleAnalyzeDocument = async (docId: string) => {
               initial={{ scale: 0.9, opacity: 0, y: 20 }}
               animate={{ scale: 1, opacity: 1, y: 0 }}
               exit={{ scale: 0.9, opacity: 0, y: 20 }}
-              className="bg-white rounded-[24px] sm:rounded-[40px] shadow-2xl w-full max-w-md overflow-hidden relative"
+              className="bg-white rounded-md lg:rounded-lg shadow-2xl w-full max-w-md overflow-hidden relative"
               onClick={e => e.stopPropagation()}
             >
               <div className="p-6 sm:p-8 pb-4">
                 <div className="flex justify-between items-start mb-6 sm:mb-8">
                   <div className="flex items-center gap-3">
-                    <div className="p-2.5 bg-[#002D56] rounded-2xl">
+                    <div className="p-2.5 bg-[#002D56] rounded-md">
                       <Ship className="w-6 h-6 text-white" />
                     </div>
                     <div>
@@ -5437,7 +5674,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                       <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">Phục vụ Nghiệp vụ Hoa tiêu</p>
                     </div>
                   </div>
-                  <button onClick={() => setActiveModal(null)} className="p-2 hover:bg-slate-100 rounded-xl">
+                  <button onClick={() => setActiveModal(null)} className="p-2 hover:bg-slate-100 rounded-md">
                     <X className="w-5 h-5 text-slate-400" />
                   </button>
                 </div>
@@ -5450,7 +5687,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                       type="email" 
                       placeholder="ten.nguoidung@vms.com.vn"
                       required
-                      className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-3.5 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-[#002D56] transition-all"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-md px-5 py-3.5 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-[#002D56] transition-all"
                     />
                   </div>
                   <div className="space-y-2">
@@ -5460,7 +5697,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                       type="password" 
                       placeholder="••••••••"
                       required
-                      className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-3.5 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-[#002D56] transition-all"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-md px-5 py-3.5 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-[#002D56] transition-all"
                     />
                   </div>
                   
@@ -5473,7 +5710,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                   <button 
                     type="submit"
                     disabled={isLoading}
-                    className="w-full bg-[#002D56] text-white py-4 rounded-2xl font-black text-sm shadow-xl hover:bg-slate-900 transition-all active:scale-95 mt-4 flex items-center justify-center gap-2"
+                    className="w-full bg-[#002D56] text-white py-4 rounded-md font-black text-sm shadow-xl hover:bg-slate-900 transition-all active:scale-95 mt-4 flex items-center justify-center gap-2"
                   >
                     {isLoading && <Loader2 className="w-4 h-4 animate-spin" />}
                     {authMode === 'login' ? 'TRUY CẬP HỆ THỐNG' : 'TẠO TÀI KHOẢN MỚI'}
@@ -5492,7 +5729,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                     type="button"
                     onClick={handleGoogleAuth}
                     disabled={isLoading}
-                    className="w-full bg-white border-2 border-slate-100 text-slate-700 py-3.5 rounded-2xl font-bold text-sm hover:bg-slate-50 transition-all active:scale-95 flex items-center justify-center gap-3 shadow-sm"
+                    className="w-full bg-white border-2 border-slate-100 text-slate-700 py-3.5 rounded-md font-bold text-sm hover:bg-slate-50 transition-all active:scale-95 flex items-center justify-center gap-3 shadow-sm"
                   >
                     <svg className="w-5 h-5" viewBox="0 0 24 24">
                       <path fill="#EA4335" d="M12 5.04c1.94 0 3.68.67 5.05 1.97l3.77-3.77C18.54 1.24 15.48 0 12 0 7.31 0 3.25 2.69 1.2 6.65l4.39 3.4C6.63 7.15 9.08 5.04 12 5.04z" />
@@ -5518,7 +5755,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                   </p>
                   <button 
                     onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')}
-                    className="w-full bg-emerald-50 text-emerald-600 py-3 rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] hover:bg-emerald-100 transition-all"
+                    className="w-full bg-emerald-50 text-emerald-600 py-3 rounded-md font-black text-[10px] uppercase tracking-[0.2em] hover:bg-emerald-100 transition-all"
                   >
                     {authMode === 'login' ? 'Đăng ký ngay (Không cần xác nhận)' : 'Quay lại đăng nhập'}
                   </button>
@@ -5540,7 +5777,7 @@ const handleAnalyzeDocument = async (docId: string) => {
               initial={{ scale: 0.9, opacity: 0, y: 20 }}
               animate={{ scale: 1, opacity: 1, y: 0 }}
               exit={{ scale: 0.9, opacity: 0, y: 20 }}
-              className="bg-white rounded-[24px] sm:rounded-[40px] shadow-2xl w-full max-w-md overflow-hidden relative p-6 sm:p-8"
+              className="bg-white rounded-md lg:rounded-lg shadow-2xl w-full max-w-md overflow-hidden relative p-6 sm:p-8"
               onClick={e => e.stopPropagation()}
             >
               <div className="flex justify-between items-start mb-8">
@@ -5553,17 +5790,17 @@ const handleAnalyzeDocument = async (docId: string) => {
                     <p className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest mt-1">Trạng thái: Đang hoạt động</p>
                   </div>
                 </div>
-                <button onClick={() => setActiveModal(null)} className="p-2 hover:bg-slate-100 rounded-xl">
+                <button onClick={() => setActiveModal(null)} className="p-2 hover:bg-slate-100 rounded-md">
                   <X className="w-5 h-5 text-slate-400" />
                 </button>
               </div>
 
               <div className="space-y-4">
-                 <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                 <div className="p-4 bg-slate-50 rounded-md border border-slate-100">
                     <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Cơ quan / Đơn vị</p>
                     <p className="text-sm font-bold text-slate-700">Công ty TNHH MTV Hoa tiêu hàng hải miền Bắc</p>
                  </div>
-                 <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                 <div className="p-4 bg-slate-50 rounded-md border border-slate-100">
                     <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Chức vụ / Vị trí</p>
                     <p className="text-sm font-bold text-slate-700">Biên tập viên Nghiệp vụ</p>
                  </div>
@@ -5571,7 +5808,7 @@ const handleAnalyzeDocument = async (docId: string) => {
 
               <button 
                 onClick={handleLogout}
-                className="w-full mt-8 bg-red-50 text-red-600 py-4 rounded-2xl font-black text-sm hover:bg-red-100 transition-all flex items-center justify-center gap-2"
+                className="w-full mt-8 bg-red-50 text-red-600 py-4 rounded-md font-black text-sm hover:bg-red-100 transition-all flex items-center justify-center gap-2"
               >
                 <LogOut className="w-4 h-4" /> ĐĂNG XUẤT KHỎI HỆ THỐNG
               </button>
@@ -5591,19 +5828,19 @@ const handleAnalyzeDocument = async (docId: string) => {
               initial={{ scale: 0.9, opacity: 0, y: 20 }}
               animate={{ scale: 1, opacity: 1, y: 0 }}
               exit={{ scale: 0.9, opacity: 0, y: 20 }}
-              className="bg-white rounded-[40px] shadow-2xl w-full max-w-md overflow-hidden relative p-8"
+              className="bg-white rounded-md shadow-2xl w-full max-w-md overflow-hidden relative p-8"
               onClick={e => e.stopPropagation()}
             >
               <div className="flex justify-between items-start mb-8">
                 <div className="flex items-center gap-3">
-                  <div className="p-2.5 bg-slate-100 rounded-2xl">
+                  <div className="p-2.5 bg-slate-100 rounded-md">
                     <Settings className="w-6 h-6 text-[#002D56]" />
                   </div>
                   <div>
                     <h2 className="text-xl font-black text-slate-800 uppercase tracking-tight">Cài đặt hệ thống</h2>
                   </div>
                 </div>
-                <button onClick={() => setActiveModal(null)} className="p-2 hover:bg-slate-100 rounded-xl">
+                <button onClick={() => setActiveModal(null)} className="p-2 hover:bg-slate-100 rounded-md">
                   <X className="w-5 h-5 text-slate-400" />
                 </button>
               </div>
@@ -5627,7 +5864,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                  </div>
               </div>
 
-              <div className="mt-8 p-6 bg-[#002D56]/5 rounded-[32px] border border-[#002D56]/10">
+              <div className="mt-8 p-6 bg-[#002D56]/5 rounded-md border border-[#002D56]/10">
                  <div className="flex items-center justify-between mb-4">
                     <p className="text-[10px] font-black text-[#002D56] uppercase tracking-[0.2em]">API AI Cá nhân</p>
                     <div className="flex items-center gap-1.5">
@@ -5638,7 +5875,7 @@ const handleAnalyzeDocument = async (docId: string) => {
 
                  {personalAIStatus.hasKey && !showAiKeyForm ? (
                     <div className="space-y-4">
-                       <div className="bg-white p-4 rounded-3xl border border-slate-100 shadow-sm">
+                       <div className="bg-white p-4 rounded-lg border border-slate-100 shadow-sm">
                           <div className="flex justify-between items-start mb-2">
                              <div>
                                 <p className="text-[11px] font-bold text-slate-700">{personalAIStatus.provider?.toUpperCase()} - {personalAIStatus.model}</p>
@@ -5658,7 +5895,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                        </div>
                        <button 
                           onClick={() => setShowAiKeyForm(true)}
-                          className="w-full py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all"
+                          className="w-full py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-md text-[10px] font-black uppercase tracking-widest transition-all"
                        >
                           Cập nhật API Key
                        </button>
@@ -5672,7 +5909,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                                 <select 
                                    value={aiKeyForm.provider}
                                    onChange={e => resetTestResultIfFormChanged({...aiKeyForm, provider: e.target.value})}
-                                   className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-[10px] font-bold text-slate-700 focus:outline-none"
+                                   className="w-full bg-white border border-slate-200 rounded-md px-3 py-2 text-[10px] font-bold text-slate-700 focus:outline-none"
                                 >
                                    <option value="gemini">Google Gemini</option>
                                    <option value="openai" disabled>OpenAI (Sắp có)</option>
@@ -5686,7 +5923,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                                    placeholder="Dán API key tại đây..."
                                    value={aiKeyForm.apiKey}
                                    onChange={e => resetTestResultIfFormChanged({...aiKeyForm, apiKey: e.target.value})}
-                                   className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-[10px] font-mono text-slate-700 focus:outline-none"
+                                   className="w-full bg-white border border-slate-200 rounded-md px-3 py-2 text-[10px] font-mono text-slate-700 focus:outline-none"
                                 />
                              </div>
                              <div className="space-y-1">
@@ -5695,7 +5932,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                                    <select 
                                       value={aiKeyForm.modelPreset}
                                       onChange={e => resetTestResultIfFormChanged({...aiKeyForm, modelPreset: e.target.value})}
-                                       className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-[10px] font-bold text-slate-700 focus:outline-none"
+                                       className="w-full bg-white border border-slate-200 rounded-md px-3 py-2 text-[10px] font-bold text-slate-700 focus:outline-none"
                                     >
                                        <option value="gemini-2.0-flash">gemini-2.0-flash (Chuẩn - Nhanh & Ổn định)</option>
                                        <option value="gemini-2.0-flash-lite">gemini-2.0-flash-lite (Tiết kiệm)</option>
@@ -5709,7 +5946,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                                           type="text"
                                           placeholder="Nhập chính xác Model ID (VD: gemini-2.0-flash-exp)..."
                                           value={aiKeyForm.customModel}
-                                          className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-[10px] font-bold text-slate-700 focus:outline-none"
+                                          className="w-full bg-white border border-slate-200 rounded-md px-3 py-2 text-[10px] font-bold text-slate-700 focus:outline-none"
                                           onChange={e => resetTestResultIfFormChanged({...aiKeyForm, customModel: e.target.value})}
                                        />
                                     )}
@@ -5717,7 +5954,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                               </div>
 
                               {keyTestResult && !keyTestResult.success && (
-                                 <div className="p-3 bg-red-50 rounded-xl border border-red-100 mb-2">
+                                 <div className="p-3 bg-red-50 rounded-md border border-red-100 mb-2">
                                     <p className="text-[9px] font-bold text-red-600 uppercase mb-1">
                                        Lỗi: {keyTestResult.errorType === 'invalid_key' ? 'API Key không hợp lệ' : 
                                              keyTestResult.errorType === 'model_not_found' ? 'Model không được hỗ trợ' : 
@@ -5732,7 +5969,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                                  <button 
                                     onClick={testPersonalKey}
                                     disabled={isTestingKey || !aiKeyForm.apiKey}
-                                    className={`flex-1 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${isTestingKey ? 'bg-slate-100 text-slate-400' : 'bg-slate-800 text-white hover:bg-black'}`}
+                                    className={`flex-1 py-2.5 rounded-md text-[10px] font-black uppercase tracking-widest transition-all ${isTestingKey ? 'bg-slate-100 text-slate-400' : 'bg-slate-800 text-white hover:bg-black'}`}
                                  >
                                     {isTestingKey ? 'Đang test...' : 'Kiểm tra'}
                                  </button>
@@ -5740,7 +5977,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                                     <button 
                                        onClick={savePersonalKey}
                                        disabled={isSavingKey}
-                                       className="flex-1 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest transition-all"
+                                       className="flex-1 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded-md text-[10px] font-black uppercase tracking-widest transition-all"
                                     >
                                        {isSavingKey ? 'Đang lưu...' : 'Lưu Key'}
                                     </button>
@@ -5758,7 +5995,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                               <p className="text-[10px] text-slate-400 font-medium mb-4 italic">Đang sử dụng cấu hình AI chung của hệ thống Hoa Tiêu Miền Bắc.</p>
                               <button 
                                  onClick={() => setShowAiKeyForm(true)}
-                                 className="w-full py-2.5 px-4 bg-[#002D56] hover:bg-[#003d74] text-white rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-lg shadow-[#002D56]/20 transition-all"
+                                 className="w-full py-2.5 px-4 bg-[#002D56] hover:bg-[#003d74] text-white rounded-md text-[10px] font-black uppercase tracking-widest shadow-lg shadow-[#002D56]/20 transition-all"
                               >
                                  Thêm API Key Cá nhân
                               </button>
@@ -5772,24 +6009,6 @@ const handleAnalyzeDocument = async (docId: string) => {
         )}
       </AnimatePresence>
 
-      <footer className="bg-white border-t border-slate-200 py-10 px-4 mt-auto">
-          <div className="flex flex-col md:items-start items-center">
-            <h2 className="text-[#002D56] font-black text-xl tracking-tighter italic uppercase">Biên tập Hoa Tiêu Miền Bắc</h2>
-            <p className="text-[11px] font-black text-slate-400 uppercase tracking-[0.4em] mt-1">THE FUTURE OF MARITIME PILOTING</p>
-          </div>
-          
-          <div className="flex flex-wrap justify-center gap-x-8 gap-y-4">
-            <a href="#" className="text-[10px] font-black text-slate-400 hover:text-slate-800 uppercase tracking-widest transition-all">Sơ đồ luồng</a>
-            <a href="#" className="text-[10px] font-black text-slate-400 hover:text-slate-800 uppercase tracking-widest transition-all">Quy định biên tập</a>
-            <a href="#" className="text-[10px] font-black text-slate-400 hover:text-slate-800 uppercase tracking-widest transition-all">Liên hệ kỹ thuật</a>
-            <a href="#" className="text-[10px] font-black text-slate-400 hover:text-slate-800 uppercase tracking-widest transition-all italic underline underline-offset-4 decoration-emerald-400 decoration-2">Bộ Xây dựng 2025</a>
-          </div>
-        <div className="max-w-7xl mx-auto mt-10 pt-10 border-t border-slate-100 text-[10px] font-black text-slate-300 text-center uppercase tracking-widest flex flex-col md:flex-row items-center justify-center gap-4">
-           <span>© {new Date().getFullYear()} TỔNG CÔNG TY BẢO ĐẢM AN TOÀN HÀNG HẢI VIỆT NAM</span>
-           <span className="hidden md:block opacity-20">•</span>
-           <span>Phát triển bởi Trợ lý AI Hoa Tiêu Miền Bắc</span>
-        </div>
-      </footer>
 
       {/* Hidden File Input */}
       <input 
@@ -5815,11 +6034,11 @@ const handleAnalyzeDocument = async (docId: string) => {
               initial={{ opacity: 0, scale: 0.95, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="relative w-full max-w-lg bg-white rounded-[40px] shadow-2xl overflow-hidden"
+              className="relative w-full max-w-lg bg-white rounded-md shadow-2xl overflow-hidden"
             >
               <div className="p-8 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
                 <div className="flex items-center gap-4">
-                  <div className="p-3 bg-blue-100 rounded-2xl">
+                  <div className="p-3 bg-blue-100 rounded-md">
                     <ImageIcon className="w-6 h-6 text-blue-600" />
                   </div>
                   <div>
@@ -5829,7 +6048,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                 </div>
                 <button 
                   onClick={() => setSelectingParagraphForImage(null)}
-                  className="p-2 hover:bg-slate-200 rounded-xl transition-colors"
+                  className="p-2 hover:bg-slate-200 rounded-md transition-colors"
                 >
                   <X className="w-5 h-5 text-slate-400" />
                 </button>
@@ -5847,7 +6066,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                        handleManualUpload(selectingParagraphForImage.file, idx);
                        setSelectingParagraphForImage(null);
                      }}
-                     className="w-full text-left p-6 rounded-3xl border-2 border-slate-100 hover:border-[#002D56] hover:bg-slate-50 transition-all group"
+                     className="w-full text-left p-6 rounded-lg border-2 border-slate-100 hover:border-[#002D56] hover:bg-slate-50 transition-all group"
                    >
                       <div className="flex items-center gap-3 mb-2">
                          <span className="text-[10px] font-black bg-slate-100 text-slate-400 px-2 py-1 rounded-lg group-hover:bg-[#002D56] group-hover:text-white transition-all">ĐOẠN {idx + 1}</span>
@@ -5888,10 +6107,10 @@ const handleAnalyzeDocument = async (docId: string) => {
              <motion.div 
                initial={{ opacity: 0, scale: 0.9 }}
                animate={{ opacity: 1, scale: 1 }}
-               className="bg-white w-full max-w-lg rounded-[40px] shadow-2xl p-8"
+               className="bg-white w-full max-w-lg rounded-md shadow-2xl p-8"
              >
                 <div className="flex items-center gap-3 mb-6">
-                   <div className="p-3 bg-blue-50 rounded-2xl">
+                   <div className="p-3 bg-blue-50 rounded-md">
                       <Type className="w-6 h-6 text-[#002D56]" />
                    </div>
                    <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight">Thêm ghi chú văn bản</h3>
@@ -5902,18 +6121,18 @@ const handleAnalyzeDocument = async (docId: string) => {
                      placeholder="Tiêu đề ghi chú..." 
                      value={newTextName}
                      onChange={e => setNewTextName(e.target.value)}
-                     className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-4 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
+                     className="w-full bg-slate-50 border border-slate-200 rounded-md px-5 py-4 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
                    />
                    <textarea 
                      rows={6}
                      placeholder="Dán nội dung văn bản tại đây..."
                      value={newTextContent}
                      onChange={e => setNewTextContent(e.target.value)}
-                     className="w-full bg-slate-50 border border-slate-200 rounded-3xl px-5 py-4 text-sm font-medium text-slate-600 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10 resize-none"
+                     className="w-full bg-slate-50 border border-slate-200 rounded-lg px-5 py-4 text-sm font-medium text-slate-600 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10 resize-none"
                    />
                 </div>
                 <div className="flex gap-3 mt-8">
-                   <button onClick={() => setIsAddingText(false)} className="flex-1 py-4 text-xs font-black uppercase text-slate-400 hover:bg-slate-50 rounded-2xl">Hủy</button>
+                   <button onClick={() => setIsAddingText(false)} className="flex-1 py-4 text-xs font-black uppercase text-slate-400 hover:bg-slate-50 rounded-md">Hủy</button>
                    <button 
                      onClick={async () => {
                         if(!newTextName || !newTextContent) return toast.error('Vui lòng điền đủ thông tin');
@@ -5929,7 +6148,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                         setNewTextContent('');
                         toast.success('Đã lưu ghi chú');
                      }}
-                     className="flex-1 bg-[#002D56] text-white py-4 rounded-2xl text-xs font-black uppercase tracking-widest shadow-xl"
+                     className="flex-1 bg-[#002D56] text-white py-4 rounded-md text-xs font-black uppercase tracking-widest shadow-xl"
                    >
                      Lưu vào kho
                    </button>
@@ -5944,10 +6163,10 @@ const handleAnalyzeDocument = async (docId: string) => {
              <motion.div 
                initial={{ opacity: 0, scale: 0.9 }}
                animate={{ opacity: 1, scale: 1 }}
-               className="bg-white w-full max-w-lg rounded-[40px] shadow-2xl p-8"
+               className="bg-white w-full max-w-lg rounded-md shadow-2xl p-8"
              >
                 <div className="flex items-center gap-3 mb-6">
-                   <div className="p-3 bg-indigo-50 rounded-2xl">
+                   <div className="p-3 bg-indigo-50 rounded-md">
                       <LinkIcon className="w-6 h-6 text-indigo-600" />
                    </div>
                    <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight">Thêm liên kết / Drive</h3>
@@ -5959,14 +6178,14 @@ const handleAnalyzeDocument = async (docId: string) => {
                      placeholder="https://..." 
                      value={newLinkUrl}
                      onChange={e => setNewLinkUrl(e.target.value)}
-                     className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-4 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/10"
+                     className="w-full bg-slate-50 border border-slate-200 rounded-md px-5 py-4 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/10"
                    />
                 </div>
                 <div className="flex gap-3 mt-8">
-                   <button onClick={() => setIsAddingLink(false)} className="flex-1 py-4 text-xs font-black uppercase text-slate-400 hover:bg-slate-50 rounded-2xl">Hủy</button>
+                   <button onClick={() => setIsAddingLink(false)} className="flex-1 py-4 text-xs font-black uppercase text-slate-400 hover:bg-slate-50 rounded-md">Hủy</button>
                    <button 
                      onClick={handleAddLink}
-                     className="flex-1 bg-indigo-600 text-white py-4 rounded-2xl text-xs font-black uppercase tracking-widest shadow-xl"
+                     className="flex-1 bg-indigo-600 text-white py-4 rounded-md text-xs font-black uppercase tracking-widest shadow-xl"
                    >
                      Xác nhận thêm
                    </button>
@@ -5981,7 +6200,7 @@ const handleAnalyzeDocument = async (docId: string) => {
               <motion.div 
                 initial={{ opacity: 0, scale: 0.9 }}
                 animate={{ opacity: 1, scale: 1 }}
-                className="bg-white w-full max-w-sm rounded-[40px] shadow-2xl p-8"
+                className="bg-white w-full max-w-sm rounded-md shadow-2xl p-8"
               >
                  <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight mb-6">Tạo kho lưu trữ mới</h3>
                  <div className="space-y-4">
@@ -5990,12 +6209,12 @@ const handleAnalyzeDocument = async (docId: string) => {
                       placeholder="Tên kho tư liệu..." 
                       value={newLibName}
                       onChange={e => setNewLibName(e.target.value)}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-4 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-md px-5 py-4 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
                     />
                     <select
                       value={newLibType}
                       onChange={e => setNewLibType(e.target.value as any)}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-4 text-xs font-bold text-slate-800 focus:outline-none"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-md px-4 py-4 text-xs font-bold text-slate-800 focus:outline-none"
                     >
                        <option value="custom">Tùy chỉnh</option>
                        <option value="work">Công việc</option>
@@ -6004,7 +6223,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                     </select>
                  </div>
                  <div className="flex gap-3 mt-8">
-                    <button onClick={() => setIsAddingLibrary(false)} className="flex-1 py-4 text-xs font-black uppercase text-slate-400 hover:bg-slate-50 rounded-2xl">Hủy</button>
+                    <button onClick={() => setIsAddingLibrary(false)} className="flex-1 py-4 text-xs font-black uppercase text-slate-400 hover:bg-slate-50 rounded-md">Hủy</button>
                     <button 
                       onClick={async () => {
                          if(!newLibName) return toast.error('Vui lòng nhập tên');
@@ -6017,7 +6236,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                          setNewLibName('');
                          toast.success('Đã tạo kho mới');
                       }}
-                      className="flex-1 bg-[#002D56] text-white py-4 rounded-2xl text-xs font-black uppercase tracking-widest shadow-xl"
+                      className="flex-1 bg-[#002D56] text-white py-4 rounded-md text-xs font-black uppercase tracking-widest shadow-xl"
                     >
                       Xác nhận
                     </button>
@@ -6031,11 +6250,11 @@ const handleAnalyzeDocument = async (docId: string) => {
               <motion.div 
                 initial={{ opacity: 0, scale: 0.95, y: 20 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
-                className="bg-white w-full max-w-4xl rounded-[40px] shadow-2xl flex flex-col max-h-[85vh] overflow-hidden"
+                className="bg-white w-full max-w-4xl rounded-md shadow-2xl flex flex-col max-h-[85vh] overflow-hidden"
               >
                  <div className="px-8 py-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50 shrink-0">
                     <div className="flex items-center gap-4">
-                       <div className="p-3 bg-[#002D56] rounded-2xl shadow-lg shadow-[#002D56]/20">
+                       <div className="p-3 bg-[#002D56] rounded-md shadow-lg shadow-[#002D56]/20">
                           <BookOpen className="w-6 h-6 text-white" />
                        </div>
                        <div>
@@ -6048,7 +6267,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                         setIsPickingFromLibrary(false);
                         setSearchQuery('');
                       }}
-                      className="p-2 hover:bg-slate-200 rounded-xl transition-all"
+                      className="p-2 hover:bg-slate-200 rounded-md transition-all"
                     >
                        <X className="w-6 h-6 text-slate-300" />
                     </button>
@@ -6062,24 +6281,24 @@ const handleAnalyzeDocument = async (docId: string) => {
                          placeholder="Tìm kiếm tài liệu..." 
                          value={searchQuery}
                          onChange={e => setSearchQuery(e.target.value)}
-                         className="w-full pl-11 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-xs font-bold focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
+                         className="w-full pl-11 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-md text-xs font-bold focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
                        />
                     </div>
-                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest bg-slate-50 px-3 py-2 rounded-xl">
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest bg-slate-50 px-3 py-2 rounded-md">
                        {pickingMode === 'ai' ? 'CHẾ ĐỘ CHỌN NGUỒN AI' : 'CHẾ ĐỘ GẮN CÔNG VIỆC'}
                     </p>
                  </div>
 
-                 <div className="flex flex-1 overflow-hidden">
+                 <div className="flex flex-col sm:flex-row flex-1 overflow-hidden">
                     {/* Collection Tabs */}
-                    <aside className="w-64 border-r border-slate-100 bg-slate-50/30 p-4 space-y-1 overflow-y-auto shrink-0">
-                       <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4 ml-2">Bộ sưu tập</p>
+                    <aside className="w-full sm:w-64 border-b sm:border-b-0 sm:border-r border-slate-100 bg-slate-50/30 p-2 sm:p-4 space-y-1 overflow-x-auto sm:overflow-y-auto shrink-0 flex sm:flex-col gap-2 sm:gap-0 h-auto sm:h-full">
+                       <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest hidden sm:block mb-4 ml-2">Bộ sưu tập</p>
                        {libraryCollections.map(coll => (
                          <button
                            key={coll.id}
                            onClick={() => setActiveLibraryId(coll.id)}
                            className={cn(
-                             "w-full flex items-center gap-3 px-4 py-3 rounded-2xl transition-all text-left",
+                             "w-full sm:w-auto shrink-0 flex items-center gap-3 px-4 py-2 sm:py-3 rounded-md transition-all text-left whitespace-nowrap",
                              activeLibraryId === coll.id ? "bg-[#002D56] text-white shadow-xl shadow-[#002D56]/10" : "text-slate-600 hover:bg-white hover:shadow-sm"
                            )}
                          >
@@ -6115,14 +6334,14 @@ const handleAnalyzeDocument = async (docId: string) => {
                                      }
                                   }}
                                   className={cn(
-                                    "p-4 rounded-3xl border-2 transition-all text-left group flex flex-col gap-3",
+                                    "p-4 rounded-lg border-2 transition-all text-left group flex flex-col gap-3",
                                     isSelected 
                                       ? "border-[#002D56] bg-blue-50/30 ring-1 ring-[#002D56]" 
                                       : "border-slate-100 bg-white hover:border-slate-200 shadow-sm"
                                   )}
                                 >
                                    <div className="flex items-start justify-between w-full">
-                                      <div className="p-2 bg-slate-50 group-hover:bg-white rounded-xl transition-colors">
+                                      <div className="p-2 bg-slate-50 group-hover:bg-white rounded-md transition-colors">
                                          <FileText className={cn("w-4 h-4", isSelected ? "text-[#002D56]" : "text-slate-400")} />
                                       </div>
                                       <div className={cn(
@@ -6162,7 +6381,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                         setIsPickingFromLibrary(false);
                         setSearchQuery('');
                       }}
-                      className="bg-[#002D56] text-white px-10 py-3 rounded-2xl text-[10px] font-black uppercase tracking-[0.2em] shadow-xl hover:bg-slate-900 transition-all active:scale-95"
+                      className="bg-[#002D56] text-white px-10 py-3 rounded-md text-[10px] font-black uppercase tracking-[0.2em] shadow-xl hover:bg-slate-900 transition-all active:scale-95"
                     >
                       Xác nhận
                     </button>
@@ -6176,7 +6395,7 @@ const handleAnalyzeDocument = async (docId: string) => {
               <motion.div 
                 initial={{ opacity: 0, scale: 0.9 }}
                 animate={{ opacity: 1, scale: 1 }}
-                className="bg-white w-full max-w-sm rounded-[40px] shadow-2xl p-8"
+                className="bg-white w-full max-w-sm rounded-md shadow-2xl p-8"
               >
                  <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight mb-6">Chỉnh sửa kho lưu trữ</h3>
                  <div className="space-y-4">
@@ -6185,12 +6404,12 @@ const handleAnalyzeDocument = async (docId: string) => {
                       placeholder="Tên kho tư liệu..." 
                       value={newLibName || editingCollection.name}
                       onChange={e => setNewLibName(e.target.value)}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-4 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-md px-5 py-4 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10"
                     />
                     <select
                       value={newLibType || editingCollection.type}
                       onChange={e => setNewLibType(e.target.value as any)}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-4 text-xs font-bold text-slate-800 focus:outline-none"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-md px-4 py-4 text-xs font-bold text-slate-800 focus:outline-none"
                     >
                        <option value="custom">Tùy chỉnh</option>
                        <option value="work">Công việc</option>
@@ -6199,7 +6418,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                     </select>
                  </div>
                  <div className="flex gap-3 mt-8">
-                    <button onClick={() => { setEditingCollection(null); setNewLibName(''); }} className="flex-1 py-4 text-xs font-black uppercase text-slate-400 hover:bg-slate-50 rounded-2xl">Hủy</button>
+                    <button onClick={() => { setEditingCollection(null); setNewLibName(''); }} className="flex-1 py-4 text-xs font-black uppercase text-slate-400 hover:bg-slate-50 rounded-md">Hủy</button>
                     <button 
                       onClick={async () => {
                          const name = newLibName || editingCollection.name;
@@ -6209,7 +6428,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                          setNewLibName('');
                          toast.success('Đã cập nhật kho');
                       }}
-                      className="flex-1 bg-[#002D56] text-white py-4 rounded-2xl text-xs font-black uppercase tracking-widest shadow-xl"
+                      className="flex-1 bg-[#002D56] text-white py-4 rounded-md text-xs font-black uppercase tracking-widest shadow-xl"
                     >
                       Lưu thay đổi
                     </button>
@@ -6223,12 +6442,12 @@ const handleAnalyzeDocument = async (docId: string) => {
                <motion.div 
                  initial={{ opacity: 0, scale: 0.95, y: 20 }}
                  animate={{ opacity: 1, scale: 1, y: 0 }}
-                 className="bg-white w-full max-w-4xl h-[80vh] rounded-[48px] shadow-2xl flex flex-col overflow-hidden"
+                 className="bg-white w-full max-w-4xl h-[80vh] rounded-md shadow-2xl flex flex-col overflow-hidden"
                  onClick={e => e.stopPropagation()}
                >
                   <div className="p-8 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
                      <div className="flex items-center gap-4">
-                        <div className="bg-emerald-600 p-3 rounded-2xl">
+                        <div className="bg-emerald-600 p-3 rounded-md">
                            <LayoutDashboard className="text-white w-6 h-6" />
                         </div>
                         <div>
@@ -6236,7 +6455,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">Tài liệu: {isPickingTaskForDoc.name}</p>
                         </div>
                      </div>
-                     <button onClick={() => setIsPickingTaskForDoc(null)} className="p-3 hover:bg-white rounded-2xl shadow-sm border border-slate-100 transition-all">
+                     <button onClick={() => setIsPickingTaskForDoc(null)} className="p-3 hover:bg-white rounded-md shadow-sm border border-slate-100 transition-all">
                         <X className="w-6 h-6 text-slate-400" />
                      </button>
                   </div>
@@ -6247,7 +6466,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                         <input 
                            type="text"
                            placeholder="Tìm công việc..."
-                           className="w-full pl-12 pr-4 py-4 bg-slate-50 border border-slate-100 rounded-2xl text-xs font-bold focus:outline-none focus:ring-4 focus:ring-emerald-50 transition-all"
+                           className="w-full pl-12 pr-4 py-4 bg-slate-50 border border-slate-100 rounded-md text-xs font-bold focus:outline-none focus:ring-4 focus:ring-emerald-50 transition-all"
                            onChange={(e) => setTaskFilters(prev => ({ ...prev, search: e.target.value }))}
                         />
                      </div>
@@ -6271,14 +6490,14 @@ const handleAnalyzeDocument = async (docId: string) => {
                                  toast.success('Đã gắn tài liệu');
                               }}
                               className={cn(
-                                 "flex items-center gap-4 p-5 rounded-[32px] border-2 transition-all group text-left",
+                                 "flex items-center gap-4 p-5 rounded-md border-2 transition-all group text-left",
                                  task.linkedDocumentIds?.includes(isPickingTaskForDoc.id)
                                  ? "bg-slate-50 border-slate-100 opacity-60 grayscale cursor-not-allowed"
                                  : "bg-white border-slate-100 hover:border-emerald-500 hover:shadow-xl active:scale-95"
                               )}
                            >
                               <div className={cn(
-                                 "p-3 rounded-2xl shrink-0 group-hover:scale-110 transition-transform",
+                                 "p-3 rounded-md shrink-0 group-hover:scale-110 transition-transform",
                                  task.status === 'done' ? "bg-emerald-100 text-emerald-600" : "bg-blue-100 text-blue-600"
                               )}>
                                  {task.status === 'done' ? <CheckCircle className="w-5 h-5" /> : <Clock className="w-5 h-5" />}
@@ -6330,7 +6549,7 @@ const handleAnalyzeDocument = async (docId: string) => {
               <div className="px-8 py-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50 shrink-0">
                 <div className="flex items-center gap-4 min-w-0">
                   <div className={cn(
-                    "p-3 rounded-2xl shadow-lg shrink-0",
+                    "p-3 rounded-md shadow-lg shrink-0",
                     previewDocument.type === 'drive' ? "bg-[#002D56] text-white" : "bg-blue-600 text-white"
                   )}>
                     {previewDocument.driveIconUrl ? (
@@ -6352,7 +6571,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                 </div>
                 <button 
                   onClick={() => setPreviewDocument(null)}
-                  className="p-2.5 hover:bg-white rounded-xl shadow-sm border border-slate-100 transition-all shrink-0 ml-4"
+                  className="p-2.5 hover:bg-white rounded-md shadow-sm border border-slate-100 transition-all shrink-0 ml-4"
                 >
                   <X className="w-5 h-5 text-slate-400" />
                 </button>
@@ -6388,7 +6607,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                 {documentDetailTab === 'overview' && (
                   <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
                     {/* Summary Card */}
-                    <div className="bg-slate-50 rounded-[32px] p-6 border border-slate-100">
+                    <div className="bg-slate-50 rounded-md p-6 border border-slate-100">
                       <h4 className="text-[11px] font-black text-[#002D56] uppercase tracking-widest mb-4 flex items-center gap-2">
                          <Sparkles className="w-3.5 h-3.5" /> Tóm tắt nội dung
                       </h4>
@@ -6402,7 +6621,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                            <button 
                              onClick={() => handleAnalyzeDocument(previewDocument.id)}
                              disabled={!!isAnalyzing}
-                             className="bg-blue-600 text-white px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-blue-700 transition-all flex items-center gap-2 mx-auto disabled:opacity-50"
+                             className="bg-blue-600 text-white px-6 py-2.5 rounded-md text-[10px] font-black uppercase tracking-widest hover:bg-blue-700 transition-all flex items-center gap-2 mx-auto disabled:opacity-50"
                            >
                               {isAnalyzing === previewDocument.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
                               Phân tích ngay
@@ -6413,7 +6632,7 @@ const handleAnalyzeDocument = async (docId: string) => {
 
                     {/* Stats Grid */}
                     <div className="grid grid-cols-2 gap-4">
-                      <div className="bg-white p-5 rounded-3xl border border-slate-100 shadow-sm">
+                      <div className="bg-white p-5 rounded-lg border border-slate-100 shadow-sm">
                         <div className="flex items-center gap-3 mb-2">
                            <Calendar className="w-4 h-4 text-orange-500" />
                            <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Ngày cập nhật</span>
@@ -6422,7 +6641,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                           {formatLibraryDate(previewDocument.metadata?.modifiedTime || previewDocument.updatedAt)}
                         </p>
                       </div>
-                      <div className="bg-white p-5 rounded-3xl border border-slate-100 shadow-sm">
+                      <div className="bg-white p-5 rounded-lg border border-slate-100 shadow-sm">
                         <div className="flex items-center gap-3 mb-2">
                            <HardDrive className="w-4 h-4 text-indigo-500" />
                            <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Dung lượng</span>
@@ -6438,13 +6657,13 @@ const handleAnalyzeDocument = async (docId: string) => {
                          href={previewDocument.driveWebViewLink || (previewDocument.type === 'link' ? previewDocument.metadata?.url : undefined)} 
                          target="_blank" 
                          rel="noreferrer"
-                         className="bg-slate-900 text-white px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 hover:bg-slate-800 transition-all shadow-lg"
+                         className="bg-slate-900 text-white px-6 py-3 rounded-md text-[10px] font-black uppercase tracking-widest flex items-center gap-2 hover:bg-slate-800 transition-all shadow-lg"
                        >
                           Mở nguồn gốc <ExternalLink className="w-3.5 h-3.5" />
                        </a>
                        <button 
                          onClick={() => { closeMobileDrawer(); setIsPickingTaskForDoc(previewDocument); setPreviewDocument(null); }}
-                         className="bg-emerald-50 text-emerald-600 border border-emerald-200 px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-emerald-100 transition-all flex items-center gap-2"
+                         className="bg-emerald-50 text-emerald-600 border border-emerald-200 px-6 py-3 rounded-md text-[10px] font-black uppercase tracking-widest hover:bg-emerald-100 transition-all flex items-center gap-2"
                        >
                           Gắn vào công việc <Plus className="w-3.5 h-3.5" />
                        </button>
@@ -6453,10 +6672,10 @@ const handleAnalyzeDocument = async (docId: string) => {
                 )}
 
                 {documentDetailTab === 'preview' && (
-                  <div className="h-full min-h-[500px] bg-slate-100 rounded-[32px] overflow-hidden relative animate-in fade-in zoom-in-95 duration-500">
+                  <div className="h-full min-h-[500px] bg-slate-100 rounded-md overflow-hidden relative animate-in fade-in zoom-in-95 duration-500">
                     {previewDocument.driveMimeType === 'application/vnd.google-apps.folder' ? (
                        <div className="py-20 flex flex-col items-center text-center p-8">
-                          <div className="w-20 h-20 bg-blue-50 rounded-3xl flex items-center justify-center mb-6">
+                          <div className="w-20 h-20 bg-blue-50 rounded-lg flex items-center justify-center mb-6">
                              <Folder className="w-10 h-10 text-blue-500" />
                           </div>
                           <h4 className="text-lg font-black text-slate-800 uppercase mb-4">Thư mục Drive</h4>
@@ -6467,7 +6686,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                              {(previewDocument.driveFileId || previewDocument.metadata?.driveId) && (
                                 <button 
                                   onClick={() => handleSyncDriveFolder((previewDocument.driveFileId || previewDocument.metadata?.driveId)!, previewDocument.name)}
-                                  className="bg-emerald-500 text-white px-8 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-xl flex items-center gap-2"
+                                  className="bg-emerald-500 text-white px-8 py-3 rounded-md text-[10px] font-black uppercase tracking-widest shadow-xl flex items-center gap-2"
                                 >
                                    Đồng bộ lại <RefreshCw className="w-4 h-4" />
                                 </button>
@@ -6476,7 +6695,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                                href={getDocumentOpenUrl(previewDocument)}
                                target="_blank"
                                rel="noreferrer"
-                               className="bg-[#002D56] text-white px-8 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-xl flex items-center gap-2"
+                               className="bg-[#002D56] text-white px-8 py-3 rounded-md text-[10px] font-black uppercase tracking-widest shadow-xl flex items-center gap-2"
                              >
                                 Mở Drive <ExternalLink className="w-4 h-4" />
                              </a>
@@ -6491,13 +6710,13 @@ const handleAnalyzeDocument = async (docId: string) => {
                       />
                     ) : (
                       <div className="p-8 h-full bg-white flex flex-col">
-                        <div className="flex items-center gap-3 mb-6 p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                        <div className="flex items-center gap-3 mb-6 p-4 bg-slate-50 rounded-md border border-slate-100">
                            <AlertCircle className="w-4 h-4 text-amber-500" />
                            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-tight italic">
                               Không có liên kết xem trước. Hệ thống hiển thị nội dung thô đã được AI trích xuất.
                            </p>
                         </div>
-                        <div className="flex-1 overflow-y-auto font-mono text-[11px] leading-relaxed text-slate-600 bg-slate-50/50 p-6 rounded-3xl border border-slate-50">
+                        <div className="flex-1 overflow-y-auto font-mono text-[11px] leading-relaxed text-slate-600 bg-slate-50/50 p-6 rounded-lg border border-slate-50">
                            <pre className="whitespace-pre-wrap">{previewDocument.content || previewDocument.summary?.full || previewDocument.summary?.short || 'Nội dung trống'}</pre>
                         </div>
                       </div>
@@ -6520,7 +6739,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                            )}
                         </div>
 
-                        <div className="p-6 bg-slate-50/50 rounded-[32px] border border-slate-100">
+                        <div className="p-6 bg-slate-50/50 rounded-md border border-slate-100">
                            <h5 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">Tóm tắt nội dung</h5>
                            <div className="prose prose-slate prose-sm text-slate-600 max-w-none font-medium leading-relaxed mb-4 text-justify">
                               <span className="font-bold text-[#002D56]">{previewDocument.summary.short}</span>
@@ -6539,7 +6758,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                         
                         <div className="grid grid-cols-1 gap-4">
                            {(previewDocument.summary.mainPoints || previewDocument.summary.keyPoints)?.map((point: string, idx: number) => (
-                              <div key={idx} className="flex gap-4 p-4 bg-white rounded-2xl border border-slate-100 shadow-sm hover:border-blue-100 transition-colors group">
+                              <div key={idx} className="flex gap-4 p-4 bg-white rounded-md border border-slate-100 shadow-sm hover:border-blue-100 transition-colors group">
                                  <div className="w-6 h-6 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-[10px] font-black shrink-0 group-hover:bg-[#002D56] group-hover:text-white transition-colors">
                                     {idx + 1}
                                  </div>
@@ -6553,7 +6772,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                               <h5 className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">Yêu cầu thực hiện / Hành động</h5>
                               <div className="grid grid-cols-1 gap-3">
                                  {previewDocument.summary.actionItems.map((item: string, idx: number) => (
-                                    <div key={idx} className="flex gap-3 p-3 bg-emerald-50 rounded-xl border border-emerald-100 items-start">
+                                    <div key={idx} className="flex gap-3 p-3 bg-emerald-50 rounded-md border border-emerald-100 items-start">
                                        <CheckSquare className="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" />
                                        <p className="text-xs font-medium text-emerald-900 leading-relaxed">{item}</p>
                                     </div>
@@ -6567,7 +6786,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                               <h5 className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">Rủi ro / Cảnh báo</h5>
                               <div className="grid grid-cols-1 gap-3">
                                  {previewDocument.summary.risks.map((item: string, idx: number) => (
-                                    <div key={idx} className="flex gap-3 p-3 bg-rose-50 rounded-xl border border-rose-100 items-start">
+                                    <div key={idx} className="flex gap-3 p-3 bg-rose-50 rounded-md border border-rose-100 items-start">
                                        <AlertTriangle className="w-4 h-4 text-rose-500 mt-0.5 shrink-0" />
                                        <p className="text-xs font-medium text-rose-900 leading-relaxed">{item}</p>
                                     </div>
@@ -6603,7 +6822,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                                        dates: 'Thời gian'
                                     };
                                     return (
-                                       <div key={key} className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                                       <div key={key} className="p-4 bg-slate-50 rounded-md border border-slate-100">
                                           <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2">{labels[key] || key}</p>
                                           <div className="flex flex-wrap gap-1">
                                              {vals.map((v, vidx) => (
@@ -6619,7 +6838,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                            </div>
                         )}
 
-                        <div className="p-6 bg-blue-50/50 rounded-3xl border border-blue-100 flex items-center justify-between">
+                        <div className="p-6 bg-blue-50/50 rounded-lg border border-blue-100 flex items-center justify-between">
                            <div>
                               <p className="text-[10px] font-black text-[#002D56] uppercase tracking-tight">Cần cập nhật phân tích?</p>
                               <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">AI sẽ đọc lại & lập chỉ mục mới</p>
@@ -6627,7 +6846,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                            <button 
                              onClick={() => handleAnalyzeDocument(previewDocument.id)}
                              disabled={!!isAnalyzing}
-                             className="p-2.5 bg-white text-[#002D56] border border-slate-100 rounded-xl hover:bg-blue-50 transition-all shadow-sm"
+                             className="p-2.5 bg-white text-[#002D56] border border-slate-100 rounded-md hover:bg-blue-50 transition-all shadow-sm"
                            >
                               <RefreshCw className={cn("w-4 h-4", isAnalyzing === previewDocument.id && "animate-spin")} />
                            </button>
@@ -6635,7 +6854,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                       </>
                     ) : (
                       <div className="py-20 text-center">
-                         <div className="w-16 h-16 bg-slate-50 rounded-3xl flex items-center justify-center mx-auto mb-6">
+                         <div className="w-16 h-16 bg-slate-50 rounded-lg flex items-center justify-center mx-auto mb-6">
                             <Sparkles className="w-8 h-8 text-slate-200" />
                          </div>
                          <h4 className="text-sm font-black text-slate-400 uppercase tracking-widest mb-2">Chưa có kết quả AI</h4>
@@ -6643,7 +6862,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                          <button 
                            onClick={() => handleAnalyzeDocument(previewDocument.id)}
                            disabled={!!isAnalyzing}
-                           className="bg-blue-600 text-white px-8 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-blue-700 transition-all flex items-center gap-2 mx-auto shadow-lg shadow-blue-500/20"
+                           className="bg-blue-600 text-white px-8 py-3 rounded-md text-[10px] font-black uppercase tracking-widest hover:bg-blue-700 transition-all flex items-center gap-2 mx-auto shadow-lg shadow-blue-500/20"
                          >
                             {isAnalyzing === previewDocument.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
                             Yêu cầu AI phân tích
@@ -6655,7 +6874,7 @@ const handleAnalyzeDocument = async (docId: string) => {
 
                 {documentDetailTab === 'metadata' && (
                   <div className="space-y-6 animate-in fade-in duration-500">
-                    <div className="bg-slate-900 rounded-[32px] p-8 text-slate-300 overflow-hidden relative">
+                    <div className="bg-slate-900 rounded-md p-8 text-slate-300 overflow-hidden relative">
                        <div className="absolute top-0 right-0 p-10 opacity-[0.03] pointer-events-none">
                           <FileType className="w-64 h-64 rotate-12" />
                        </div>
@@ -6688,7 +6907,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                          setPreviewDocument(null);
                          toast.success('Đã chọn làm nguồn AI');
                       }}
-                      className="px-6 py-2.5 bg-emerald-500 text-white rounded-xl text-[10px] font-black uppercase tracking-widest shadow-lg"
+                      className="px-6 py-2.5 bg-emerald-500 text-white rounded-md text-[10px] font-black uppercase tracking-widest shadow-lg"
                     >
                        Dùng làm nguồn AI
                     </button>
@@ -6699,14 +6918,14 @@ const handleAnalyzeDocument = async (docId: string) => {
                             removeDocument(previewDocument.id);
                          }
                       }}
-                      className="px-6 py-2.5 bg-red-50 text-red-500 border border-red-100 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-red-500 hover:text-white transition-all shadow-sm"
+                      className="px-6 py-2.5 bg-red-50 text-red-500 border border-red-100 rounded-md text-[10px] font-black uppercase tracking-widest hover:bg-red-500 hover:text-white transition-all shadow-sm"
                     >
                        Xóa tài liệu
                     </button>
                  </div>
                  <button 
                    onClick={() => setPreviewDocument(null)}
-                   className="px-6 py-2.5 bg-slate-200 text-slate-600 rounded-xl text-[10px] font-black uppercase tracking-widest"
+                   className="px-6 py-2.5 bg-slate-200 text-slate-600 rounded-md text-[10px] font-black uppercase tracking-widest"
                  >
                     Đóng
                  </button>
@@ -6721,12 +6940,12 @@ const handleAnalyzeDocument = async (docId: string) => {
                <motion.div 
                  initial={{ opacity: 0, scale: 0.95, y: 20 }}
                  animate={{ opacity: 1, scale: 1, y: 0 }}
-                 className="bg-white w-full max-w-4xl h-[80vh] rounded-[48px] shadow-2xl flex flex-col overflow-hidden"
+                 className="bg-white w-full max-w-4xl h-[80vh] rounded-md shadow-2xl flex flex-col overflow-hidden"
                  onClick={e => e.stopPropagation()}
                >
                   <div className="p-8 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
                      <div className="flex items-center gap-4">
-                        <div className="bg-[#002D56] p-3 rounded-2xl">
+                        <div className="bg-[#002D56] p-3 rounded-md">
                            <Database className="text-white w-6 h-6" />
                         </div>
                         <div>
@@ -6734,7 +6953,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">Đang chọn cho: {editingTask.title}</p>
                         </div>
                      </div>
-                     <button onClick={() => setIsPickingFromLibrary(false)} className="p-3 hover:bg-white rounded-2xl shadow-sm border border-slate-100 transition-all">
+                     <button onClick={() => setIsPickingFromLibrary(false)} className="p-3 hover:bg-white rounded-md shadow-sm border border-slate-100 transition-all">
                         <X className="w-6 h-6 text-slate-400" />
                      </button>
                   </div>
@@ -6745,7 +6964,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                         <input 
                            type="text"
                            placeholder="Tìm tài liệu..."
-                           className="w-full pl-12 pr-4 py-4 bg-slate-50 border border-slate-100 rounded-2xl text-xs font-bold focus:outline-none focus:ring-4 focus:ring-blue-50 transition-all"
+                           className="w-full pl-12 pr-4 py-4 bg-slate-50 border border-slate-100 rounded-md text-xs font-bold focus:outline-none focus:ring-4 focus:ring-blue-50 transition-all"
                            onChange={(e) => setLibrarySearchQuery(e.target.value)}
                         />
                      </div>
@@ -6769,13 +6988,13 @@ const handleAnalyzeDocument = async (docId: string) => {
                                  toast.success('Đã gắn tài liệu');
                               }}
                               className={cn(
-                                 "flex items-center gap-4 p-4 rounded-[28px] border-2 transition-all group text-left",
+                                 "flex items-center gap-4 p-4 rounded-md border-2 transition-all group text-left",
                                  editingTask.linkedDocumentIds?.includes(doc.id) 
                                  ? "bg-slate-50 border-slate-100 opacity-60 grayscale cursor-not-allowed" 
                                  : "bg-white border-slate-100 hover:border-[#002D56] hover:shadow-xl active:scale-95"
                               )}
                            >
-                              <div className="p-3 bg-slate-50 rounded-xl group-hover:bg-blue-50 transition-colors shrink-0">
+                              <div className="p-3 bg-slate-50 rounded-md group-hover:bg-blue-50 transition-colors shrink-0">
                                  {doc.driveIconUrl ? (
                                     <img src={doc.driveIconUrl} alt="icon" className="w-5 h-5 opacity-70" referrerPolicy="no-referrer" />
                                  ) : (
@@ -6813,13 +7032,13 @@ const handleAnalyzeDocument = async (docId: string) => {
                   initial={{ scale: 0.95, opacity: 0, y: 20 }}
                   animate={{ scale: 1, opacity: 1, y: 0 }}
                   exit={{ scale: 0.95, opacity: 0, y: 20 }}
-                  className="relative w-full max-w-lg bg-white rounded-[32px] shadow-2xl overflow-hidden"
+                  className="relative w-full max-w-lg bg-white rounded-md shadow-2xl overflow-hidden"
                >
                   <div className="px-8 py-6 border-b border-slate-100 flex items-center justify-between bg-slate-50">
                      <h3 className="text-sm font-black text-slate-800 uppercase tracking-widest">Sửa thông tin tài liệu</h3>
                      <button 
                         onClick={() => setIsEditingDocModalOpen(false)}
-                        className="p-2 hover:bg-slate-200 rounded-xl transition-all"
+                        className="p-2 hover:bg-slate-200 rounded-md transition-all"
                      >
                         <X className="w-4 h-4 text-slate-500" />
                      </button>
@@ -6831,7 +7050,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                            type="text"
                            value={docEditForm.name}
                            onChange={e => setDocEditForm({...docEditForm, name: e.target.value})}
-                           className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold text-slate-800 focus:ring-4 focus:ring-blue-50 focus:border-blue-500 transition-all outline-none"
+                           className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-md text-sm font-bold text-slate-800 focus:ring-4 focus:ring-blue-50 focus:border-blue-500 transition-all outline-none"
                         />
                      </div>
                      <div>
@@ -6839,7 +7058,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                         <select 
                            value={docEditForm.collectionId || 'lib-personal'}
                            onChange={e => setDocEditForm({...docEditForm, collectionId: e.target.value})}
-                           className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold text-slate-800 focus:ring-4 focus:ring-blue-50 focus:border-blue-500 transition-all outline-none"
+                           className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-md text-sm font-bold text-slate-800 focus:ring-4 focus:ring-blue-50 focus:border-blue-500 transition-all outline-none"
                         >
                            {DEFAULT_LIBRARY_COLLECTIONS.map(coll => (
                               <option key={coll.id} value={coll.id}>{coll.name}</option>
@@ -6852,7 +7071,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                            <select 
                               value={docEditForm.documentKind || ''}
                               onChange={e => setDocEditForm({...docEditForm, documentKind: e.target.value})}
-                              className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold text-slate-800 focus:ring-4 focus:ring-blue-50 focus:border-blue-500 transition-all outline-none"
+                              className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-md text-sm font-bold text-slate-800 focus:ring-4 focus:ring-blue-50 focus:border-blue-500 transition-all outline-none"
                            >
                               <option value="">(Không xác định)</option>
                               {Object.entries(DOCUMENT_KIND_LABELS).map(([key, label]) => (
@@ -6865,7 +7084,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                            <select 
                               value={docEditForm.taskCategoryCode || ''}
                               onChange={e => setDocEditForm({...docEditForm, taskCategoryCode: e.target.value})}
-                              className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold text-slate-800 focus:ring-4 focus:ring-blue-50 focus:border-blue-500 transition-all outline-none"
+                              className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-md text-sm font-bold text-slate-800 focus:ring-4 focus:ring-blue-50 focus:border-blue-500 transition-all outline-none"
                            >
                               <option value="">(Không xác định)</option>
                               {TASK_CATEGORIES.map(cat => (
@@ -6880,20 +7099,20 @@ const handleAnalyzeDocument = async (docId: string) => {
                            rows={4}
                            value={docEditForm.description}
                            onChange={e => setDocEditForm({...docEditForm, description: e.target.value})}
-                           className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold text-slate-800 focus:ring-4 focus:ring-blue-50 focus:border-blue-500 transition-all outline-none resize-none"
+                           className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-md text-sm font-bold text-slate-800 focus:ring-4 focus:ring-blue-50 focus:border-blue-500 transition-all outline-none resize-none"
                         ></textarea>
                      </div>
                   </div>
                   <div className="px-8 py-6 border-t border-slate-100 bg-slate-50 flex items-center justify-end gap-3">
                      <button 
                         onClick={() => setIsEditingDocModalOpen(false)}
-                        className="px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest text-slate-500 hover:bg-slate-200 transition-all"
+                        className="px-6 py-3 rounded-md text-[10px] font-black uppercase tracking-widest text-slate-500 hover:bg-slate-200 transition-all"
                      >
                         Hủy
                      </button>
                      <button 
                         onClick={saveDocumentEdit}
-                        className="px-6 py-3 bg-[#002D56] text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-900 transition-all shadow-xl shadow-[#002D56]/20"
+                        className="px-6 py-3 bg-[#002D56] text-white rounded-md text-[10px] font-black uppercase tracking-widest hover:bg-slate-900 transition-all shadow-xl shadow-[#002D56]/20"
                      >
                         Lưu Thay Đổi
                      </button>
@@ -6917,11 +7136,11 @@ const handleAnalyzeDocument = async (docId: string) => {
                   initial={{ scale: 0.95, opacity: 0, y: 20 }}
                   animate={{ scale: 1, opacity: 1, y: 0 }}
                   exit={{ scale: 0.95, opacity: 0, y: 20 }}
-                  className="relative w-full max-w-4xl max-h-[80vh] flex flex-col bg-white rounded-[32px] shadow-2xl overflow-hidden"
+                  className="relative w-full max-w-4xl max-h-[80vh] flex flex-col bg-white rounded-md shadow-2xl overflow-hidden"
                >
                   <div className="px-8 py-6 border-b border-slate-100 flex items-center justify-between bg-slate-50 shrink-0">
                      <div className="flex items-center gap-4">
-                        <div className="p-3 bg-blue-100 text-blue-600 rounded-2xl">
+                        <div className="p-3 bg-blue-100 text-blue-600 rounded-md">
                            <FolderOpen className="w-5 h-5" />
                         </div>
                         <div>
@@ -6931,7 +7150,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                      </div>
                      <button 
                         onClick={() => setDocumentExplorerFolder(null)}
-                        className="p-2.5 hover:bg-slate-200 rounded-xl transition-all"
+                        className="p-2.5 hover:bg-slate-200 rounded-md transition-all"
                      >
                         <X className="w-5 h-5 text-slate-500" />
                      </button>
@@ -6954,7 +7173,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                               return (
                                  <div 
                                     key={file.id}
-                                    className="flex flex-col p-4 bg-white border border-slate-100 rounded-2xl hover:border-blue-200 hover:shadow-lg transition-all group"
+                                    className="flex flex-col p-4 bg-white border border-slate-100 rounded-md hover:border-blue-200 hover:shadow-lg transition-all group"
                                  >
                                     <div 
                                        className="flex items-start gap-3 cursor-pointer mb-3"
@@ -6967,7 +7186,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                                           }
                                        }}
                                     >
-                                       <div className="shrink-0 p-2 bg-slate-50 rounded-xl group-hover:bg-blue-50 transition-colors">
+                                       <div className="shrink-0 p-2 bg-slate-50 rounded-md group-hover:bg-blue-50 transition-colors">
                                           {file.iconLink ? (
                                              <img src={file.iconLink} alt="icon" className="w-5 h-5" referrerPolicy="no-referrer" />
                                           ) : isFolder ? (
@@ -7063,9 +7282,9 @@ const handleAnalyzeDocument = async (docId: string) => {
                   initial={{ scale: 0.95, opacity: 0 }}
                   animate={{ scale: 1, opacity: 1 }}
                   exit={{ scale: 0.95, opacity: 0 }}
-                  className="relative bg-white w-full max-w-sm rounded-[32px] shadow-2xl overflow-hidden text-center p-8"
+                  className="relative bg-white w-full max-w-sm rounded-md shadow-2xl overflow-hidden text-center p-8"
                >
-                  <div className="w-16 h-16 bg-amber-50 rounded-3xl flex items-center justify-center mx-auto mb-6 text-amber-500">
+                  <div className="w-16 h-16 bg-amber-50 rounded-lg flex items-center justify-center mx-auto mb-6 text-amber-500">
                      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
                   </div>
                   <h3 className="text-lg font-black uppercase text-slate-800 mb-4 tracking-tight">Xác nhận</h3>
@@ -7076,7 +7295,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                            confirmDialog.resolve(false);
                            setConfirmDialog(null);
                         }}
-                        className="flex-1 py-3 px-4 bg-slate-100 text-slate-600 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-200 transition-colors"
+                        className="flex-1 py-3 px-4 bg-slate-100 text-slate-600 rounded-md text-[10px] font-black uppercase tracking-widest hover:bg-slate-200 transition-colors"
                      >
                         Hủy
                      </button>
@@ -7085,7 +7304,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                            confirmDialog.resolve(true);
                            setConfirmDialog(null);
                         }}
-                        className="flex-1 py-3 px-4 bg-red-500 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-red-600 transition-colors shadow-lg shadow-red-500/20"
+                        className="flex-1 py-3 px-4 bg-red-500 text-white rounded-md text-[10px] font-black uppercase tracking-widest hover:bg-red-600 transition-colors shadow-lg shadow-red-500/20"
                      >
                         Đồng ý
                      </button>

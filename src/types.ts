@@ -1,6 +1,75 @@
 
 export type TaskType = 'WRITE_NEW' | 'REVIEW' | 'RESIZE' | 'SYNTHESIZE' | 'TASK_BUILDER';
 
+export type ActivityModule =
+  | "all"
+  | "library"
+  | "task"
+  | "editorial"
+  | "note"
+  | "system";
+
+export type ActivityAction =
+  | "created"
+  | "updated"
+  | "deleted"
+  | "archived"
+  | "restored"
+  | "status_changed"
+  | "synced"
+  | "analyzed"
+  | "summarized"
+  | "linked"
+  | "unlinked"
+  | "exported"
+  | "approved"
+  | "sent_for_review"
+  | "api_key_tested"
+  | "settings_changed";
+
+export interface ActivityLogEntry {
+  id: string;
+  userId: string;
+  module: Exclude<ActivityModule, "all">;
+  action: ActivityAction;
+  entityType:
+    | "document"
+    | "task"
+    | "editorial_session"
+    | "article"
+    | "note"
+    | "drive_folder"
+    | "drive_file"
+    | "settings"
+    | "system";
+  entityId?: string;
+  entityTitle?: string;
+  title: string;
+  summary: string;
+  changedFields?: string[];
+  beforeSnapshot?: Record<string, unknown>;
+  afterSnapshot?: Record<string, unknown>;
+  metadata?: {
+    source?: "client" | "server" | "ai" | "drive_sync";
+    statusFrom?: string;
+    statusTo?: string;
+    linkedEntityId?: string;
+    linkedEntityTitle?: string;
+    fileName?: string;
+    fileMimeType?: string;
+    exportFormat?: "docx" | "pdf" | "html" | "markdown";
+    errorCode?: string;
+    errorMessage?: string;
+  };
+  actor?: {
+    uid?: string;
+    displayName?: string;
+    email?: string;
+  };
+  createdAt: number;
+}
+
+
 export type WritingStyle = 'FORMAL' | 'TECHNICAL' | 'EDITORIAL' | 'DYNAMISM';
 
 export type OutputFormat = 'ARTICLE' | 'NEWS' | 'PRESS_RELEASE' | 'REPORT' | 'ANNOUNCEMENT';

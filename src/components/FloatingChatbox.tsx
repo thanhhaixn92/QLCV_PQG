@@ -215,8 +215,8 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
             {isAiReady ? (
               messages.length === 0 && (
                 <span className="absolute -top-1 -right-1 flex h-3 w-3 sm:h-4 sm:w-4">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-3 w-3 sm:h-4 sm:w-4 bg-emerald-500 border-2 border-white shadow-sm"></span>
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-md bg-emerald-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-md h-3 w-3 sm:h-4 sm:w-4 bg-emerald-500 border-2 border-white shadow-sm"></span>
                 </span>
               )
             ) : (
@@ -233,12 +233,12 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
             initial={{ opacity: 0, y: 100, scale: 0.8, transformOrigin: 'bottom right' }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 100, scale: 0.8 }}
-            className="fixed bottom-[calc(4.5rem+env(safe-area-inset-bottom))] sm:bottom-[calc(1.5rem+env(safe-area-inset-bottom))] right-4 sm:right-[5.5rem] w-[calc(100vw-32px)] sm:w-[420px] h-[calc(100dvh-6rem)] sm:h-[600px] max-h-[80vh] sm:max-h-[min(600px,calc(100dvh-3rem))] bg-white rounded-[24px] sm:rounded-[32px] shadow-2xl z-[90] flex flex-col overflow-hidden border border-slate-200"
+            className="fixed bottom-[calc(4.5rem+env(safe-area-inset-bottom))] sm:bottom-[calc(1.5rem+env(safe-area-inset-bottom))] right-4 sm:right-[5.5rem] w-[calc(100vw-32px)] sm:w-[420px] h-[calc(100dvh-6rem)] sm:h-[600px] max-h-[80vh] sm:max-h-[min(600px,calc(100dvh-3rem))] bg-white rounded-md lg:rounded-lg shadow-2xl z-[90] flex flex-col overflow-hidden border border-slate-200"
           >
             {/* Header */}
             <div className="p-5 bg-[#002D56] text-white flex items-center justify-between shrink-0 shadow-lg">
               <div className="flex items-center gap-3">
-                <div className="p-2 bg-white/10 rounded-xl">
+                <div className="p-2 bg-white/10 rounded-md">
                   <Bot className={cn("w-5 h-5", isAiReady ? "text-emerald-400" : "text-rose-400")} />
                 </div>
                 <div>
@@ -259,7 +259,7 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                   <button 
                     onClick={onClear}
                     title="Xóa hội thoại"
-                    className="p-2 hover:bg-white/10 rounded-xl transition-colors text-white/60 hover:text-white disabled:opacity-30"
+                    className="p-2 hover:bg-white/10 rounded-md transition-colors text-white/60 hover:text-white disabled:opacity-30"
                     disabled={loading}
                   >
                     <Trash2 className="w-4 h-4" />
@@ -267,7 +267,7 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                 )}
                 <button 
                   onClick={onToggle}
-                  className="p-2 hover:bg-white/10 rounded-xl transition-colors text-white/60 hover:text-white"
+                  className="p-2 hover:bg-white/10 rounded-md transition-colors text-white/60 hover:text-white"
                 >
                   <X className="w-4 h-4" />
                 </button>
@@ -281,7 +281,7 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
             >
               {messages.length === 0 && (
                 <div className="h-full flex flex-col items-center justify-center text-center px-6">
-                  <div className="w-16 h-16 bg-[#002D56]/5 rounded-[24px] flex items-center justify-center mb-4">
+                  <div className="w-16 h-16 bg-[#002D56]/5 rounded-md flex items-center justify-center mb-4">
                     <Bot className="w-8 h-8 text-[#002D56]/20" />
                   </div>
                   <p className="text-xs font-black text-slate-400 uppercase tracking-widest mb-2 font-mono">XIN CHÀO!</p>
@@ -294,7 +294,7 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                          <button 
                            key={qp.label}
                            onClick={() => onInputChange(qp.prompt)}
-                           className="px-3 py-1.5 bg-white border border-slate-200 rounded-full text-[10px] font-bold text-[#002D56] hover:bg-slate-50 transition-colors shadow-sm flex items-center gap-1.5"
+                           className="px-3 py-1.5 bg-white border border-slate-200 rounded-md text-[10px] font-bold text-[#002D56] hover:bg-slate-50 transition-colors shadow-sm flex items-center gap-1.5"
                          >
                            <Sparkles className="w-3 h-3 text-emerald-500" />
                            {qp.label}
@@ -329,40 +329,53 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                   </div>
                   <div className="flex flex-col gap-1 max-w-[90%]">
                     <div className={cn(
-                      "px-4 py-3 rounded-[20px] font-medium shadow-sm break-words",
+                      "px-4 py-3 rounded-md font-medium shadow-sm break-words",
                       msg.role === 'user' 
                         ? "bg-[#002D56] text-white rounded-tr-none leading-[1.55] text-[14px] whitespace-pre-wrap" 
                         : "bg-white text-slate-700 rounded-tl-none border border-slate-100 leading-[1.65] text-[14px]"
                     )}>
                       {msg.role === 'assistant' ? (
                         <div className="text-[14px] prose-strong:text-[#002D56]">
-                          <ReactMarkdown
-                            components={{
-                              p: ({ children }) => <p className="mb-0.5 last:mb-0 leading-[1.5] text-justify">{children}</p>,
-                              strong: ({ children }) => <strong className="font-semibold text-[#002D56]">{children}</strong>,
-                              ul: ({ children }) => <ul className="mb-0.5 mt-0.5 list-disc pl-4 space-y-0.5 leading-[1.5]">{children}</ul>,
-                              ol: ({ children }) => <ol className="mb-0.5 mt-0.5 list-decimal pl-4 space-y-0.5 leading-[1.5]">{children}</ol>,
-                              li: ({ children, ...props }) => (
-                                <li className="leading-[1.5] pl-0.5 marker:text-slate-400" {...props}>
-                                  {children}
-                                </li>
-                              ),
-                              h1: ({ children }) => <h1 className="text-[15px] font-black mt-2 mb-0.5 text-[#002D56]">{children}</h1>,
-                              h2: ({ children }) => <h2 className="text-[14px] font-bold mt-1.5 mb-0.5 text-[#002D56]">{children}</h2>,
-                              h3: ({ children }) => <h3 className="text-[13px] font-bold mt-1 mb-0.5 text-[#002D56]">{children}</h3>,
-                              code: ({ children, ...props }: any) => {
-                                const match = /language-(\w+)/.exec(props.className || '');
-                                const isInline = !match && !props.node?.properties?.className?.includes('language-');
-                                if (isInline) {
-                                  return <code className="rounded bg-slate-100 px-1 py-0.5 text-[13px] font-mono mx-0.5 text-slate-800" {...props}>{children}</code>;
-                                }
-                                return <code className="text-[13px] font-mono leading-[1.6]" {...props}>{children}</code>;
-                              },
-                              pre: ({ children }) => <pre className="my-2 overflow-x-auto rounded-lg bg-slate-900 p-2.5 text-[13px] leading-[1.55] text-white shadow-sm">{children}</pre>
-                            }}
-                          >
-                            {msg.content}
-                          </ReactMarkdown>
+                          {(() => {
+                            let content = msg.content;
+                            try {
+                              const parsed = JSON.parse(msg.content);
+                              if (typeof parsed === 'object' && parsed.reply) {
+                                content = parsed.reply;
+                              }
+                            } catch (e) {
+                              // If not JSON, keep as is
+                            }
+                            return (
+                              <ReactMarkdown
+                                components={{
+                                  p: ({ children }) => <p className="mb-0.5 last:mb-0 leading-[1.5] text-justify">{children}</p>,
+                                  strong: ({ children }) => <strong className="font-semibold text-[#002D56]">{children}</strong>,
+                                  ul: ({ children }) => <ul className="mb-0.5 mt-0.5 list-disc pl-4 space-y-0.5 leading-[1.5]">{children}</ul>,
+                                  ol: ({ children }) => <ol className="mb-0.5 mt-0.5 list-decimal pl-4 space-y-0.5 leading-[1.5]">{children}</ol>,
+                                  li: ({ children, ...props }) => (
+                                    <li className="leading-[1.5] pl-0.5 marker:text-slate-400" {...props}>
+                                      {children}
+                                    </li>
+                                  ),
+                                  h1: ({ children }) => <h1 className="text-[15px] font-black mt-2 mb-0.5 text-[#002D56]">{children}</h1>,
+                                  h2: ({ children }) => <h2 className="text-[14px] font-bold mt-1.5 mb-0.5 text-[#002D56]">{children}</h2>,
+                                  h3: ({ children }) => <h3 className="text-[13px] font-bold mt-1 mb-0.5 text-[#002D56]">{children}</h3>,
+                                  code: ({ children, ...props }: any) => {
+                                    const match = /language-(\w+)/.exec(props.className || '');
+                                    const isInline = !match && !props.node?.properties?.className?.includes('language-');
+                                    if (isInline) {
+                                      return <code className="rounded bg-slate-100 px-1 py-0.5 text-[13px] font-mono mx-0.5 text-slate-800" {...props}>{children}</code>;
+                                    }
+                                    return <code className="text-[13px] font-mono leading-[1.6]" {...props}>{children}</code>;
+                                  },
+                                  pre: ({ children }) => <pre className="my-2 overflow-x-auto rounded-lg bg-slate-900 p-2.5 text-[13px] leading-[1.55] text-white shadow-sm">{children}</pre>
+                                }}
+                              >
+                                {content}
+                              </ReactMarkdown>
+                            );
+                          })()}
                         </div>
                       ) : (
                         <>
@@ -370,7 +383,7 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                           {msg.attachments && msg.attachments.length > 0 && (
                             <div className="mt-2 flex flex-col gap-1.5">
                               {msg.attachments.map(att => (
-                                <div key={att.id} className="flex items-center gap-2 bg-blue-900/30 border border-blue-800/30 py-1.5 px-3 rounded-xl max-w-full">
+                                <div key={att.id} className="flex items-center gap-2 bg-blue-900/30 border border-blue-800/30 py-1.5 px-3 rounded-md max-w-full">
                                   <File className="w-3.5 h-3.5 text-blue-300 shrink-0" />
                                   <span className="text-[11px] font-bold text-blue-100 truncate">{att.originalName || att.name}</span>
                                 </div>
@@ -387,7 +400,7 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                           Công việc AI đề xuất - cần duyệt
                         </div>
                         {msg.taskDrafts.map((draft, dIdx) => (
-                          <div key={`${draft.clientId}-${dIdx}`} className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm hover:shadow-md transition-shadow">
+                          <div key={`${draft.clientId}-${dIdx}`} className="bg-white border border-slate-200 rounded-md p-4 shadow-sm hover:shadow-md transition-shadow">
                             <div className="flex items-start gap-3">
                               <input
                                 type="checkbox"
@@ -421,7 +434,7 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                                 </div>
 
                                 {draft.checklist && draft.checklist.length > 0 && (
-                                  <div className="mt-4 bg-slate-50/80 rounded-xl p-3 border border-slate-100">
+                                  <div className="mt-4 bg-slate-50/80 rounded-md p-3 border border-slate-100">
                                     <p className="text-[9px] font-black uppercase tracking-widest text-[#002D56]/40 mb-2 flex items-center gap-1.5">
                                       <CheckSquare className="w-2.5 h-2.5" />
                                       Checklist chi tiết
@@ -442,10 +455,10 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                         ))}
                         <button
                           onClick={() => onCreateTasks?.(i)}
-                          className="w-full bg-[#002D56] text-white rounded-2xl py-3 text-[11px] font-black uppercase tracking-widest shadow-xl shadow-blue-900/10 hover:shadow-blue-900/20 active:scale-95 transition-all flex items-center justify-center gap-2"
+                          className="w-full bg-[#002D56] text-white rounded-md py-3 text-[11px] font-black uppercase tracking-widest shadow-xl shadow-blue-900/10 hover:shadow-blue-900/20 active:scale-95 transition-all flex items-center justify-center gap-2"
                         >
                           <Plus className="w-4 h-4" />
-                          Tạo {msg.taskDrafts.filter(d => d.selected !== false).length} công việc đã chọn
+                          [+ Tạo danh sách công việc này]
                         </button>
                       </div>
                     )}
@@ -488,7 +501,7 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                     </div>
                     <span className="text-[9px] font-black uppercase text-slate-400 tracking-widest">Hoa Tiêu AI</span>
                   </div>
-                  <div className="bg-white px-4 py-3 rounded-[20px] rounded-tl-none border border-slate-100 shadow-sm flex items-center gap-2">
+                  <div className="bg-white px-4 py-3 rounded-md rounded-tl-none border border-slate-100 shadow-sm flex items-center gap-2">
                     <Loader2 className="w-4 h-4 text-[#002D56] animate-spin" />
                     <span className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Đang suy nghĩ...</span>
                   </div>
@@ -500,7 +513,7 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
             <div className="p-4 bg-white border-t border-slate-100 shrink-0">
               {(disabledReason || !isAiReady) && (
                 <div className={cn(
-                  "mb-3 p-3 border rounded-xl flex items-center gap-2",
+                  "mb-3 p-3 border rounded-md flex items-center gap-2",
                   disabledReason ? "bg-amber-50 border-amber-100 text-amber-600" : "bg-rose-50 border-rose-100 text-rose-600"
                 )}>
                   <div className={cn("w-1.5 h-1.5 rounded-full", disabledReason ? "bg-amber-500" : "bg-rose-500")} />
@@ -513,7 +526,7 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
               {attachments.length > 0 && (
                 <div className="flex flex-wrap gap-2 mb-3">
                   {attachments.map(att => (
-                    <div key={att.id} className="flex items-center gap-2 bg-blue-50 border border-blue-100 py-1.5 px-3 rounded-xl max-w-full">
+                    <div key={att.id} className="flex items-center gap-2 bg-blue-50 border border-blue-100 py-1.5 px-3 rounded-md max-w-full">
                       {(att.status === 'uploading' || att.contentStatus === 'pending' || att.contentStatus === 'extracting') ? (
                         <Loader2 className="w-3.5 h-3.5 text-blue-500 animate-spin shrink-0" />
                       ) : (att.status === 'error' || att.contentStatus === 'error') ? (
@@ -542,7 +555,7 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                 </div>
               )}
 
-              <div className="relative group flex items-end gap-2">
+              <div className="relative group flex items-end gap-2 mb-2">
                 <input 
                   type="file" 
                   ref={fileInputRef} 
@@ -555,7 +568,7 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
                   disabled={disabled || loading || hasPendingAttachment || attachments.length >= 3}
-                  className="p-3 bg-slate-50 border border-slate-200 text-slate-500 rounded-xl hover:bg-slate-100 transition-colors disabled:opacity-50 shrink-0 mb-0.5"
+                  className="p-3 bg-slate-50 border border-slate-200 text-slate-500 rounded-md hover:bg-slate-100 transition-colors disabled:opacity-50 shrink-0 mb-0.5"
                   title="Đính kèm tệp"
                 >
                   <Paperclip className="w-4 h-4" />
@@ -580,12 +593,12 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                     attachments.some(a => a.status === 'error') ? "Tệp lỗi, bạn có thể xóa tệp hoặc gửi câu hỏi khác..." : 
                     "Hỏi Hoa Tiêu AI..."
                   }
-                  className="w-full bg-slate-50 border border-slate-200 rounded-2xl pl-4 pr-12 py-3 text-[14px] leading-[1.5] font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10 transition-all disabled:opacity-50 resize-none max-h-[120px] custom-scrollbar min-h-[46px]"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-md pl-4 pr-12 py-3 text-[14px] leading-[1.5] font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-[#002D56]/10 transition-all disabled:opacity-50 resize-none max-h-[120px] custom-scrollbar min-h-[46px]"
                 />
                 <button 
                   onClick={handleSendWithAttachments}
                   disabled={!canSend || !isAiReady}
-                  className="absolute right-2 bottom-2 p-2 bg-[#002D56] text-white rounded-xl hover:shadow-lg disabled:opacity-30 disabled:grayscale transition-all active:scale-90"
+                  className="absolute right-2 bottom-2 p-2 bg-[#002D56] text-white rounded-md hover:shadow-lg disabled:opacity-30 disabled:grayscale transition-all active:scale-90"
                 >
                   <Send className="w-4 h-4" />
                 </button>
