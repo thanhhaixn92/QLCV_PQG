@@ -123,8 +123,12 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
     setAttachments(prev => prev.filter(a => a.id !== id));
   };
 
-  const hasPendingAttachment = attachments.some(a => ['uploading', 'uploaded', 'extracting', 'analyzing'].includes(a.status));
-  const hasUsableAttachment = attachments.some(a => ['ready', 'extracted', 'summary_only', 'metadata_only'].includes(a.status));
+  const hasPendingAttachment = attachments.some(a => 
+    a.status === 'uploading' || a.contentStatus === 'pending' || a.contentStatus === 'extracting'
+  );
+  const hasUsableAttachment = attachments.some(a => 
+    a.status === 'ready' && !['pending', 'extracting', 'error'].includes(a.contentStatus || '')
+  );
   const hasText = input.trim().length > 0;
   const canSend = !loading && !hasPendingAttachment && (hasText || hasUsableAttachment);
 
@@ -201,22 +205,22 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
         id="vms-chat-toggle"
         onClick={onToggle}
         className={cn(
-          "fixed bottom-[calc(1.5rem+env(safe-area-inset-bottom))] right-6 w-14 h-14 rounded-full shadow-2xl flex items-center justify-center z-[70] transition-colors",
+          "fixed bottom-[calc(1rem+env(safe-area-inset-bottom))] sm:bottom-[calc(1.5rem+env(safe-area-inset-bottom))] right-4 sm:right-6 w-12 h-12 sm:w-14 sm:h-14 rounded-full shadow-2xl flex items-center justify-center z-[70] transition-colors",
           isOpen ? "bg-slate-800 text-white" : "bg-[#002D56] text-white"
         )}
       >
-        {isOpen ? <X className="w-6 h-6" /> : <MessageCircle className="w-6 h-6" />}
+        {isOpen ? <X className="w-5 h-5 sm:w-6 sm:h-6" /> : <MessageCircle className="w-5 h-5 sm:w-6 sm:h-6" />}
         {!isOpen && (
           <>
             {isAiReady ? (
               messages.length === 0 && (
-                <span className="absolute -top-1 -right-1 flex h-4 w-4">
+                <span className="absolute -top-1 -right-1 flex h-3 w-3 sm:h-4 sm:w-4">
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-4 w-4 bg-emerald-500 border-2 border-white shadow-sm"></span>
+                  <span className="relative inline-flex rounded-full h-3 w-3 sm:h-4 sm:w-4 bg-emerald-500 border-2 border-white shadow-sm"></span>
                 </span>
               )
             ) : (
-              <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-rose-500 border-2 border-white shadow-sm" />
+              <span className="absolute -top-1 -right-1 w-3 h-3 sm:w-4 sm:h-4 rounded-full bg-rose-500 border-2 border-white shadow-sm" />
             )}
           </>
         )}
@@ -229,7 +233,7 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
             initial={{ opacity: 0, y: 100, scale: 0.8, transformOrigin: 'bottom right' }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 100, scale: 0.8 }}
-            className="fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] right-5 sm:right-6 w-[calc(100vw-40px)] sm:w-[400px] h-[500px] max-h-[calc(100dvh-7rem)] bg-white rounded-[32px] shadow-2xl z-[90] flex flex-col overflow-hidden border border-slate-200"
+            className="fixed bottom-[calc(4.5rem+env(safe-area-inset-bottom))] sm:bottom-[calc(1.5rem+env(safe-area-inset-bottom))] right-4 sm:right-[5.5rem] w-[calc(100vw-32px)] sm:w-[420px] h-[calc(100dvh-6rem)] sm:h-[600px] max-h-[80vh] sm:max-h-[min(600px,calc(100dvh-3rem))] bg-white rounded-[24px] sm:rounded-[32px] shadow-2xl z-[90] flex flex-col overflow-hidden border border-slate-200"
           >
             {/* Header */}
             <div className="p-5 bg-[#002D56] text-white flex items-center justify-between shrink-0 shadow-lg">
@@ -325,24 +329,27 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                   </div>
                   <div className="flex flex-col gap-1 max-w-[90%]">
                     <div className={cn(
-                      "px-4 py-3 rounded-[20px] font-medium shadow-sm whitespace-pre-wrap break-words",
+                      "px-4 py-3 rounded-[20px] font-medium shadow-sm break-words",
                       msg.role === 'user' 
-                        ? "bg-[#002D56] text-white rounded-tr-none leading-[1.55] text-[14px]" 
-                        : "bg-white text-slate-700 rounded-tl-none border border-slate-100 leading-[1.65] text-[14px] space-y-2"
+                        ? "bg-[#002D56] text-white rounded-tr-none leading-[1.55] text-[14px] whitespace-pre-wrap" 
+                        : "bg-white text-slate-700 rounded-tl-none border border-slate-100 leading-[1.65] text-[14px]"
                     )}>
                       {msg.role === 'assistant' ? (
-                        <div className="prose prose-sm max-w-none prose-strong:text-[#002D56]">
+                        <div className="text-[14px] prose-strong:text-[#002D56]">
                           <ReactMarkdown
                             components={{
-                              p: ({ children }) => <p className="mb-3 last:mb-0 leading-[1.65] text-[14px]">{children}</p>,
+                              p: ({ children }) => <p className="mb-0.5 last:mb-0 leading-[1.5] text-justify">{children}</p>,
                               strong: ({ children }) => <strong className="font-semibold text-[#002D56]">{children}</strong>,
-                              ul: ({ children }) => <ul className="my-2 list-disc pl-5 space-y-1 text-[14px] leading-[1.6]">{children}</ul>,
-                              ol: ({ children }) => <ol className="my-2 list-decimal pl-5 space-y-1 text-[14px] leading-[1.6]">{children}</ol>,
+                              ul: ({ children }) => <ul className="mb-0.5 mt-0.5 list-disc pl-4 space-y-0.5 leading-[1.5]">{children}</ul>,
+                              ol: ({ children }) => <ol className="mb-0.5 mt-0.5 list-decimal pl-4 space-y-0.5 leading-[1.5]">{children}</ol>,
                               li: ({ children, ...props }) => (
-                                <li className="leading-[1.6] pl-1 marker:text-slate-400" {...props}>
+                                <li className="leading-[1.5] pl-0.5 marker:text-slate-400" {...props}>
                                   {children}
                                 </li>
                               ),
+                              h1: ({ children }) => <h1 className="text-[15px] font-black mt-2 mb-0.5 text-[#002D56]">{children}</h1>,
+                              h2: ({ children }) => <h2 className="text-[14px] font-bold mt-1.5 mb-0.5 text-[#002D56]">{children}</h2>,
+                              h3: ({ children }) => <h3 className="text-[13px] font-bold mt-1 mb-0.5 text-[#002D56]">{children}</h3>,
                               code: ({ children, ...props }: any) => {
                                 const match = /language-(\w+)/.exec(props.className || '');
                                 const isInline = !match && !props.node?.properties?.className?.includes('language-');
@@ -351,7 +358,7 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                                 }
                                 return <code className="text-[13px] font-mono leading-[1.6]" {...props}>{children}</code>;
                               },
-                              pre: ({ children }) => <pre className="my-3 overflow-x-auto rounded-lg bg-slate-900 p-3 text-[13px] leading-[1.6] text-white shadow-sm">{children}</pre>
+                              pre: ({ children }) => <pre className="my-2 overflow-x-auto rounded-lg bg-slate-900 p-2.5 text-[13px] leading-[1.55] text-white shadow-sm">{children}</pre>
                             }}
                           >
                             {msg.content}

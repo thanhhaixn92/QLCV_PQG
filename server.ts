@@ -592,6 +592,7 @@ Khi người dùng cung cấp tài liệu tham khảo, bạn PHẢI ưu tiên s�
 # NHIỆM VỤ BIÊN TẬP (EDITORIAL STANDARDS)
 - FORMAL, TECHNICAL, EDITORIAL, DYNAMISM.
 - Luôn có TIÊU ĐỀ, SAPO, THÂN BÀI, KẾT LUẬN.
+- TUYỆT ĐỐI KHÔNG sao chép và in ra các thông số đầu vào của prompt như NGỮ CẢNH, TÁC VỤ, PHIÊN LÀM VIỆC, PHÒNG NGHIỆP VỤ, HAY BẢN THẢO MỚI ở đầu nội dung trả về. Chỉ trả về nội dung bài viết hoàn chỉnh.
 
 # NHIỆM VỤ QUẢN LÝ CÔNG VIỆC (TASK MANAGEMENT)
 - Khi được yêu cầu tạo task (AI Task Builder), bạn phải phân tích văn bản để trích xuất: Tên công việc, Phụ trách, Hạn xử lý, Lĩnh vực, Chức danh kiêm nhiệm (nếu có).
@@ -644,6 +645,22 @@ function classifyGeminiError(error: any) {
   return { errorType: 'server_error', statusCode: 500, message: 'Không thể kết nối với máy chủ AI. Vui lòng thử lại sau.' };
 }
 
+function truncateForAi(text: string, maxChars = 60000): {
+  text: string;
+  truncated: boolean;
+  originalLength: number;
+} {
+  if (!text) return { text: "", truncated: false, originalLength: 0 };
+  if (text.length <= maxChars) {
+    return { text, truncated: false, originalLength: text.length };
+  }
+  return {
+    text: text.slice(0, maxChars),
+    truncated: true,
+    originalLength: text.length,
+  };
+}
+
 async function analyzeDocumentContent(userId: string, docData: any, content: string) {
   try {
     const aiConfig = await resolveActiveAIConfig(userId);
@@ -653,7 +670,9 @@ async function analyzeDocumentContent(userId: string, docData: any, content: str
       systemInstruction: "Bạn là chuyên gia phân tích và tóm tắt tài liệu nghiệp vụ hàng hải. Luôn trích xuất dữ kiện khách quan, không bịa đặt."
     });
     
-    const sampleContent = content.substring(0, 40000).trim();
+    // Yêu Cầu 5: Giới hạn nội dung gửi vào Gemini
+    const { text: sampleContent, truncated } = truncateForAi(content, 60000);
+    
     if (!sampleContent && docData.driveMimeType !== 'application/vnd.google-apps.folder') {
         return {
            documentKind: docData.documentKind || 'khac',
@@ -661,8 +680,8 @@ async function analyzeDocumentContent(userId: string, docData: any, content: str
            summary: {
              short: 'Chưa trích xuất được nội dung cụ thể từ tệp này.',
              full: 'Hệ thống hiện tại chỉ mới thu thập được thông tin cơ bản của tệp. Bạn vui lòng sử dụng tính năng "Mở Drive" hoặc "Duyệt thư mục" để xem chi tiết hoặc Đồng bộ lại nội dung.',
-             mainPoints: ['Nội dung thô chưa khả dụng hoặc file không chứa text textable', 'Tài liệu cần được kiểm tra lại định dạng hoặc quyền truy cập trên Google Drive'],
-             keyPoints: ['Nội dung thô chưa khả dụng hoặc file không chứa text textable'],
+             mainPoints: ['Nội dung thô chưa khả dụng hoặc file không chứa text rành mạch', 'Tài liệu cần được kiểm tra lại định dạng hoặc quyền truy cập trên Google Drive'],
+             keyPoints: ['Nội dung thô chưa khả dụng hoặc file không chứa text rành mạch'],
              actionItems: ['Kiểm tra quyền xem (Viewer) của thư mục gốc chia sẻ', 'Nhấn "Đồng bộ lại" chờ quá trình trích xuất hoàn tất'],
              risks: [],
              keywords: ['chua-co-noi-dung'],
@@ -692,13 +711,13 @@ YÊU CẦU ĐẦU RA (JSON format nghiêm ngặt):
 {
   "classification": {
     "documentKind": "van_ban_chi_dao | quy_dinh_phap_ly | bao_cao | ke_hoach | hop_dong | tai_lieu_ky_thuat | tai_lieu_an_toan | tin_bai_truyen_thong | tai_chinh_ke_toan | nhan_su_lao_dong | khac",
-    "taskCategoryCode": "Mã lĩnh vực (ví dụ: LV_DH, LV_VPDT, LV_XDCB...)",
+    "taskCategoryCode": "Chỉ được chọn một trong các mã sau: LV_DH, LV_AT, LV_KT, LV_TC, LV_TCCB, LV_PCTTra, LV_KHDN, LV_HTQT, LV_VPDT",
     "confidence": "Độ tin cậy của phân loại (0-100)",
     "reason": "Lý do phân loại"
   },
   "summary": {
     "short": "Tóm tắt ngắn gọn 1-2 câu",
-    "full": "Tóm tắt chi tiết và đầy đủ nội dung (2-3 đoạn)",
+    "full": "Tóm tắt chi tiết và ĐẦY ĐỦ nhất nội dung, bắt buộc giữ lại TẤT CẢ các ý chính và SỐ LIỆU QUAN TRỌNG. Định dạng bằng Markdown, tách đoạn rõ ràng khi chuyển ý, sử dụng danh sách dạng bullet (-) để gạch đầu dòng liệt kê nhằm giúp người đọc nắm trọn vẹn văn bản mà không cần xem gốc.",
     "mainPoints": ["Điểm chính quan trọng 1", "Điểm chính 2", "..."],
     "actionItems": ["Các hạng mục công việc hoặc yêu cầu thực hiện"],
     "risks": ["Các rủi ro hoặc lưu ý cảnh báo dự kiến (nếu có)"],
@@ -747,14 +766,20 @@ YÊU CẦU ĐẦU RA (JSON format nghiêm ngặt):
           vessels: Array.isArray(summary.entities?.vessels) ? summary.entities.vessels : [],
           dates: Array.isArray(summary.entities?.dates) ? summary.entities.dates : []
         },
-        sourceLimitNote: summary.sourceLimitNote || '',
+        sourceLimitNote: truncated ? 'Nội dung đã được rút gọn để phân tích AI. Tệp gốc dài hơn giới hạn xử lý.' : (summary.sourceLimitNote || ''),
         generatedAt: Date.now(),
         model: aiConfig.model
       };
 
+      const validCategories = ["LV_DH", "LV_AT", "LV_KT", "LV_TC", "LV_TCCB", "LV_PCTTra", "LV_KHDN", "LV_HTQT", "LV_VPDT"];
+      let categoryCode = aiRes.classification?.taskCategoryCode || 'LV_DH';
+      if (!validCategories.includes(categoryCode)) {
+         categoryCode = 'LV_DH';
+      }
+
       return {
         documentKind: aiRes.classification?.documentKind || docData.documentKind,
-        taskCategoryCode: aiRes.classification?.taskCategoryCode || 'LV_DH',
+        taskCategoryCode: categoryCode,
         summary: normalizedSummary
       };
     }
@@ -812,11 +837,17 @@ async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT || 3000);
   
-  app.use(cors());
+  const allowedOrigins = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim()) : (process.env.NODE_ENV !== 'production' ? '*' : []);
+  app.use(cors({
+    origin: allowedOrigins,
+    credentials: true
+  }));
 
   // Debug logger
   app.use((req, res, next) => {
-    console.log(`[DEBUG REQUEST] ${req.method} ${req.originalUrl}`);
+    if (process.env.DEBUG_REQUESTS === 'true') {
+      console.log(`[DEBUG REQUEST] ${req.method} ${req.originalUrl}`);
+    }
     next();
   });
 
@@ -824,7 +855,9 @@ async function startServer() {
 
   // Middleware to log API requests
   app.use('/api', (req, res, next) => {
-    console.log(`[API Request] ${req.method} ${req.originalUrl}`);
+    if (process.env.DEBUG_REQUESTS === 'true') {
+      console.log(`[API Request] ${req.method} ${req.originalUrl}`);
+    }
     res.setHeader('X-API-Response', 'true');
     next();
   });
@@ -856,10 +889,10 @@ async function startServer() {
       healthData.credentialSource = credentialSource;
       healthData.credentialProjectId = credentialProjectId;
       healthData.credentialClientEmail = credentialClientEmail;
+      healthData.firestoreErrorType = firestoreErrorType;
       healthData.firestoreRawCode = firestoreRawCode;
       healthData.firestoreRawMessage = firestoreRawMessage;
       healthData.firestoreError = firestoreError;
-      healthData.firestoreErrorType = firestoreErrorType;
       healthData.normalizedDatabaseId = normalizedDatabaseId;
       healthData.hasEncryptionSecret = !!process.env.AI_KEY_ENCRYPTION_SECRET;
       healthData.hasGoogleDriveKey = !!process.env.GOOGLE_DRIVE_API_KEY;
@@ -867,6 +900,8 @@ async function startServer() {
       healthData.proModel = typeof DEFAULT_PRO_MODEL !== 'undefined' ? DEFAULT_PRO_MODEL : 'gemini-1.5-pro';
       healthData.fallbackModel = typeof DEFAULT_FALLBACK_MODEL !== 'undefined' ? DEFAULT_FALLBACK_MODEL : 'gemini-1.5-flash';
       healthData.sdk = '@google/generative-ai';
+    } else if (!firestoreReady) {
+      healthData.firestoreErrorType = firestoreErrorType || 'connection_failed';
     }
 
     res.json(healthData);
@@ -914,9 +949,26 @@ async function startServer() {
       const metadata = await getDriveMetadata(fileId, apiKey);
       const mime = metadata.mimeType;
       
-      const extraction = await extractDriveContent(fileId, mime, metadata, apiKey);
-      const content = extraction.content;
-      const contentStatus = extraction.contentStatus;
+      let content = '';
+      let contentStatus = 'metadata_only';
+      let analysis: any = null;
+
+      if (mime === 'application/vnd.google-apps.folder') {
+        content = 'Đây là thư mục Google Drive. Chọn Đồng bộ thư mục để lấy các tệp bên trong.';
+        contentStatus = 'metadata_only';
+        analysis = {
+          summary: {
+             short: 'Thư mục Google Drive.',
+             full: 'Đây là thư mục Google Drive, cần thực hiện đồng bộ để nhập nội dung các tệp con.',
+             mainPoints: [], keyPoints: [], actionItems: [], risks: []
+          },
+          documentKind: 'khac'
+        };
+      } else {
+        const extraction = await extractDriveContent(fileId, mime, metadata, apiKey);
+        content = extraction.content;
+        contentStatus = extraction.contentStatus;
+      }
       
       const previewUrl = buildDrivePreviewUrl(fileId, mime);
       const documentKind = determineDocumentKind(mime);
@@ -925,7 +977,7 @@ async function startServer() {
         name: metadata.name,
         type: 'drive',
         sourceType: mime === 'application/vnd.google-apps.folder' ? 'google_drive_folder' : 'google_drive_file',
-        documentKind,
+        documentKind: analysis?.documentKind || documentKind,
         category: collectionId ? 'PROJECT' : 'GENERAL',
         driveFileId: fileId,
         driveMimeType: mime,
@@ -937,6 +989,7 @@ async function startServer() {
         content: content,
         contentStatus: contentStatus,
         collectionId: collectionId || 'lib-drive',
+        parentDriveFolderId: metadata.parents?.[0] || null,
         ownerId: userId,
         updatedAt: Date.now(),
         metadata: {
@@ -954,7 +1007,13 @@ async function startServer() {
       };
 
       // AI Analysis
-      const analysis = await analyzeDocumentContent(userId, docData, content);
+      if (mime !== 'application/vnd.google-apps.folder') {
+        const aiAnalysis = await analyzeDocumentContent(userId, docData, content);
+        if (aiAnalysis) {
+          analysis = aiAnalysis;
+        }
+      }
+      
       if (analysis) {
         Object.assign(docData, analysis);
       }
@@ -1055,7 +1114,7 @@ async function startServer() {
           params: {
             q: `'${folderId}' in parents and trashed = false`,
             key: apiKey,
-            fields: 'nextPageToken, files(id, name, mimeType, webViewLink, webContentLink, iconLink, thumbnailLink, modifiedTime, createdTime, size, description, parents)',
+            fields: 'nextPageToken, files(id, name, mimeType, description, createdTime, modifiedTime, size, iconLink, thumbnailLink, webViewLink, webContentLink, exportLinks, parents, md5Checksum, trashed)',
             pageSize: 100,
             pageToken
           },
@@ -1070,12 +1129,33 @@ async function startServer() {
       const errors: any[] = [];
 
       const docsRef = db.collection('users').doc(userId).collection('documents');
-      const existingDocsSnap = await docsRef.where('collectionId', '==', folderCollectionPrefix).get();
+      
+      // REQUIRES COMPOSITE INDEX in Firestore for fields (collectionId ASC, parentDriveFolderId ASC)
+      // Guide: Create it in Firebase Console -> Firestore -> Indexes -> Composite
+      // Collection rules: users /{userId} / documents. Fields: collectionId, parentDriveFolderId.
+      let existingDocsSnap;
+      try {
+        existingDocsSnap = await docsRef
+            .where('collectionId', '==', folderCollectionPrefix)
+            .where('parentDriveFolderId', '==', folderId)
+            .get();
+      } catch (err: any) {
+        if (err.message.includes('index')) {
+           console.warn('Missing composite index for collectionId and parentDriveFolderId. Falling back to simple query.');
+           existingDocsSnap = await docsRef.where('collectionId', '==', folderCollectionPrefix).get();
+        } else {
+           throw err;
+        }
+      }
       
       const existingMap = new Map();
-      existingDocsSnap.forEach(d => {
+      existingDocsSnap.docs.forEach(d => {
         const data = d.data();
-        if (data.driveFileId) existingMap.set(data.driveFileId, { id: d.id, ...data });
+        const parentId = data.parentDriveFolderId || data.metadata?.parentDriveFolderId;
+        // Lọc lại trong trường hợp fallback
+        if (data.driveFileId && parentId === folderId) {
+          existingMap.set(data.driveFileId, { id: d.id, ...data });
+        }
       });
 
       const currentFileIds = new Set(allFiles.map(f => f.id));
@@ -1086,9 +1166,30 @@ async function startServer() {
           const isModified = !existing || existing.metadata?.modifiedTime !== f.modifiedTime;
 
           if (!existing || isModified) {
-            const extraction = await extractDriveContent(f.id, f.mimeType, f, apiKey);
-            const content = extraction.content;
-            const contentStatus = extraction.contentStatus;
+            let content = '';
+            let contentStatus = 'metadata_only';
+            let analysis: any = null;
+            let sourceLimitNote = '';
+
+            if (f.mimeType === 'application/vnd.google-apps.folder') {
+              content = 'Đây là thư mục Google Drive. Chọn Đồng bộ thư mục để lấy các tệp bên trong.';
+              contentStatus = 'metadata_only';
+              analysis = {
+                summary: {
+                  short: 'Thư mục Google Drive.',
+                  full: 'Đây là thư mục Google Drive, cần thực hiện đồng bộ để nhập nội dung các tệp con.',
+                  mainPoints: [], keyPoints: [], actionItems: [], risks: []
+                },
+                documentKind: 'khac'
+              };
+            } else {
+              const extraction = await extractDriveContent(f.id, f.mimeType, f, apiKey);
+              content = extraction.content;
+              contentStatus = extraction.contentStatus;
+              if (extraction.sourceLimitNote) {
+                sourceLimitNote = extraction.sourceLimitNote;
+              }
+            }
             
             const previewUrl = buildDrivePreviewUrl(f.id, f.mimeType);
             const documentKind = determineDocumentKind(f.mimeType);
@@ -1097,7 +1198,7 @@ async function startServer() {
               name: f.name,
               type: 'drive',
               sourceType: f.mimeType === 'application/vnd.google-apps.folder' ? 'google_drive_folder' : 'google_drive_file',
-              documentKind,
+              documentKind: analysis?.documentKind || documentKind,
               category: collectionId ? 'PROJECT' : 'GENERAL',
               driveFileId: f.id,
               driveMimeType: f.mimeType,
@@ -1109,6 +1210,7 @@ async function startServer() {
               content: content,
               contentStatus: contentStatus,
               collectionId: folderCollectionPrefix,
+              parentDriveFolderId: folderId,
               ownerId: userId,
               updatedAt: Date.now(),
               metadata: {
@@ -1125,15 +1227,27 @@ async function startServer() {
               }
             };
 
+            if (sourceLimitNote) {
+               docData.sourceLimitNote = sourceLimitNote;
+            }
+
             if (!existing) {
               docData.createdAt = Date.now();
-              const analysis = await analyzeDocumentContent(userId, docData, content);
-              if (analysis) Object.assign(docData, analysis);
+              if (f.mimeType !== 'application/vnd.google-apps.folder' && contentStatus === 'extracted') {
+                 const aiAnalysis = await analyzeDocumentContent(userId, docData, content);
+                 if (aiAnalysis) Object.assign(docData, aiAnalysis);
+              } else if (analysis) {
+                 Object.assign(docData, analysis);
+              }
               await docsRef.add(docData);
               stats.addedCount++;
             } else {
-              const analysis = await analyzeDocumentContent(userId, docData, content);
-              if (analysis) Object.assign(docData, analysis);
+              if (f.mimeType !== 'application/vnd.google-apps.folder' && contentStatus === 'extracted') {
+                 const aiAnalysis = await analyzeDocumentContent(userId, docData, content);
+                 if (aiAnalysis) Object.assign(docData, aiAnalysis);
+              } else if (analysis) {
+                 Object.assign(docData, analysis);
+              }
               await docsRef.doc(existing.id).update(docData);
               stats.updatedCount++;
             }
@@ -1318,8 +1432,12 @@ async function startServer() {
         return res.json({
           success: true,
           hasKey: false,
+          hasPersonalKey: false,
           useSystem: true,
-          status: 'none'
+          status: 'none',
+          keyLast4: null,
+          lastTestedAt: null,
+          updatedAt: null
         });
       }
 
@@ -1332,7 +1450,9 @@ async function startServer() {
         model: data.model || null,
         provider: data.provider || 'gemini',
         status: data.encryptedApiKey ? 'active' : 'none',
-        updatedAt: data.updatedAt || null
+        updatedAt: data.updatedAt || null,
+        keyLast4: data.keyLast4 || null,
+        lastTestedAt: data.lastTestedAt || null
       });
     } catch (error: any) {
       logFirestoreError('api/user-ai-key/status', error);
@@ -1668,17 +1788,17 @@ async function startServer() {
         
         try {
           const [buffer] = await file.download();
-          const maxChars = 500000;
+          const maxChars = 100000;
           
           const ext = (attachment.extension || '').toLowerCase();
           const mime = attachment.mimeType || '';
           
           if (mime === 'application/pdf' || ext === 'pdf') {
             const data = await pdf(buffer);
-            content = data.text.substring(0, maxChars);
+            content = data.text;
           } else if (mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || ext === 'docx') {
             const data = await mammoth.extractRawText({ buffer });
-            content = data.value.substring(0, maxChars);
+            content = data.value;
           } else if (
             mime === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
             mime === 'application/vnd.ms-excel' ||
@@ -1691,9 +1811,13 @@ async function startServer() {
               const sheet = workbook.Sheets[name];
               fullText += `--- Sheet: ${name} ---\n${xlsx.utils.sheet_to_csv(sheet)}\n\n`;
             });
-            content = fullText.substring(0, maxChars);
+            content = fullText;
           } else if (mime.startsWith('text/') || ['txt', 'md'].includes(ext)) {
-            content = buffer.toString('utf-8').substring(0, maxChars);
+            content = buffer.toString('utf-8');
+          }
+          
+          if (content.length > maxChars) {
+             content = content.substring(0, maxChars) + '\n\n[Nội dung đã được rút gọn để tránh vượt giới hạn lưu trữ.]';
           }
         } catch (downloadErr: any) {
           console.error('[Download/Extract Error]', downloadErr);
@@ -1743,9 +1867,17 @@ async function startServer() {
 
         const documentKind = determineDocumentKind(attData.mimeType);
 
+        let docType = 'text';
+        const lowerMime = (attData.mimeType || '').toLowerCase();
+        const lowerExt = (attData.extension || '').toLowerCase();
+        
+        if (lowerMime === 'application/pdf' || lowerExt === 'pdf') docType = 'pdf';
+        else if (lowerMime.includes('word') || lowerExt === 'docx' || lowerExt === 'doc') docType = 'word';
+        else if (lowerMime.includes('excel') || lowerExt === 'xlsx' || lowerExt === 'xls' || lowerExt === 'csv') docType = 'excel';
+        
         const newDoc = {
           name: attData.originalName || attData.name || 'Tài liệu từ Chat',
-          type: 'drive',
+          type: docType,
           sourceType: 'upload',
           category: 'GENERAL',
           collectionId: 'lib-personal',
@@ -1774,7 +1906,7 @@ async function startServer() {
          for (const t of tasks) {
            const safeCategory = t.categoryCode || 'LV_DH';
            const newTask = {
-             title: t.title || 'Task mới',
+             title: t.title || 'Công việc mới',
              assignee: t.assignee || 'Tôi',
              dueDate: t.dueDate || new Date().toISOString(),
              categoryCode: safeCategory,
@@ -2119,10 +2251,10 @@ const TASK_PRIORITY_LABELS_INTERNAL: Record<string, string> = {
 app.get('/api/fetch-link', async (req, res) => {
       try {
         const userId = await getUserIdFromRequest(req);
-        if (!userId) return res.status(401).json({ success: false, error: 'unauthorized', errorType: 'unauthorized', message: 'Vui lòng đăng nhập để fetch link.' });
+        if (!userId) return res.status(401).json({ success: false, error: 'unauthorized', errorType: 'unauthorized', message: 'Vui lòng đăng nhập để lưu liên kết.' });
 
         const inputUrl = String(req.query.url || '');
-        if (!inputUrl) return res.status(400).json({ success: false, error: 'url_required', errorType: 'url_required', message: 'URL is required' });
+        if (!inputUrl) return res.status(400).json({ success: false, error: 'url_required', errorType: 'url_required', message: 'Vui lòng nhập địa chỉ liên kết.' });
         
         let currentUrl = inputUrl;
         let redirectCount = 0;
@@ -2156,7 +2288,7 @@ app.get('/api/fetch-link', async (req, res) => {
           break;
         }
 
-        if (redirectCount > maxRedirects) throw new Error('Quá nhiều redirect (Max 3)');
+        if (redirectCount > maxRedirects) throw new Error('Quá nhiều chuyển hướng (Tối đa 3)');
         if (!responseData) throw new Error('Không có dữ liệu trả về từ URL');
 
         const $ = cheerio.load(responseData);

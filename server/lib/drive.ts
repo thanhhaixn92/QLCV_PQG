@@ -38,13 +38,24 @@ export function buildDrivePreviewUrl(fileId: string, mimeType: string): string {
   return `https://drive.google.com/file/d/${fileId}/preview`;
 }
 
-export async function extractDriveContent(fileId: string, mimeType: string, metadata: any, apiKey: string): Promise<{ content: string; contentStatus: 'extracted' | 'error' | 'unavailable'; error?: string }> {
-  const maxChars = 500000;
-  const timeout = 30000;
+export async function extractDriveContent(fileId: string, mimeType: string, metadata: any, apiKey: string): Promise<{ content: string; contentStatus: 'extracted' | 'error' | 'unavailable' | 'too_large'; error?: string; sourceLimitNote?: string }> {
+  const maxChars = 100000;
+  const timeout = 60000;
+  const MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024; // 25MB
+
+  // Fallback to determine if too large before downloading
+  if (metadata.size && parseInt(metadata.size) > MAX_DOWNLOAD_BYTES) {
+    return {
+      content: 'Tệp vượt quá giới hạn đọc tự động. Bạn vẫn có thể mở trực tiếp trên Drive.',
+      contentStatus: 'too_large',
+      sourceLimitNote: 'Tệp gốc quá lớn để tải tự động.'
+    };
+  }
+
   const axiosConfig = {
     timeout,
-    maxContentLength: 10 * 1024 * 1024, // 10MB
-    maxBodyLength: 10 * 1024 * 1024 // 10MB
+    maxContentLength: MAX_DOWNLOAD_BYTES,
+    maxBodyLength: MAX_DOWNLOAD_BYTES
   };
   
   try {
@@ -53,7 +64,8 @@ export async function extractDriveContent(fileId: string, mimeType: string, meta
       const exportUrl = metadata.exportLinks?.['text/plain'];
       if (exportUrl) {
         const resp = await axios.get(`${exportUrl}&key=${apiKey}`, axiosConfig);
-        return { content: String(resp.data).substring(0, maxChars), contentStatus: 'extracted' };
+        const txt = String(resp.data);
+        return { content: txt.length > maxChars ? txt.substring(0, maxChars) + '\n\n[Nội dung đã được rút gọn để tránh vượt giới hạn lưu trữ.]' : txt, contentStatus: 'extracted' };
       }
     }
 
@@ -61,7 +73,8 @@ export async function extractDriveContent(fileId: string, mimeType: string, meta
       const exportUrl = metadata.exportLinks?.['text/csv'];
       if (exportUrl) {
         const resp = await axios.get(`${exportUrl}&key=${apiKey}`, axiosConfig);
-        return { content: String(resp.data).substring(0, maxChars), contentStatus: 'extracted' };
+        const txt = String(resp.data);
+        return { content: txt.length > maxChars ? txt.substring(0, maxChars) + '\n\n[Nội dung đã được rút gọn để tránh vượt giới hạn lưu trữ.]' : txt, contentStatus: 'extracted' };
       }
     }
 
@@ -69,7 +82,8 @@ export async function extractDriveContent(fileId: string, mimeType: string, meta
       const exportUrl = metadata.exportLinks?.['text/plain'];
       if (exportUrl) {
         const resp = await axios.get(`${exportUrl}&key=${apiKey}`, axiosConfig);
-        return { content: String(resp.data).substring(0, maxChars), contentStatus: 'extracted' };
+        const txt = String(resp.data);
+        return { content: txt.length > maxChars ? txt.substring(0, maxChars) + '\n\n[Nội dung đã được rút gọn để tránh vượt giới hạn lưu trữ.]' : txt, contentStatus: 'extracted' };
       }
     }
 
@@ -79,13 +93,15 @@ export async function extractDriveContent(fileId: string, mimeType: string, meta
     if (mimeType === 'application/pdf') {
       const resp = await axios.get(mediaUrl, { ...axiosConfig, responseType: 'arraybuffer' });
       const data = await pdf(Buffer.from(resp.data));
-      return { content: data.text.substring(0, maxChars), contentStatus: 'extracted' };
+      const txt = data.text;
+      return { content: txt.length > maxChars ? txt.substring(0, maxChars) + '\n\n[Nội dung đã được rút gọn để tránh vượt giới hạn lưu trữ.]' : txt, contentStatus: 'extracted' };
     }
 
     if (mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
       const resp = await axios.get(mediaUrl, { ...axiosConfig, responseType: 'arraybuffer' });
       const data = await mammoth.extractRawText({ buffer: Buffer.from(resp.data) });
-      return { content: data.value.substring(0, maxChars), contentStatus: 'extracted' };
+      const txt = data.value;
+      return { content: txt.length > maxChars ? txt.substring(0, maxChars) + '\n\n[Nội dung đã được rút gọn để tránh vượt giới hạn lưu trữ.]' : txt, contentStatus: 'extracted' };
     }
 
     if (
@@ -100,13 +116,14 @@ export async function extractDriveContent(fileId: string, mimeType: string, meta
         const sheet = workbook.Sheets[name];
         fullText += `--- Sheet: ${name} ---\n${xlsx.utils.sheet_to_csv(sheet)}\n\n`;
       });
-      return { content: fullText.substring(0, maxChars), contentStatus: 'extracted' };
+      return { content: fullText.length > maxChars ? fullText.substring(0, maxChars) + '\n\n[Nội dung đã được rút gọn để tránh vượt giới hạn lưu trữ.]' : fullText, contentStatus: 'extracted' };
     }
 
     if (mimeType === 'text/plain' || mimeType === 'text/markdown' || mimeType.startsWith('text/')) {
       const resp = await axios.get(mediaUrl, axiosConfig);
+      const txt = typeof resp.data === 'string' ? resp.data : JSON.stringify(resp.data);
       return { 
-        content: (typeof resp.data === 'string' ? resp.data : JSON.stringify(resp.data)).substring(0, maxChars),
+        content: txt.length > maxChars ? txt.substring(0, maxChars) + '\n\n[Nội dung đã được rút gọn để tránh vượt giới hạn lưu trữ.]' : txt,
         contentStatus: 'extracted' 
       };
     }
@@ -114,7 +131,15 @@ export async function extractDriveContent(fileId: string, mimeType: string, meta
     // Media/Others - No text extraction possible
     return { content: '', contentStatus: 'unavailable' };
   } catch (err: any) {
-    console.error(`[Drive Extraction Error] ${fileId}:`, err.message);
+    if (err.message && err.message.includes('maxContentLength')) {
+      return {
+        content: 'Tệp vượt quá giới hạn đọc tự động. Bạn vẫn có thể mở trực tiếp trên Drive.',
+        contentStatus: 'too_large',
+        sourceLimitNote: 'Tệp quá lớn để tải tự động.'
+      };
+    }
+    
+    console.error(`[Drive Extraction Error] ${fileId} - ${metadata.name} (size: ${metadata.size}):`, err.message);
     return { 
       content: '', 
       contentStatus: 'error', 

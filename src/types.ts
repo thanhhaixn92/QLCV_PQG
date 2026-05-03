@@ -48,7 +48,8 @@ export interface DocumentSource {
   driveThumbnailUrl?: string;
   driveWebViewLink?: string;
   driveSize?: string;
-  contentStatus?: 'metadata_only' | 'extracting' | 'extracted' | 'summary_only' | 'unavailable' | 'error';
+  sourceLimitNote?: string;
+  contentStatus?: 'metadata_only' | 'extracting' | 'extracted' | 'summary_only' | 'unavailable' | 'error' | 'too_large';
   
   // AI Classification & Summary
   documentKind?: 'van_ban_chi_dao' | 'quy_dinh_phap_ly' | 'bao_cao' | 'ke_hoach' | 'hop_dong' | 'tai_lieu_ky_thuat' | 'tai_lieu_an_toan' | 'tin_bai_truyen_thong' | 'tai_chinh_ke_toan' | 'nhan_su_lao_dong' | 'khac';
@@ -180,7 +181,7 @@ export interface ChatAttachment {
   storagePath: string;
   downloadUrl?: string;
   contentExcerpt?: string;
-  contentStatus: 'pending' | 'extracting' | 'extracted' | 'error' | 'unavailable';
+  contentStatus: 'pending' | 'extracting' | 'extracted' | 'error' | 'unavailable' | 'too_large';
   summary?: any;
   classification?: any;
   linkedDocumentId?: string;

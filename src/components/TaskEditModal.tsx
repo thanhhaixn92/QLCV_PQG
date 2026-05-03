@@ -42,7 +42,7 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
               <h3 className="text-sm sm:text-lg font-black text-slate-800 uppercase tracking-tight">
                 {editingTask.id ? 'Chi tiết công việc' : 'Tạo mới công việc'}
               </h3>
-              <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest hidden sm:block">Hoa Tiêu Miền Bắc - Task Engine</p>
+              <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest hidden sm:block">Hoa Tiêu Miền Bắc - Hệ thống Công việc</p>
             </div>
           </div>
           <button onClick={onClose} className="p-2 text-slate-300 hover:text-slate-800 transition-colors">
@@ -88,7 +88,7 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <div className="space-y-2">
-              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Thời hạn (Deadline)</label>
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Thời hạn xử lý</label>
               <input 
                 type="date" 
                 value={editingTask.dueDate}

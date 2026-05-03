@@ -172,6 +172,13 @@ export function removeBrokenMarkdownImages(content: string): string {
     .trim();
 }
 
+export function hasUnapprovedPlaceholders(content: string, approvedIllustrations: EditorialIllustration[]): boolean {
+  const placeholders = extractIllustrationPlaceholders(content);
+  const approvedParagraphs = new Set(approvedIllustrations.map(img => img.paragraphIndex));
+  // If there's any placeholder that doesn't have an approved image in its paragraph, return true.
+  return placeholders.some(ph => !approvedParagraphs.has(ph.paragraphIndex));
+}
+
 export function stripResolvedPlaceholders(content: string, illustrations: EditorialIllustration[], hideAll: boolean = false): string {
   const readyParagraphs = new Set(
     illustrations.filter(isPublishableIllustration).map(img => img.paragraphIndex)

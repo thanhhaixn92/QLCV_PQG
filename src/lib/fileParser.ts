@@ -7,7 +7,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pd
 
 const MAX_DOCUMENT_SIZE = 10 * 1024 * 1024; // 10MB
 const MAX_PDF_PAGES = 80;
-const MAX_CHARS = 500000;
+const MAX_CHARS = 100000;
 
 export async function parseFile(file: File): Promise<string> {
   if (file.size > MAX_DOCUMENT_SIZE) {

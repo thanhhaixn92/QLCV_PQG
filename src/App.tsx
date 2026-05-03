@@ -110,7 +110,7 @@ import {
   ChatAttachment
 } from './types';
 import { parseFile } from './lib/fileParser';
-import { exportToPDF, exportToWord } from './lib/exportUtils';
+import { exportVisualSnapshotPDF, exportToWord, extractExportTitle } from './lib/exportUtils';
 import { storage, auth, db, handleFirestoreError } from './lib/firebase';
 import { ref, getDownloadURL, uploadBytes, uploadString } from 'firebase/storage';
 import { 
@@ -145,6 +145,10 @@ import {
   insertApprovedIllustrationsForPlainExport,
 } from './lib/editorialImageUtils';
 import { auditEditorialPublish } from './lib/editorialPublishUtils';
+import { buildEditorialPrompt } from './lib/editorialPrompts';
+import { EditorialKindSelector } from './components/editorial/EditorialKindSelector';
+import { EditorialInputForm } from './components/editorial/EditorialInputForm';
+import { EditorialPreflightPanel } from './components/editorial/EditorialPreflightPanel';
 
 const TASK_STATUS_LABELS: Record<string, string> = {
   todo: 'Cần làm',
@@ -390,6 +394,32 @@ const matchesSearch = (d: DocumentSource, query: string) => {
   return searchText.includes(q);
 };
 
+const TYPE_MAPPING: Record<string, string> = {
+  'drive': 'Google Drive',
+  'pdf': 'PDF',
+  'word': 'Bản Word',
+  'excel': 'Bảng tính',
+  'text': 'Văn bản thô',
+  'link': 'Liên kết Web'
+};
+
+const SOURCE_TYPE_MAPPING: Record<string, string> = {
+  'upload': 'Tải lên',
+  'drive': 'Drive',
+  'text': 'Ghi chú',
+  'web_extraction': 'Trích xuất Web'
+};
+
+function getDocTypeLabel(type?: string) {
+  if (!type) return 'Văn bản';
+  return TYPE_MAPPING[type.toLowerCase()] || type.toUpperCase();
+}
+
+function getSourceTypeLabel(sourceType?: string) {
+  if (!sourceType) return 'Nội bộ';
+  return SOURCE_TYPE_MAPPING[sourceType.toLowerCase()] || sourceType.toUpperCase();
+}
+
 function getDocumentPreviewUrl(d: DocumentSource): string {
   return d.metadata?.previewUrl ||
     d.metadata?.googleViewerUrl ||
@@ -410,6 +440,7 @@ function App() {
   const [style, setStyle] = useState<WritingStyle>('FORMAL');
   const [outputFormat, setOutputFormat] = useState<OutputFormat>('ARTICLE');
   const [input, setInput] = useState('');
+  const [editorialKind, setEditorialKind] = useState<import('./types/editorial').EditorialDocumentKind>('website_article');
   const [output, setOutput] = useState('');
   const [isEditing, setIsEditing] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -506,7 +537,8 @@ function App() {
       return;
     }
 
-    if (!confirm(`Tìm thấy ${legacyDocs.length} link Drive cũ. Bạn có muốn nâng cấp toàn bộ sang định dạng tài liệu chuẩn để AI có thể đọc nội dung?`)) return;
+    const confirmed = await requestConfirmAsync(`Tìm thấy ${legacyDocs.length} link Drive cũ. Bạn có muốn nâng cấp toàn bộ sang định dạng tài liệu chuẩn để AI có thể đọc nội dung?`);
+    if (!confirmed) return;
 
     setIsParsing(true);
     let successCount = 0;
@@ -1051,6 +1083,7 @@ function App() {
   const [isPickingTaskForDoc, setIsPickingTaskForDoc] = useState<DocumentSource | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [librarySearchQuery, setLibrarySearchQuery] = useState('');
+  const [historySearchQuery, setHistorySearchQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
   const [searchResults, setSearchResults] = useState<{text: string, groundingMetadata?: any} | null>(null);
 
@@ -1329,7 +1362,8 @@ function App() {
       toast.error('Vui lòng đăng nhập để thực hiện.');
       return;
     }
-    if (!window.confirm('Bạn có chắc chắn muốn xóa API Key cá nhân và quay về dùng key hệ thống?')) return;
+    const confirmed = await requestConfirmAsync('Bạn có chắc chắn muốn xóa API Key cá nhân và quay về dùng key hệ thống?');
+    if (!confirmed) return;
     try {
       const token = await currentUser.getIdToken(true);
       const response = await fetch('/api/user-ai-key', {
@@ -1351,10 +1385,17 @@ function App() {
   const isAiCoreActive = isSystemAiActive || isPersonalAiActive;
 
   const aiCoreLabel = isPersonalAiActive
-    ? 'Key cá nhân đang hoạt động'
+    ? 'Key cá nhân'
     : isAiCoreActive
-      ? 'AI đang sẵn sàng'
-      : 'AI ngoại tuyến';
+      ? 'Trợ lý AI đang sẵn sàng'
+      : 'Trợ lý AI ngoại tuyến';
+
+  const getGreeting = () => {
+    const hour = new Date().getHours();
+    if (hour < 12) return 'Chào buổi sáng';
+    if (hour < 18) return 'Chào buổi chiều';
+    return 'Chào buổi tối';
+  };
 
   // Sync Profile
   useEffect(() => {
@@ -1387,11 +1428,20 @@ function App() {
       setLibraryCollections(prev => {
         const merged = [...DEFAULT_LIBRARY_COLLECTIONS];
         fbColls.forEach(fc => {
+          if (!fc.id) return; // filter valid id
           const idx = merged.findIndex(m => m.id === fc.id);
           if (idx >= 0) merged[idx] = fc;
           else merged.push(fc);
         });
-        return merged;
+        
+        // Final deduplicate by id
+        const uniqueMap = new Map();
+        merged.forEach(m => {
+           if (m.id) {
+              uniqueMap.set(m.id, m);
+           }
+        });
+        return Array.from(uniqueMap.values());
       });
     });
     return () => unsub();
@@ -1732,11 +1782,21 @@ const handleAnalyzeDocument = async (docId: string) => {
     if (!resp.ok) throw new Error(data.error || 'Lỗi phân tích');
     
     if (data.document || data.analysis) {
-       const summaryData = data.analysis || data.document?.summary;
-       if (summaryData) {
-          setDocuments(prev => prev.map(d => d.id === docId ? { ...d, summary: summaryData, contentStatus: data.document?.contentStatus || d.contentStatus } : d));
+       const analysis = data.analysis || {};
+       const summaryData = analysis.summary || data.document?.summary;
+       const docUpdates: any = {
+         contentStatus: data.document?.contentStatus || 'extracted',
+         updatedAt: Date.now()
+       };
+       if (summaryData) docUpdates.summary = summaryData;
+       if (analysis.taskCategoryCode) docUpdates.taskCategoryCode = analysis.taskCategoryCode;
+       if (analysis.taskCategoryName) docUpdates.taskCategoryName = analysis.taskCategoryName;
+       if (analysis.documentKind) docUpdates.documentKind = analysis.documentKind;
+
+       if (Object.keys(docUpdates).length > 0) {
+          setDocuments(prev => prev.map(d => d.id === docId ? { ...d, ...docUpdates } : d));
           if (previewDocument?.id === docId) {
-             setPreviewDocument(prev => prev ? { ...prev, summary: summaryData, contentStatus: data.document?.contentStatus || prev.contentStatus } : null);
+             setPreviewDocument(prev => prev ? { ...prev, ...docUpdates } : null);
              setDocumentDetailTab('ai');
           }
        }
@@ -1972,7 +2032,8 @@ const handleAnalyzeDocument = async (docId: string) => {
     // Cache check
     const currentInputSignature = `${taskType}-${style}-${outputFormat}-${input.substring(0, 500)}-${selectedSourceDocIds.join(',')}`;
     if (currentInputSignature === lastAiInput && lastAiOutput) {
-      if (confirm('Nội dung yêu cầu trùng khớp với lần gọi AI trước đó. Bạn có muốn dùng lại kết quả cũ để tiết kiệm hạn mức không?')) {
+      const confirmed = await requestConfirmAsync('Nội dung yêu cầu trùng khớp với lần gọi AI trước đó. Bạn có muốn dùng lại kết quả cũ để tiết kiệm hạn mức không?');
+      if (confirmed) {
         setOutput(lastAiOutput);
         setIsEditing(false);
         return;
@@ -1986,7 +2047,13 @@ const handleAnalyzeDocument = async (docId: string) => {
       const limitedSources = limitSourceContent(selectedSources);
       
       const token = user ? await user.getIdToken() : undefined;
-      const response = await processTask(taskType, input, style, outputFormat, limitedSources, token);
+      
+      let finalInput = input;
+      if (taskType === 'WRITE_NEW') {
+        finalInput = buildEditorialPrompt(editorialKind, input, limitedSources, {});
+      }
+
+      const response = await processTask(taskType, finalInput, style, outputFormat, limitedSources, token);
       const generatedOutput = response || '';
       setOutput(generatedOutput);
       setLastAiInput(currentInputSignature);
@@ -2310,7 +2377,7 @@ const handleAnalyzeDocument = async (docId: string) => {
     setTaskType('TASK_BUILDER');
     setInput('');
     setOutput('');
-    toast.success('Đã mở AI Task Builder.');
+    toast.success('Đã mở công cụ AI tạo công việc.');
   };
 
   const openLibrary = () => {
@@ -2542,7 +2609,7 @@ const handleAnalyzeDocument = async (docId: string) => {
       setCurrentSessionId(null);
       setActiveModal(null);
     } catch (err: any) {
-      setError(`Logout Error: ${err.message}`);
+      setError(`Lỗi Đăng Xuất: ${err.message}`);
     }
   };
 
@@ -2742,7 +2809,7 @@ const handleAnalyzeDocument = async (docId: string) => {
               </div>
               <div className="flex flex-col">
                 <span className="text-lg font-black tracking-tight text-[#002D56] leading-none uppercase italic">Hoa Tiêu Miền Bắc</span>
-                <span className="text-[9px] font-black uppercase text-slate-400 tracking-wider mt-0.5">Maritime Professional Assistant</span>
+                <span className="text-[9px] font-black uppercase text-slate-400 tracking-wider mt-0.5">Trợ lý Nghiệp vụ Hàng hải</span>
               </div>
             </div>
             
@@ -2795,7 +2862,7 @@ const handleAnalyzeDocument = async (docId: string) => {
               transition={{ duration: 0.8 }}
             >
               <div className="inline-flex items-center gap-2 px-4 py-1.5 bg-blue-50 border border-blue-100 rounded-full text-[#002D56] text-[10px] font-black uppercase tracking-widest mb-8">
-                <Sparkles className="w-4 h-4" /> Next-Gen AI Assistant
+                <Sparkles className="w-4 h-4" /> Trợ lý AI Thông minh
               </div>
               <h1 className="text-5xl lg:text-7xl font-black text-[#002D56] leading-[1.1] mb-8 uppercase tracking-tighter">
                 Nâng tầm hiệu quả <br />
@@ -2960,8 +3027,6 @@ const handleAnalyzeDocument = async (docId: string) => {
     
     const storageRef = ref(storage, storagePath);
     await uploadBytes(storageRef, file, { contentType: mimeType });
-    
-    onStatusUpdate?.('uploaded');
 
     const token = await user.getIdToken();
     const res = await apiFetchJson('/api/chat/attachments/register', {
@@ -2981,8 +3046,6 @@ const handleAnalyzeDocument = async (docId: string) => {
     });
 
     if (!res.success) throw new Error(res.message);
-
-    onStatusUpdate?.('extracting');
 
     // Extract content immediately and wait for it
     try {
@@ -3049,38 +3112,55 @@ const handleAnalyzeDocument = async (docId: string) => {
         )}
       >
         {/* Sidebar Header / Logo */}
-        <div className="h-20 flex items-center px-6 border-b border-white/10 shrink-0">
-          <div className="flex items-center gap-3 overflow-hidden min-w-0">
-            <div className="bg-white/10 p-2.5 rounded-xl backdrop-blur-md border border-white/20 shrink-0">
-              <Ship className="text-white w-6 h-6" />
-            </div>
-            {(!isSidebarCollapsed || isSidebarOpen) && (
+        <div className={cn(
+          "relative h-20 flex items-center border-b border-white/10 shrink-0 gap-2",
+          isSidebarCollapsed && !isSidebarOpen ? "justify-center px-0" : "justify-between px-4 sm:px-5"
+        )}>
+          {(!isSidebarCollapsed || isSidebarOpen) && (
+            <div className="flex items-center gap-3 flex-1 min-w-0">
+              <div className="bg-white/10 p-2 rounded-xl backdrop-blur-md border border-white/20 shrink-0">
+                <Ship className="text-white w-5 h-5 lg:w-6 lg:h-6" />
+              </div>
               <motion.div 
                 initial={{ opacity: 0, x: -10 }}
                 animate={{ opacity: 1, x: 0 }}
-                className="whitespace-nowrap min-w-0"
+                className="flex-1 min-w-0"
               >
-                <h1 className="font-extrabold text-lg tracking-tight leading-none text-white uppercase italic truncate">Hoa Tiêu Miền Bắc</h1>
-                <p className="text-[10px] opacity-60 font-bold uppercase tracking-wider mt-1 truncate">Nghiệp vụ Hoa tiêu</p>
+                <h1 className="font-extrabold text-white text-[12px] sm:text-[13px] lg:text-[14px] tracking-tight leading-tight uppercase italic break-words">Hoa Tiêu Miền Bắc</h1>
+                <p className="text-[9px] lg:text-[10px] opacity-60 font-bold uppercase tracking-wider mt-0.5 text-white truncate">Nghiệp vụ Hoa tiêu</p>
               </motion.div>
-            )}
-          </div>
+            </div>
+          )}
+
+          {isSidebarCollapsed && !isSidebarOpen && (
+            <div 
+              className="bg-white/10 p-2 rounded-xl backdrop-blur-md border border-white/20 shrink-0 cursor-pointer hover:bg-white/20 transition-all group"
+              onClick={() => setIsSidebarCollapsed(false)}
+              title="Mở rộng menu"
+            >
+               <Ship className="text-white w-5 h-5 lg:w-6 lg:h-6 group-hover:hidden" />
+               <ChevronRight className="text-white w-5 h-5 lg:w-6 lg:h-6 hidden group-hover:block" />
+            </div>
+          )}
           
           {/* Sidebar Toggle/Close */}
-          <div className="ml-auto flex items-center gap-1">
-            <button 
-              onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
-              className="hidden md:flex p-1.5 rounded-lg hover:bg-white/10 border border-white/10 text-white/50 hover:text-white transition-colors"
-            >
-              {isSidebarCollapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
-            </button>
-            <button 
-              onClick={() => setIsSidebarOpen(false)}
-               className="md:hidden p-2 rounded-xl hover:bg-white/10 text-white/70 hover:text-white transition-colors"
-            >
-              <X className="w-6 h-6" />
-            </button>
-          </div>
+          {(!isSidebarCollapsed || isSidebarOpen) && (
+            <div className="flex items-center shrink-0">
+              <button 
+                onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
+                className="hidden md:flex p-1.5 rounded-lg hover:bg-white/10 text-white/50 hover:text-white transition-colors"
+                title="Thu gọn menu"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+              <button 
+                onClick={() => setIsSidebarOpen(false)}
+                className="md:hidden p-1.5 rounded-lg hover:bg-white/10 text-white/70 hover:text-white transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Navigation Links */}
@@ -3165,10 +3245,10 @@ const handleAnalyzeDocument = async (docId: string) => {
                 "w-full flex items-center gap-3 px-4 py-3.5 rounded-2xl bg-orange-500/10 text-orange-400 hover:bg-orange-500 hover:text-white transition-all group",
                 isSidebarCollapsed ? "justify-center" : ""
               )}
-              title={isSidebarCollapsed ? "AI Task Builder" : ""}
+              title={isSidebarCollapsed ? "Tạo công việc" : ""}
             >
               <Bot className="w-5 h-5 shrink-0" />
-              {!isSidebarCollapsed && <span className="text-sm font-bold">AI Task Builder</span>}
+              {!isSidebarCollapsed && <span className="text-sm font-bold">Tạo công việc bằng AI</span>}
             </button>
           </div>
         </nav>
@@ -3212,7 +3292,7 @@ const handleAnalyzeDocument = async (docId: string) => {
             <div className="mt-4 flex items-center justify-between px-2">
                <div className="flex items-center gap-2">
                   <div className={cn("w-2 h-2 rounded-full shadow-[0_0_8px_rgba(52,211,153,0.5)]", isAiCoreActive ? "bg-emerald-400" : "bg-red-400")} />
-                  <span className="text-[10px] font-black text-white/40 uppercase tracking-widest leading-none">AI Core {aiCoreLabel}</span>
+                  <span className="text-[11px] font-bold text-white/50 leading-none truncate">{aiCoreLabel}</span>
                </div>
                <button 
                 onClick={() => { closeMobileDrawer(); setActiveModal('settings'); }}
@@ -3240,7 +3320,7 @@ const handleAnalyzeDocument = async (docId: string) => {
           </button>
           <div className="flex items-center gap-3 ml-2 min-w-0">
              <Ship className="w-5 h-5 text-emerald-400 shrink-0" />
-             <span className="font-black text-sm uppercase tracking-tighter italic truncate text-white">Hoa Tiêu Miền Bắc</span>
+             <span className="font-black text-xs uppercase tracking-tighter italic whitespace-nowrap text-white">Hoa Tiêu Miền Bắc</span>
           </div>
           {user ? (
             <button 
@@ -3268,33 +3348,6 @@ const handleAnalyzeDocument = async (docId: string) => {
         )}
       >
 
-        {/* Global Action Bar (Desktop only) */}
-        <div className="hidden md:flex h-16 bg-white/80 backdrop-blur-md border-b border-slate-200 items-center justify-between px-8 sticky top-0 z-30 shrink-0">
-           <div className="flex items-center gap-3">
-              <span className="text-xs font-black text-slate-400 uppercase tracking-[0.2em]">Ngữ cảnh:</span>
-              <div className="flex items-center gap-2 px-3 py-1 bg-slate-100 rounded-lg border border-slate-200">
-                 <Globe className="w-3.5 h-3.5 text-[#002D56]" />
-                 <span className="text-[10px] font-black text-[#002D56] uppercase">Phòng nghiệp vụ</span>
-              </div>
-           </div>
-           <div className="flex items-center gap-6">
-              <div className="flex items-center gap-4 text-right">
-                 <div>
-                    <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Phiên làm việc</p>
-                    <p className="text-[11px] font-bold text-slate-700 leading-none">
-                       {currentSessionId ? sessions.find(s => s.id === currentSessionId)?.title : "Bản thảo mới"}
-                    </p>
-                 </div>
-              </div>
-              <button 
-                onClick={createNewSession}
-                className="bg-[#002D56] text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest shadow-lg hover:shadow-[#002D56]/20 transition-all active:scale-95"
-              >
-                Bản thảo mới
-              </button>
-           </div>
-        </div>
-
         {/* Main Viewport */}
         <main className="flex-1 overflow-y-auto p-4 md:p-8 lg:p-10 custom-scrollbar pb-[calc(24px+env(safe-area-inset-bottom))] md:pb-10 w-full">
           <div className="max-w-6xl mx-auto space-y-8 w-full min-w-0">
@@ -3311,22 +3364,10 @@ const handleAnalyzeDocument = async (docId: string) => {
                     {/* Welcome Header */}
                     <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
                       <div>
-                        <h2 className="text-xl sm:text-3xl font-black text-[#002D56] tracking-tight mb-1 sm:mb-2 uppercase truncate">
-                          Chào buổi sáng, {getUserDisplayName(user, profile)}!
+                        <h2 className="text-xl sm:text-3xl font-black text-[#002D56] tracking-tight mb-1 sm:mb-2 leading-tight py-1">
+                          {getGreeting()}, {getUserDisplayName(user, profile)}!
                         </h2>
                         <p className="text-slate-500 font-medium text-xs sm:text-base">Hệ thống sẵn sàng hỗ trợ bạn hoàn thành công việc.</p>
-                      </div>
-                      <div className={cn(
-                        "flex items-center gap-3 px-4 py-2 sm:px-6 sm:py-3 rounded-[20px] sm:rounded-[24px] border-2 transition-all w-fit self-start md:self-auto shrink-0",
-                        isAiCoreActive ? "bg-emerald-50 border-emerald-100" : "bg-red-50 border-red-100"
-                      )}>
-                        <div className={cn("w-2 h-2 sm:w-3 sm:h-3 rounded-full animate-pulse", isAiCoreActive ? "bg-emerald-500" : "bg-red-500")} />
-                        <div>
-                          <p className="text-[8px] sm:text-[10px] font-black uppercase text-slate-400 tracking-widest leading-none mb-0.5 sm:mb-1">AI Core</p>
-                          <p className={cn("text-[10px] sm:text-xs font-bold leading-none", isAiCoreActive ? "text-emerald-700" : "text-red-700")}>
-                            {aiCoreLabel}
-                          </p>
-                        </div>
                       </div>
                     </div>
 
@@ -3349,8 +3390,8 @@ const handleAnalyzeDocument = async (docId: string) => {
                             <stat.icon className={cn("w-3.5 h-3.5 sm:w-5 sm:h-5", stat.color)} />
                           </div>
                           <div className="min-w-0">
-                            <p className="text-[7px] sm:text-[9px] font-black uppercase text-slate-400 tracking-wider mb-0.5 leading-none truncate">{stat.label}</p>
-                            <p className="text-base sm:text-2xl font-black text-slate-800 leading-none">{stat.value}</p>
+                            <p className="text-[9px] sm:text-[11px] font-black text-slate-500 tracking-wider mb-0.5 leading-tight">{stat.label}</p>
+                            <p className="text-base sm:text-2xl font-black text-slate-800 leading-tight">{stat.value}</p>
                           </div>
                         </button>
                       ))}
@@ -3393,8 +3434,8 @@ const handleAnalyzeDocument = async (docId: string) => {
                           <CheckSquare className="w-5 h-5 sm:w-6 sm:h-6" />
                         </div>
                         <div className="min-w-0">
-                          <p className="font-extrabold text-[10px] sm:text-sm uppercase tracking-tight truncate">Thêm việc</p>
-                          <p className="hidden sm:block text-[10px] opacity-60 font-medium truncate">Tác vụ nghiệp vụ</p>
+                          <p className="font-extrabold text-[10.5px] sm:text-sm uppercase tracking-tight leading-tight pt-1">Thêm việc</p>
+                          <p className="hidden sm:block text-[10.5px] opacity-60 font-medium truncate pt-1">Tác vụ nghiệp vụ</p>
                         </div>
                       </button>
 
@@ -3406,8 +3447,8 @@ const handleAnalyzeDocument = async (docId: string) => {
                           <Edit3 className="w-5 h-5 sm:w-6 sm:h-6 text-emerald-600" />
                         </div>
                         <div className="min-w-0">
-                          <p className="font-extrabold text-[10px] sm:text-sm uppercase tracking-tight text-[#002D56] truncate">Viết bài mới</p>
-                          <p className="hidden sm:block text-[10px] text-slate-400 font-medium tracking-tight truncate">Biên tập AI</p>
+                          <p className="font-extrabold text-[10.5px] sm:text-sm uppercase tracking-tight text-[#002D56] leading-tight pt-1">Viết bài mới</p>
+                          <p className="hidden sm:block text-[10.5px] text-slate-400 font-medium tracking-tight truncate pt-1">Biên tập AI</p>
                         </div>
                       </button>
 
@@ -3419,8 +3460,8 @@ const handleAnalyzeDocument = async (docId: string) => {
                           <Target className="w-5 h-5 sm:w-6 sm:h-6 text-orange-600" />
                         </div>
                         <div className="min-w-0">
-                          <p className="font-extrabold text-[10px] sm:text-sm uppercase tracking-tight text-[#002D56] truncate">AI Task</p>
-                          <p className="hidden sm:block text-[10px] text-slate-400 font-medium tracking-tight truncate">Phát triển nhiệm vụ</p>
+                          <p className="font-extrabold text-[10.5px] sm:text-sm uppercase tracking-tight text-[#002D56] leading-tight pt-1">Công việc AI</p>
+                          <p className="hidden sm:block text-[10.5px] text-slate-400 font-medium tracking-tight truncate pt-1">Phát triển nhiệm vụ</p>
                         </div>
                       </button>
                     </div>
@@ -3552,8 +3593,8 @@ const handleAnalyzeDocument = async (docId: string) => {
                       <stat.icon className={cn("w-4 h-4", stat.color)} />
                     </div>
                     <div>
-                      <p className="text-[9px] font-black uppercase text-slate-400 tracking-wider mb-0.5 leading-none">{stat.label}</p>
-                      <p className="text-xl font-black text-slate-800 leading-none">{stat.value}</p>
+                      <p className="text-[10px] font-black uppercase text-slate-400 tracking-wider mb-0.5 leading-tight">{stat.label}</p>
+                      <p className="text-xl font-black text-slate-800 leading-tight">{stat.value}</p>
                     </div>
                   </button>
                 ))}
@@ -3564,7 +3605,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                  <div className="flex flex-row items-center justify-between gap-4">
                     <div className="flex items-center gap-3 px-1 min-w-0">
                        <LayoutDashboard className="w-5 h-5 text-[#002D56] shrink-0" />
-                       <h2 className="text-xs sm:text-sm font-black uppercase text-slate-800 tracking-widest truncate">Bảng công việc</h2>
+                       <h2 className="text-xs sm:text-sm font-black uppercase text-slate-800 tracking-widest leading-tight py-1">Bảng công việc</h2>
                     </div>
                     <button 
                       onClick={() => {
@@ -3825,20 +3866,20 @@ const handleAnalyzeDocument = async (docId: string) => {
 
               {/* Project Specific Sources */}
               <section className="bg-white rounded-3xl p-5 shadow-sm border border-slate-200">
-                <div className="flex items-center justify-between mb-4 px-1">
-                  <div className="flex items-center gap-2">
-                    <Files className="w-4 h-4 text-[#002D56]" />
-                    <h2 className="text-xs font-black text-slate-800 uppercase tracking-widest text-wrap">Nguồn dự liệu bài viết</h2>
+                <div className="flex flex-col xl:flex-row items-start xl:items-center justify-between gap-3 mb-4 px-1">
+                  <div className="flex items-center gap-2 shrink-0">
+                    <Files className="w-5 h-5 text-[#002D56]" />
+                    <h2 className="text-[14px] font-black text-slate-800">Nguồn dữ liệu bài viết</h2>
                   </div>
-                  <div className="flex gap-1">
+                  <div className="flex flex-wrap items-center gap-2 w-full xl:w-auto shrink-0">
                     <button 
                       onClick={() => setIsPickingFromLibrary(true)}
-                      className="p-1 px-2.5 text-xs rounded-lg bg-blue-50 text-blue-600 hover:bg-[#002D56] hover:text-white transition-all font-bold flex items-center gap-1"
+                      className="px-3 py-1.5 text-[11px] rounded-lg bg-blue-50 text-blue-600 hover:bg-[#002D56] hover:text-white transition-all font-bold flex items-center gap-1.5"
                       title="Chọn tệp có sẵn từ Thư viện"
                     >
-                      <Plus className="w-3.5 h-3.5" /> Thư viện
+                      <Plus className="w-3.5 h-3.5" /> Chọn từ kho
                     </button>
-                    <div className="relative" ref={searchContainerRef}>
+                    <div className="relative flex-shrink-0" ref={searchContainerRef}>
                       <button 
                         onClick={() => {
                           setIsSearching(!isSearching);
@@ -3846,12 +3887,12 @@ const handleAnalyzeDocument = async (docId: string) => {
                           setIsAddingText(false);
                         }}
                         className={cn(
-                          "p-1 px-2.5 text-xs rounded-lg transition-all font-bold flex items-center gap-1",
-                          isSearching ? "bg-[#002D56] text-white" : "bg-blue-50 text-blue-600 hover:bg-[#002D56] hover:text-white"
+                          "px-3 py-1.5 text-[11px] rounded-lg transition-all font-bold flex items-center gap-1.5",
+                          isSearching ? "bg-[#002D56] text-white" : "bg-slate-50 text-slate-600 hover:bg-[#002D56] hover:text-white"
                         )}
                         title="Tìm kiếm nguồn trên Web"
                       >
-                        <Globe className="w-3.5 h-3.5" /> Thêm nguồn AI
+                        <Globe className="w-3.5 h-3.5" /> Tìm nguồn web
                       </button>
 
                       <AnimatePresence>
@@ -3864,7 +3905,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                           >
                             <div className="flex items-center gap-2 mb-3">
                                <Globe className="w-3.5 h-3.5 text-[#002D56]" />
-                               <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">AI Web Research (NotebookLM Style)</p>
+                              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Nghiên cứu Web AI (Phong cách NotebookLM)</p>
                             </div>
                             
                             <div className="flex gap-2 mb-4">
@@ -3900,7 +3941,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                                         <div key={`web-chunk-${idx}`} className="group/res bg-slate-50 hover:bg-white p-3 rounded-xl border border-slate-100 hover:border-[#002D56] transition-all">
                                           <div className="flex items-center gap-1.5 mb-1 opacity-60">
                                             <Globe className="w-2.5 h-2.5" />
-                                            <span className="text-[8px] font-bold truncate">{uri ? getHostname(uri) : 'Web Source'}</span>
+                                            <span className="text-[8px] font-bold truncate">{uri ? getHostname(uri) : 'Nguồn Web'}</span>
                                           </div>
                                           <h4 className="text-[11px] font-bold text-slate-800 line-clamp-1 group-hover/res:text-[#002D56]">{title}</h4>
                                           <button 
@@ -3931,7 +3972,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                       </AnimatePresence>
                     </div>
 
-                    <div className="relative" ref={textContainerRef}>
+                    <div className="relative flex-shrink-0" ref={textContainerRef}>
                       <button 
                         onClick={() => {
                           setIsAddingText(!isAddingText);
@@ -3939,12 +3980,12 @@ const handleAnalyzeDocument = async (docId: string) => {
                           setIsSearching(false);
                         }}
                         className={cn(
-                          "p-1 px-2.5 text-xs rounded-lg transition-all font-bold flex items-center gap-1",
-                          isAddingText ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-900 hover:text-white"
+                          "px-3 py-1.5 text-[11px] rounded-lg transition-all font-bold flex items-center gap-1.5",
+                          isAddingText ? "bg-slate-900 text-white" : "bg-slate-50 text-slate-600 hover:bg-slate-900 hover:text-white"
                         )}
                         title="Dán văn bản"
                       >
-                        <Type className="w-3.5 h-3.5" />
+                        <Type className="w-3.5 h-3.5" /> Nhập văn bản
                       </button>
                       
                       <AnimatePresence>
@@ -3991,7 +4032,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                       </AnimatePresence>
                     </div>
 
-                    <div className="relative" ref={linkContainerRef}>
+                    <div className="relative flex-shrink-0" ref={linkContainerRef}>
                       <button 
                         onClick={() => {
                           setIsAddingLink(!isAddingLink);
@@ -3999,12 +4040,12 @@ const handleAnalyzeDocument = async (docId: string) => {
                           setIsSearching(false);
                         }}
                         className={cn(
-                          "p-1 px-2.5 text-xs rounded-lg transition-all font-bold flex items-center gap-1",
-                          isAddingLink ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-900 hover:text-white"
+                          "px-3 py-1.5 text-[11px] rounded-lg transition-all font-bold flex items-center gap-1.5",
+                          isAddingLink ? "bg-slate-900 text-white" : "bg-slate-50 text-slate-600 hover:bg-slate-900 hover:text-white"
                         )}
                         title="Thêm link nguồn"
                       >
-                        <LinkIcon className="w-3.5 h-3.5" />
+                        <LinkIcon className="w-3.5 h-3.5" /> Dán liên kết
                       </button>
 
                       <AnimatePresence>
@@ -4050,10 +4091,10 @@ const handleAnalyzeDocument = async (docId: string) => {
 
                     <button 
                       onClick={() => fileInputRef.current?.click()}
-                      className="p-1 px-2.5 text-xs bg-slate-100 text-slate-600 rounded-lg hover:bg-slate-900 hover:text-white transition-all font-bold flex items-center gap-1"
+                      className="px-3 py-1.5 text-[11px] bg-slate-50 text-slate-600 rounded-lg hover:bg-slate-900 hover:text-white transition-all font-bold flex items-center gap-1.5 flex-shrink-0"
                       title="Tải lên tài liệu"
                     >
-                      <FileUp className="w-3.5 h-3.5" />
+                      <FileUp className="w-3.5 h-3.5" /> Tải lên
                     </button>
                   </div>
                 </div>
@@ -4084,7 +4125,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                          </div>
                          <div className="flex-1 min-w-0">
                             <p className="text-[11px] font-black text-slate-700 truncate uppercase tracking-tight">{doc.name}</p>
-                            <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest truncate">{doc.type} • {doc.sourceType || 'Local'}</p>
+                            <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest truncate">{getDocTypeLabel(doc.type)} • {getSourceTypeLabel(doc.sourceType)}</p>
                          </div>
                          <button 
                            onClick={(e) => { e.stopPropagation(); toggleDocSelection(doc.id); }}
@@ -4135,44 +4176,67 @@ const handleAnalyzeDocument = async (docId: string) => {
                     </button>
                   </div>
                 </div>
-                <textarea
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  placeholder="Nhập yêu cầu biên tập hoặc các ghi chú thô tại đây..."
-                  className="flex-1 w-full p-8 focus:outline-none resize-none text-slate-700 text-lg leading-relaxed placeholder:text-slate-200 font-medium"
-                />
-                
-                <div className="px-5 sm:px-8 py-5 sm:py-6 bg-white border-t border-slate-50 flex flex-col sm:flex-row items-center justify-between gap-5 sm:gap-6">
-                  <div className="flex items-start gap-3 max-w-md w-full sm:w-auto">
-                    <div className="p-2 bg-blue-50 rounded-lg shrink-0">
-                      <ShieldCheck className="w-4 h-4 text-[#002D56]" />
+                <div className="relative flex-1 flex flex-col min-h-[300px] bg-slate-50/50">
+                  {taskType === 'WRITE_NEW' ? (
+                    <div className="p-6 sm:p-8 flex-1 w-full space-y-6">
+                      <EditorialKindSelector 
+                        value={editorialKind}
+                        onChange={setEditorialKind}
+                      />
+                      <EditorialInputForm 
+                        kind={editorialKind}
+                        initialValue={input}
+                        onChange={setInput}
+                      />
                     </div>
-                    <p className="text-[10px] sm:text-[11px] text-slate-400 font-bold leading-relaxed uppercase tracking-tight">
+                  ) : (
+                    <textarea
+                      value={input}
+                      onChange={(e) => setInput(e.target.value)}
+                      placeholder="Viết yêu cầu chi tiết của bạn tại đây để AI xử lý..."
+                      className="flex-1 w-full p-6 sm:p-8 pb-32 focus:outline-none resize-none text-slate-800 text-base sm:text-lg leading-relaxed placeholder:text-slate-400 placeholder:font-medium bg-transparent"
+                    />
+                  )}
+                  <div className="absolute flex flex-col sm:flex-row items-end sm:items-center justify-end gap-3 bottom-0 right-0 w-full p-4 sm:p-6 pointer-events-none">
+                    {(!input.trim() && selectedSourceDocIds.length === 0) && (
+                       <span className="text-[12px] font-bold text-amber-600 bg-amber-50 px-3 py-1.5 rounded-lg border border-amber-100 italic tracking-tight hidden sm:block">
+                          Nhập yêu cầu để bắt đầu
+                       </span>
+                    )}
+                    <button
+                      disabled={(!input.trim() && selectedSourceDocIds.length === 0) || isLoading || isParsing || isBuildingTasks}
+                      onClick={taskType === 'TASK_BUILDER' ? handleBuildTasks : handleProcess}
+                      className={cn(
+                        "w-full sm:w-auto flex items-center justify-center gap-2 px-8 py-3.5 rounded-2xl font-black text-[13px] uppercase tracking-widest transition-all duration-300 shadow-xl active:scale-95 pointer-events-auto shrink-0",
+                        ((!input.trim() && selectedSourceDocIds.length === 0) || isLoading || isParsing || isBuildingTasks)
+                          ? "bg-slate-200 text-slate-500 cursor-not-allowed shadow-none"
+                          : "bg-[#002D56] text-white hover:bg-slate-900 shadow-[#002D56]/30 hover:shadow-2xl"
+                      )}
+                    >
+                      {isLoading || isBuildingTasks ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          Đang xử lý...
+                        </>
+                      ) : (
+                        <>
+                          <Zap className="w-4 h-4 fill-current" />
+                          {(!input.trim() && selectedSourceDocIds.length === 0) ? "Nhập yêu cầu để bắt đầu" : "Bắt đầu xử lý"}
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+                
+                <div className="px-5 sm:px-8 py-4 bg-slate-50 border-t border-slate-100 flex items-center justify-between gap-5">
+                  <div className="flex items-start gap-3 w-full">
+                    <div className="p-1.5 bg-blue-100 rounded-lg shrink-0 mt-0.5">
+                      <ShieldCheck className="w-3.5 h-3.5 text-[#002D56]" />
+                    </div>
+                    <p className="text-[11px] text-slate-500 font-medium leading-relaxed">
                       Hệ thống sẽ đồng nhất thuật ngữ và cấu trúc bài viết theo quy chuẩn Hoa Tiêu Miền Bắc.
                     </p>
                   </div>
-                  <button
-                    disabled={(!input.trim() && selectedSourceDocIds.length === 0) || isLoading || isParsing || isBuildingTasks}
-                    onClick={taskType === 'TASK_BUILDER' ? handleBuildTasks : handleProcess}
-                    className={cn(
-                      "w-full sm:w-auto flex items-center justify-center gap-3 px-10 sm:px-12 py-4 sm:py-5 rounded-2xl font-black text-xs sm:text-sm transition-all duration-300 shadow-2xl active:scale-95 uppercase tracking-widest",
-                      ((!input.trim() && selectedSourceDocIds.length === 0) || isLoading || isParsing || isBuildingTasks)
-                        ? "bg-slate-100 text-slate-400 cursor-not-allowed shadow-none border border-slate-200"
-                        : "bg-[#002D56] text-white hover:bg-slate-900 border border-[#002D56] shadow-[#002D56]/20"
-                    )}
-                  >
-                    {isLoading || isBuildingTasks ? (
-                      <>
-                        <Loader2 className="w-5 h-5 animate-spin" />
-                        AI ĐANG TRIỂN KHAI...
-                      </>
-                    ) : (
-                      <>
-                        <Zap className="w-5 h-5 fill-current" />
-                        Bắt đầu xử lý
-                      </>
-                    )}
-                  </button>
                 </div>
               </section>
 
@@ -4429,6 +4493,13 @@ const handleAnalyzeDocument = async (docId: string) => {
                         </div>
                       </div>
 
+                      {taskType === 'WRITE_NEW' && (
+                        <EditorialPreflightPanel 
+                          kind={editorialKind} 
+                          markdownContent={output} 
+                        />
+                      )}
+
                       <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-hide -mx-1 px-1">
                         <button 
                           onClick={handleLocalIllustrationScan}
@@ -4467,16 +4538,31 @@ const handleAnalyzeDocument = async (docId: string) => {
                           TẢI ẢNH TỰ DO
                         </button>
 
+                        <button 
+                          onClick={() => {
+                            setInput(output);
+                            setTaskType('TASK_BUILDER');
+                            if (window.innerWidth >= 1024) window.scrollTo({ top: 0, behavior: 'smooth' });
+                          }}
+                          disabled={isLoading || !output}
+                          className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-[10px] font-black bg-indigo-50 text-indigo-600 border border-indigo-200 hover:bg-indigo-100 transition-all active:scale-95 disabled:opacity-50 uppercase tracking-widest shrink-0"
+                        >
+                          <CheckCircle2 className="w-4 h-4" />
+                          TẠO TASK
+                        </button>
+
                         <div className="w-px h-6 bg-slate-200 mx-1 shrink-0" />
 
                         <button 
                           onClick={async () => {
                             const audit = auditEditorialPublish(illustrations);
                             if (audit.suggestedCount > 0) {
-                              if (!confirm(`Còn ${audit.suggestedCount} hình ảnh chưa được duyệt. Bạn có muốn tiếp tục xuất bản PDF mà không có các hình này?`)) return;
+                              const confirmed = await requestConfirmAsync(`Còn ${audit.suggestedCount} hình ảnh chưa được duyệt. Bạn có muốn tiếp tục xuất bản PDF mà không có các hình này?`);
+                              if (!confirmed) return;
                             }
                             try {
-                              await exportToPDF('printable-article', `Bai_viet_HTMB_${Date.now()}`);
+                              toast("Tính năng xuất PDF dạng văn bản (text searchable) đang được nâng cấp ở server. Hệ thống sẽ tạm xuất file dạng hình ảnh (Visual Snapshot).", { icon: "ℹ️", duration: 5000 });
+                              await exportVisualSnapshotPDF('printable-article', `Bai_viet_HTMB_${Date.now()}`);
                             } catch (err: any) {
                               setError(err.message);
                             }
@@ -4492,13 +4578,15 @@ const handleAnalyzeDocument = async (docId: string) => {
                           onClick={async () => {
                             const audit = auditEditorialPublish(illustrations);
                             if (audit.suggestedCount > 0) {
-                              if (!confirm(`Còn ${audit.suggestedCount} hình ảnh chưa được duyệt. Bạn có muốn tiếp tục xuất bản Word mà không có các hình này?`)) return;
+                              const confirmed = await requestConfirmAsync(`Còn ${audit.suggestedCount} hình ảnh chưa được duyệt. Bạn có muốn tiếp tục xuất bản Word mà không có các hình này?`);
+                              if (!confirmed) return;
                             }
                             try {
-                              const cleanContent = stripResolvedPlaceholders(removeBrokenMarkdownImages(output), illustrations, true);
+                              let cleanContent = stripResolvedPlaceholders(removeBrokenMarkdownImages(output), illustrations, true);
+                              const extracted = extractExportTitle(input, cleanContent);
                               await exportToWord(
-                                input.substring(0, 100) || 'Tiêu đề bài viết', 
-                                cleanContent, 
+                                extracted.title, 
+                                extracted.body, 
                                 `Bai_viet_HTMB_${Date.now()}`, 
                                 illustrations
                               );
@@ -4707,7 +4795,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                               h2: ({node, ...props}) => <h2 className="text-2xl md:text-3xl mt-14 mb-6 pb-4 border-b-4 border-[#002D56]/10 font-black" {...props} />,
                               h3: ({node, ...props}) => <h3 className="text-xl font-bold text-slate-800 mt-10 mb-4 flex items-center gap-3 bg-slate-50 p-4 rounded-2xl border-l-8 border-[#002D56]" {...props} />,
                               p: ({node, children, ...props}) => {
-                                return <p className="mb-8" {...props}>{children}</p>
+                                return <p className="mb-8 text-justify" {...props}>{children}</p>
                               },
                               strong: ({node, ...props}) => <strong className="font-black text-slate-900 underline decoration-[#002D56]/20 underline-offset-4" {...props} />,
                               em: ({node, ...props}) => <em className="text-slate-500 italic block border-l-4 border-[#002D56]/20 pl-8 my-10 py-4 text-2xl bg-[#002D56]/5 rounded-r-3xl leading-snug" {...props} />,
@@ -4802,22 +4890,43 @@ const handleAnalyzeDocument = async (docId: string) => {
                       <p className="text-[10px] sm:text-xs text-slate-500 font-medium truncate">Lưu trữ các bài viết và phiên bản chỉnh sửa.</p>
                    </div>
                 </div>
-                <button 
-                  onClick={createNewSession}
-                  className="w-full sm:w-auto bg-[#002D56] text-white px-6 py-3 rounded-xl font-black text-[10px] sm:text-xs uppercase tracking-widest hover:bg-slate-900 transition-all flex items-center justify-center gap-2 shadow-lg shadow-[#002D56]/20"
-                >
-                  <Plus className="w-4 h-4" /> Soạn bài mới
-                </button>
+                
+                <div className="flex flex-col sm:flex-row w-full sm:w-auto items-center gap-3 flex-1 sm:justify-end">
+                   <div className="relative w-full sm:max-w-xs">
+                     <Search className="w-4 h-4 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2" />
+                     <input
+                       type="text"
+                       placeholder="Tìm kiếm bài viết..."
+                       value={historySearchQuery}
+                       onChange={(e) => setHistorySearchQuery(e.target.value)}
+                       className="w-full pl-10 pr-4 py-3 bg-slate-50 border-none rounded-xl text-xs font-semibold focus:ring-2 focus:ring-[#002D56]/20 transition-all"
+                     />
+                   </div>
+                   <button 
+                     onClick={createNewSession}
+                     className="w-full sm:w-auto bg-[#002D56] text-white px-6 py-3 rounded-xl font-black text-xs uppercase tracking-widest hover:bg-slate-900 transition-all flex items-center justify-center gap-2 shadow-lg shadow-[#002D56]/20 shrink-0"
+                   >
+                     <Plus className="w-4 h-4" /> Soạn bài mới
+                   </button>
+                </div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
-               {sessions.length === 0 ? (
+               {(sessions.filter(s => 
+                 !historySearchQuery || 
+                 s.title?.toLowerCase().includes(historySearchQuery.toLowerCase()) || 
+                 s.versions[0]?.content?.toLowerCase().includes(historySearchQuery.toLowerCase())
+               )).length === 0 ? (
                   <div className="col-span-full py-20 sm:py-32 flex flex-col items-center justify-center bg-white rounded-[32px] sm:rounded-[40px] border-2 border-dashed border-slate-200">
                      <Clock className="w-16 h-16 sm:w-20 sm:h-20 text-slate-200 mb-4 sm:mb-6" />
-                     <p className="text-slate-400 font-black uppercase tracking-widest text-[10px] sm:text-xs">Chưa có lịch sử soạn thảo</p>
+                     <p className="text-slate-400 font-black uppercase tracking-widest text-xs">Không tìm thấy bài viết</p>
                   </div>
                ) : (
-                  sessions.map(session => (
+                  sessions.filter(s => 
+                    !historySearchQuery || 
+                    s.title?.toLowerCase().includes(historySearchQuery.toLowerCase()) || 
+                    s.versions[0]?.content?.toLowerCase().includes(historySearchQuery.toLowerCase())
+                  ).map(session => (
                     <div 
                       key={session.id}
                       className="bg-white rounded-[32px] p-5 sm:p-6 shadow-sm border border-slate-200 hover:border-[#002D56] hover:shadow-xl transition-all group flex flex-col h-full relative overflow-hidden"
@@ -4830,14 +4939,38 @@ const handleAnalyzeDocument = async (docId: string) => {
                             )}>
                                {session.taskType === 'WRITE_NEW' ? 'Viết mới' : 'Rà soát'}
                             </span>
-                            <span className="text-[9px] text-slate-400 font-bold uppercase tracking-tight bg-slate-50 px-2 py-0.5 rounded-md">
-                               {new Date(session.updatedAt).toLocaleDateString('vi-VN')}
+                            <span className="text-[10px] text-slate-500 font-bold bg-slate-50 px-2 py-0.5 rounded-md flex items-center gap-1.5 border border-slate-100">
+                               <Clock className="w-3 h-3" />
+                               Sửa lần cuối: {new Date(session.updatedAt).toLocaleTimeString('vi-VN', {hour: '2-digit', minute:'2-digit'})} - {new Date(session.updatedAt).toLocaleDateString('vi-VN')}
                             </span>
                          </div>
+                      </div>
+
+                      <h3 className="text-base sm:text-lg font-black text-slate-800 leading-snug line-clamp-2 group-hover:text-[#002D56] transition-colors mb-4 flex-1">
+                        {session.title || 'Bài viết không tiêu đề'}
+                      </h3>
+
+                      <div className="flex flex-wrap gap-2 mb-6">
+                         <div className="flex items-center gap-1.5 text-[10px] font-bold text-slate-500 bg-slate-50 px-2 py-1 rounded-lg border border-slate-100">
+                            <History className="w-3.5 h-3.5" /> {session.versions.length} phiên bản
+                         </div>
+                         <div className="flex items-center gap-1.5 text-[10px] font-bold text-slate-500 bg-slate-50 px-2 py-1 rounded-lg border border-slate-100">
+                            <Files className="w-3.5 h-3.5" /> {session.documentIds.length} nguồn
+                         </div>
+                      </div>
+
+                      <div className="pt-4 border-t border-slate-100 flex items-center gap-3 mt-auto">
+                         <button 
+                           onClick={() => loadSession(session)}
+                           className="flex-1 bg-[#002D56] text-white py-2.5 rounded-xl text-[12px] font-bold hover:bg-slate-900 shadow-md shadow-[#002D56]/10 transition-all flex items-center justify-center gap-2"
+                         >
+                            <Edit3 className="w-4 h-4" /> Tiếp tục
+                         </button>
                          <button 
                            onClick={async (e) => {
                              e.stopPropagation();
-                             if (confirm('Bạn có chắc chắn muốn xóa bài viết này cùng toàn bộ lịch sử?')) {
+                             const confirmed = await requestConfirmAsync('Bạn có chắc chắn muốn xóa bài viết này cùng toàn bộ lịch sử?');
+                             if (confirmed) {
                                if (user) {
                                   try {
                                      await deleteDoc(doc(db, 'users', user.uid, 'sessions', session.id));
@@ -4852,31 +4985,10 @@ const handleAnalyzeDocument = async (docId: string) => {
                                }
                              }
                            }}
-                           className="text-slate-200 hover:text-red-500 transition-colors p-1.5 hover:bg-red-50 rounded-lg"
+                           className="px-3 py-2.5 rounded-xl text-slate-400 bg-slate-50 hover:bg-rose-50 hover:text-rose-600 transition-all border border-slate-100"
+                           title="Xóa bài viết"
                          >
                             <Trash2 className="w-4 h-4" />
-                         </button>
-                      </div>
-
-                      <h3 className="text-base sm:text-lg font-black text-slate-800 leading-snug line-clamp-2 group-hover:text-[#002D56] transition-colors mb-4 flex-1 uppercase tracking-tight">
-                        {session.title || 'Bài viết không tiêu đề'}
-                      </h3>
-
-                      <div className="flex flex-wrap gap-2 mb-6">
-                         <div className="flex items-center gap-1.5 text-[9px] font-black text-slate-400 bg-slate-50 px-2 py-1 rounded-lg uppercase tracking-wider border border-slate-100">
-                            <History className="w-3 h-3" /> {session.versions.length} hồ sơ
-                         </div>
-                         <div className="flex items-center gap-1.5 text-[9px] font-black text-slate-400 bg-slate-50 px-2 py-1 rounded-lg uppercase tracking-wider border border-slate-100">
-                            <Files className="w-3 h-3" /> {session.documentIds.length} nguồn
-                         </div>
-                      </div>
-
-                      <div className="pt-5 border-t border-slate-50 flex items-center justify-between mt-auto">
-                         <button 
-                           onClick={() => loadSession(session)}
-                           className="flex-1 bg-slate-900 text-white py-3 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-[#002D56] shadow-lg shadow-slate-200 transition-all flex items-center justify-center gap-2 active:scale-95"
-                         >
-                            <Edit3 className="w-4 h-4" /> Tiếp tục biên tập
                          </button>
                       </div>
                     </div>
@@ -4950,7 +5062,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                                <Edit3 className="w-3.5 h-3.5" />
                              </button>
                              <button 
-                               onClick={(e) => { e.stopPropagation(); if(confirm('Xóa kho này?')) deleteLibraryCollection(coll.id); }}
+                               onClick={async (e) => { e.stopPropagation(); const confirmed = await requestConfirmAsync('Xóa kho này?'); if(confirmed) deleteLibraryCollection(coll.id); }}
                                className="p-1 hover:bg-red-500 hover:text-white rounded-md transition-all"
                              >
                                <Trash2 className="w-3.5 h-3.5" />
@@ -4993,53 +5105,53 @@ const handleAnalyzeDocument = async (docId: string) => {
                      placeholder="Tìm kiếm tài liệu trong kho..."
                      value={librarySearchQuery}
                      onChange={(e) => setLibrarySearchQuery(e.target.value)}
-                     className="w-full pl-12 pr-4 py-3 bg-slate-50 border border-slate-100 rounded-2xl text-xs font-bold text-slate-800 focus:outline-none focus:ring-4 focus:ring-blue-50 transition-all placeholder:text-slate-300"
+                     className="w-full pl-12 pr-4 py-3 bg-slate-50 border border-slate-100 rounded-2xl text-[13px] font-bold text-slate-800 focus:outline-none focus:ring-4 focus:ring-blue-50 transition-all placeholder:text-slate-400"
                    />
                 </div>
                 <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
-                    {selectedSourceDocIds.length > 0 && (
+                    {bulkSelectedDocIds.length > 0 && (
                        <button 
                          onClick={(e) => {
                            e.stopPropagation();
                            deleteSelectedDocuments();
                          }}
-                         className="flex-1 sm:flex-initial bg-red-50 text-red-600 border border-red-200 px-4 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-red-500 hover:text-white transition-all flex items-center justify-center gap-2 shadow-sm"
+                         className="flex-1 sm:flex-initial bg-red-50 text-red-600 border border-red-100 px-4 py-2.5 rounded-xl text-[13px] font-bold hover:bg-red-500 hover:text-white transition-all flex items-center justify-center gap-2 shadow-sm"
                        >
-                         <Trash2 className="w-3.5 h-3.5" /> Xóa ({selectedSourceDocIds.length})
+                         <Trash2 className="w-4 h-4" /> Xóa ({bulkSelectedDocIds.length})
                        </button>
                     )}
                     {documents.some(d => (d.type as string) === 'link' && (d.metadata?.url?.includes('drive.google.com') || d.metadata?.url?.includes('docs.google.com'))) && (
                        <button 
                          onClick={repairLegacyDriveLinks}
-                         className="flex-1 sm:flex-initial bg-amber-50 text-amber-600 border border-amber-200 px-4 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-amber-100 transition-all flex items-center justify-center gap-2"
-                         title="Chuyển đổi các link Drive cũ sang định dạng tài liệu chuẩn"
+                         className="flex-1 sm:flex-initial bg-amber-50 text-amber-700 border border-amber-100 px-4 py-2.5 rounded-xl text-[13px] font-bold hover:bg-amber-100 transition-all flex items-center justify-center gap-2"
+                         title="Chuyển đổi các link Drive cũ sang định dạng chuẩn"
                        >
-                         <Zap className="w-3.5 h-3.5" /> Sửa link Drive cũ
+                         <Zap className="w-4 h-4" /> Sửa link cũ
                        </button>
                     )}
                     <button 
                       onClick={() => { closeMobileDrawer(); setIsAddingText(true); }}
-                      className="flex-1 sm:flex-initial bg-white border border-slate-200 text-[#002D56] px-4 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-50 transition-all flex items-center justify-center gap-2"
+                      className="flex-1 sm:flex-initial bg-white border border-slate-200 text-slate-600 px-4 py-2.5 rounded-xl text-[13px] font-bold hover:bg-slate-50 hover:text-[#002D56] transition-all flex items-center justify-center gap-2"
                     >
-                      <Type className="w-3.5 h-3.5" /> Ghi chú
+                      <Type className="w-4 h-4" /> Ghi chú
                     </button>
                     <button 
                       onClick={() => { closeMobileDrawer(); setIsAddingLink(true); }}
-                      className="flex-1 sm:flex-initial bg-white border border-slate-200 text-[#002D56] px-4 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-50 transition-all flex items-center justify-center gap-2"
+                      className="flex-1 sm:flex-initial bg-white border border-slate-200 text-slate-600 px-4 py-2.5 rounded-xl text-[13px] font-bold hover:bg-slate-50 hover:text-[#002D56] transition-all flex items-center justify-center gap-2"
                     >
-                      <LinkIcon className="w-3.5 h-3.5" /> Link
+                      <LinkIcon className="w-4 h-4" /> Liên kết
                     </button>
                     <button 
                       onClick={() => fileInputRef.current?.click()}
-                      className="flex-1 sm:flex-initial bg-[#002D56] text-white px-5 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-900 transition-all shadow-lg shadow-[#002D56]/10 flex items-center justify-center gap-2"
+                      className="flex-1 sm:flex-initial bg-[#002D56] text-white px-5 py-2.5 rounded-xl text-[13px] font-bold hover:bg-slate-900 transition-all shadow-lg shadow-[#002D56]/10 flex items-center justify-center gap-2"
                     >
                       <FileUp className="w-4 h-4" /> Tải tệp
                     </button>
                  </div>
               </div>
 
-              {/* Document Grid - 1 columns on mobile */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4 lg:gap-5">
+              {/* Document Grid */}
+              <div className="grid grid-cols-1 sm:grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-4 sm:gap-5">
                 {filteredDocs.length === 0 ? (
                   <div className="col-span-full py-32 flex flex-col items-center justify-center bg-white rounded-[40px] border-2 border-dashed border-slate-100 text-center">
                     <div className="w-20 h-20 bg-slate-50 rounded-3xl flex items-center justify-center mb-6">
@@ -5062,18 +5174,18 @@ const handleAnalyzeDocument = async (docId: string) => {
                         <div className="flex items-center justify-between mb-4">
                            <div className="flex items-center gap-2">
                               <div className={cn(
-                                "px-2.5 py-1 rounded-lg text-[8px] font-black uppercase tracking-widest border shadow-sm",
-                                doc.type === 'pdf' ? "bg-rose-50 border-rose-100 text-rose-500" :
-                                doc.type === 'word' ? "bg-blue-50 border-blue-100 text-blue-500" :
-                                doc.type === 'excel' ? "bg-emerald-50 border-emerald-100 text-emerald-500" :
+                                "px-2.5 py-1 rounded-lg text-[10px] font-bold border shadow-sm",
+                                doc.type === 'pdf' ? "bg-rose-50 border-rose-100 text-rose-600" :
+                                doc.type === 'word' ? "bg-blue-50 border-blue-100 text-blue-600" :
+                                doc.type === 'excel' ? "bg-emerald-50 border-emerald-100 text-emerald-600" :
                                 doc.type === 'drive' ? "bg-[#002D56] border-[#002D56] text-white" :
-                                "bg-slate-50 border-slate-100 text-slate-400"
+                                "bg-slate-50 border-slate-100 text-slate-500"
                               )}>
-                                 {doc.driveMimeType?.includes('folder') ? 'FOLDER' : (doc.type || 'TEXT')}
+                                 {doc.driveMimeType?.includes('folder') ? 'Thư mục' : getDocTypeLabel(doc.type)}
                               </div>
                               {doc.documentKind && (
-                                 <div className="px-2 py-1 bg-amber-50 border border-amber-100 text-amber-600 rounded-lg text-[8px] font-black uppercase tracking-widest">
-                                    {doc.documentKind.replace(/_/g, ' ')}
+                                 <div className="px-2 py-1 bg-amber-50 border border-amber-100 text-amber-700 rounded-lg text-[10px] font-bold capitalize">
+                                    {doc.documentKind.replace(/_/g, ' ').toLowerCase()}
                                  </div>
                               )}
                            </div>
@@ -5105,7 +5217,45 @@ const handleAnalyzeDocument = async (docId: string) => {
                                  </button>
                                  
                                  {documentMenuDocId === doc.id && (
-                                    <div className="absolute right-0 top-full mt-2 w-40 bg-white rounded-2xl shadow-xl border border-slate-100 py-1.5 z-[200]">
+                                    <div className="absolute right-0 top-full mt-2 w-48 bg-white rounded-2xl shadow-xl border border-slate-100 py-1.5 z-[200]">
+                                       {!doc.summary && (
+                                         <button 
+                                            onClick={(e) => {
+                                               e.stopPropagation();
+                                               setDocumentMenuDocId(null);
+                                               handleAnalyzeDocument(doc.id);
+                                            }}
+                                            disabled={!!isAnalyzing}
+                                            className="w-full text-left px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 hover:text-blue-600 flex items-center gap-2"
+                                         >
+                                            <Sparkles className="w-3.5 h-3.5" /> Phân tích AI
+                                         </button>
+                                       )}
+                                       {doc.type === 'drive' && (
+                                          <a 
+                                            href={getDocumentOpenUrl(doc)} 
+                                            target="_blank" 
+                                            rel="noreferrer"
+                                            onClick={(e) => { e.stopPropagation(); setDocumentMenuDocId(null); }}
+                                            className="flex w-full text-left px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 hover:text-slate-800 items-center gap-2"
+                                          >
+                                             <ExternalLink className="w-3.5 h-3.5" /> Mở Drive
+                                          </a>
+                                       )}
+                                       {doc.type === 'drive' && doc.driveMimeType?.includes('folder') && (
+                                          <button 
+                                            onClick={(e) => {
+                                               e.stopPropagation();
+                                               setDocumentMenuDocId(null);
+                                               handleSyncDriveFolder(doc.driveFileId || '', doc.name);
+                                            }}
+                                            disabled={isSyncingDrive === doc.driveFileId}
+                                            className="w-full text-left px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 hover:text-amber-600 flex items-center gap-2"
+                                          >
+                                             <RefreshCw className="w-3.5 h-3.5" /> Đồng bộ thư mục
+                                          </button>
+                                       )}
+                                       {(!doc.summary && doc.type === 'drive') && <div className="h-px bg-slate-100 my-1"></div>}
                                        <button 
                                           onClick={(e) => {
                                             e.stopPropagation();
@@ -5175,15 +5325,15 @@ const handleAnalyzeDocument = async (docId: string) => {
                                  )}
                               </div>
                               <div className="min-w-0">
-                                 <h4 className="text-sm font-black text-slate-800 uppercase tracking-tight leading-tight line-clamp-2 decoration-[#002D56]/10 underline-offset-2 decoration-2 group-hover:underline">
+                                 <h4 className="text-[13px] font-black text-slate-800 leading-tight line-clamp-3 decoration-[#002D56]/10 underline-offset-2 decoration-2 group-hover:underline mt-0.5">
                                    {doc.name}
                                  </h4>
-                                 <div className="flex items-center gap-2 mt-1">
-                                    <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest truncate">
+                                 <div className="flex items-center gap-2 mt-1.5">
+                                    <p className="text-[11px] text-slate-500 font-medium truncate">
                                        {formatLibraryDate(doc.metadata?.modifiedTime || doc.updatedAt || doc.createdAt)}
                                     </p>
                                     {doc.driveSize && (
-                                       <span className="text-[8px] font-black text-slate-300">({(parseInt(doc.driveSize)/1024/1024).toFixed(2)} MB)</span>
+                                       <span className="text-[10px] font-medium text-slate-400">({(parseInt(doc.driveSize)/1024/1024).toFixed(2)} MB)</span>
                                     )}
                                  </div>
                               </div>
@@ -5198,43 +5348,24 @@ const handleAnalyzeDocument = async (docId: string) => {
                            {doc.type === 'drive' && (
                              <div className="space-y-3 pt-1">
                                 <div className="flex flex-wrap items-center gap-2">
-                                   <div className="px-2 py-0.5 bg-[#002D56]/5 text-[#002D56] rounded-md text-[8px] font-black uppercase tracking-wider border border-[#002D56]/10">DRIVE SOURCE</div>
+                                   <div className="px-2 py-0.5 bg-[#002D56]/5 text-[#002D56] rounded-md text-[10px] font-bold border border-[#002D56]/10">Nguồn Drive</div>
                                    <div className={cn(
-                                     "px-2 py-1 rounded-md text-[8px] font-black uppercase tracking-wider border flex items-center gap-1",
-                                     (doc.contentStatus === 'extracted' || doc.contentStatus === 'summary_only') ? "bg-emerald-50 text-emerald-600 border-emerald-100" : "bg-amber-50 text-amber-600 border-amber-100"
+                                     "px-2 py-0.5 rounded-md text-[10px] font-bold border flex items-center gap-1",
+                                     (doc.contentStatus === 'extracted' || doc.contentStatus === 'summary_only') ? "bg-emerald-50 text-emerald-700 border-emerald-100" :
+                                     doc.contentStatus === 'too_large' ? "bg-orange-50 text-orange-700 border-orange-100" :
+                                     doc.contentStatus === 'error' ? "bg-red-50 text-red-700 border-red-100" :
+                                     "bg-amber-50 text-amber-700 border-amber-100"
                                    )}>
-                                      {(doc.contentStatus === 'extracted' || doc.contentStatus === 'summary_only') ? <Check className="w-2.5 h-2.5" /> : <EyeOff className="w-2.5 h-2.5" />}
-                                      {(doc.contentStatus === 'extracted' || doc.contentStatus === 'summary_only') ? 'AI Đọc được' : 'Chỉ tiêu đề'}
+                                      {(doc.contentStatus === 'extracted' || doc.contentStatus === 'summary_only') ? <Check className="w-3 h-3" /> :
+                                       doc.contentStatus === 'too_large' ? <HardDrive className="w-3 h-3" /> :
+                                       doc.contentStatus === 'error' ? <AlertTriangle className="w-3 h-3" /> :
+                                       <EyeOff className="w-3 h-3" />}
+                                      {(doc.contentStatus === 'extracted' || doc.contentStatus === 'summary_only') ? 'AI Đọc được' :
+                                       doc.contentStatus === 'too_large' ? 'Tệp quá lớn' :
+                                       doc.contentStatus === 'error' ? 'Lỗi phân tích' :
+                                       doc.sourceType === 'google_drive_folder' ? 'Thư mục' :
+                                       'Chỉ tiêu đề'}
                                    </div>
-                                </div>
-                                <div className="flex gap-2">
-                                   <a 
-                                     href={getDocumentOpenUrl(doc)} 
-                                     target="_blank" 
-                                     rel="noreferrer"
-                                     onClick={(e) => e.stopPropagation()}
-                                     className="flex-1 bg-slate-50 text-slate-600 border border-slate-100 py-2.5 rounded-xl text-[9px] font-black uppercase tracking-widest flex items-center justify-center gap-2 hover:bg-slate-100 transition-all shadow-sm"
-                                   >
-                                      Mở Drive <ExternalLink className="w-3 h-3" />
-                                   </a>
-                                   {doc.driveMimeType?.includes('folder') && (
-                                     <>
-                                      <button 
-                                         onClick={(e) => { e.stopPropagation(); openDocumentExplorer(doc.driveFileId || '', doc.name); }}
-                                         className="flex-1 bg-blue-50 text-blue-600 border border-blue-100 py-2.5 rounded-xl text-[9px] font-black uppercase tracking-widest flex items-center justify-center gap-2 hover:bg-blue-100 transition-all"
-                                      >
-                                         <FolderOpen className="w-3 h-3" /> Xem
-                                      </button>
-                                      <button 
-                                         onClick={(e) => { e.stopPropagation(); handleSyncDriveFolder(doc.driveFileId || '', doc.name); }}
-                                         disabled={isSyncingDrive === doc.driveFileId}
-                                         className="flex-1 bg-amber-50 text-amber-600 border border-amber-100 py-2.5 rounded-xl text-[9px] font-black uppercase tracking-widest flex items-center justify-center gap-2 hover:bg-amber-100 transition-all disabled:opacity-50"
-                                      >
-                                         {isSyncingDrive === doc.driveFileId ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
-                                          Đồng bộ
-                                       </button>
-                                     </>
-                                   )}
                                 </div>
                              </div>
                            )}
@@ -5246,33 +5377,22 @@ const handleAnalyzeDocument = async (docId: string) => {
                          <div className="flex items-center gap-2">
                             <button 
                               onClick={(e) => { e.stopPropagation(); closeMobileDrawer(); setIsPickingTaskForDoc(doc); }}
-                              className="p-2.5 bg-emerald-50 text-emerald-600 border border-emerald-100 rounded-xl hover:bg-emerald-100 transition-all flex items-center gap-2 group/btn"
-                              title="Gắn vào công việc"
+                              className="px-3 py-1.5 bg-emerald-50 text-emerald-700 border border-emerald-100 rounded-xl hover:bg-emerald-100 transition-all flex items-center gap-1.5 group/btn"
                             >
                               <Plus className="w-3.5 h-3.5 group-hover/btn:rotate-90 transition-transform" />
-                              <span className="text-[9px] font-black uppercase tracking-tight hidden sm:inline">Gắn vào VIỆC</span>
+                              <span className="text-[11px] font-bold">Dùng làm nguồn</span>
                             </button>
-                            {!doc.summary && (
-                               <button 
-                                 onClick={(e) => { e.stopPropagation(); handleAnalyzeDocument(doc.id); }}
-                                 disabled={!!isAnalyzing}
-                                 className="text-[9px] font-black text-blue-600 uppercase tracking-widest hover:bg-blue-50 px-2 py-1 rounded-lg flex items-center gap-1 transition-all"
-                               >
-                                  {isAnalyzing === doc.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
-                                  AI Phân tích
-                               </button>
-                            )}
                             {doc.summary && (
-                               <div className="flex items-center gap-1 text-[8px] font-black text-emerald-600 uppercase italic">
-                                  <ShieldCheck className="w-3 h-3" /> Đã phân tích
+                               <div className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-600 italic px-2">
+                                  <ShieldCheck className="w-3.5 h-3.5" /> Đã phân tích
                                </div>
                             )}
                          </div>
                          <button 
                            onClick={() => openDocumentPreview(doc)}
-                           className="text-[10px] font-black text-[#002D56] uppercase tracking-widest hover:underline flex items-center gap-1.5 group/link"
+                           className="text-[11px] font-bold text-[#002D56] hover:underline flex items-center gap-1.5 group/link bg-slate-50 px-3 py-1.5 rounded-xl hover:bg-slate-100"
                          >
-                             Xem nội dung <ArrowRight className="w-3.5 h-3.5 group-hover/link:translate-x-0.5 transition-transform" />
+                             Xem <ArrowRight className="w-3.5 h-3.5 group-hover/link:translate-x-0.5 transition-transform" />
                          </button>
                       </div>
                     </motion.div>
@@ -6015,7 +6135,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                                    <div>
                                       <h4 className="text-xs font-black text-slate-800 uppercase tracking-tight line-clamp-2 leading-tight">{doc.name}</h4>
                                       <p className="text-[10px] text-slate-400 font-bold uppercase mt-1 tracking-tighter">
-                                         {doc.type} • {formatLibraryDate(doc.metadata?.modifiedTime || doc.updatedAt)}
+                                         {getDocTypeLabel(doc.type)} • {formatLibraryDate(doc.metadata?.modifiedTime || doc.updatedAt)}
                                       </p>
                                    </div>
                                 </button>
@@ -6225,7 +6345,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                     </h3>
                     <div className="flex items-center gap-2 mt-0.5">
                       <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                        {previewDocument.type} • {formatLibraryDate(previewDocument.metadata?.modifiedTime || previewDocument.updatedAt)}
+                        {getDocTypeLabel(previewDocument.type)} • {formatLibraryDate(previewDocument.metadata?.modifiedTime || previewDocument.updatedAt)}
                       </span>
                     </div>
                   </div>
@@ -6374,7 +6494,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                         <div className="flex items-center gap-3 mb-6 p-4 bg-slate-50 rounded-2xl border border-slate-100">
                            <AlertCircle className="w-4 h-4 text-amber-500" />
                            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-tight italic">
-                              Không có link Preview. Hệ thống hiển thị nội dung thô đã được AI trích xuất.
+                              Không có liên kết xem trước. Hệ thống hiển thị nội dung thô đã được AI trích xuất.
                            </p>
                         </div>
                         <div className="flex-1 overflow-y-auto font-mono text-[11px] leading-relaxed text-slate-600 bg-slate-50/50 p-6 rounded-3xl border border-slate-50">
@@ -6402,17 +6522,17 @@ const handleAnalyzeDocument = async (docId: string) => {
 
                         <div className="p-6 bg-slate-50/50 rounded-[32px] border border-slate-100">
                            <h5 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">Tóm tắt nội dung</h5>
-                           <div className="prose prose-slate prose-sm text-slate-600 max-w-none font-medium leading-relaxed mb-4">
+                           <div className="prose prose-slate prose-sm text-slate-600 max-w-none font-medium leading-relaxed mb-4 text-justify">
                               <span className="font-bold text-[#002D56]">{previewDocument.summary.short}</span>
                            </div>
-                           <div className="prose prose-slate prose-sm text-slate-600 max-w-none leading-relaxed">
+                           <div className="prose prose-slate prose-sm text-slate-700 max-w-none leading-relaxed text-justify [&>p]:mb-4 [&>ul]:mb-4 [&>ul]:list-disc [&>ul]:pl-5 [&>ol]:mb-4 [&>ol]:list-decimal [&>ol]:pl-5">
                               {previewDocument.summary.full && previewDocument.summary.full !== previewDocument.summary.short && (
-                                 <p>{previewDocument.summary.full}</p>
+                                 <ReactMarkdown>{previewDocument.summary.full}</ReactMarkdown>
                               )}
                            </div>
-                           {previewDocument.summary.sourceLimitNote && (
-                              <p className="mt-4 text-[10px] italic text-amber-600 font-medium">
-                                 ⚠️ {previewDocument.summary.sourceLimitNote}
+                           {(previewDocument.summary?.sourceLimitNote || previewDocument.sourceLimitNote) && (
+                              <p className="mt-4 text-[10px] italic text-amber-600 font-medium bg-amber-50 p-2.5 rounded-lg border border-amber-100 mt-4">
+                                ⚠️ {previewDocument.summary?.sourceLimitNote || previewDocument.sourceLimitNote}
                               </p>
                            )}
                         </div>
@@ -6667,7 +6787,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                                     {doc.name}
                                  </h4>
                                  <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">
-                                    {doc.type} • {formatLibraryDate(doc.createdAt)}
+                                    {getDocTypeLabel(doc.type)} • {formatLibraryDate(doc.createdAt)}
                                  </p>
                               </div>
                            </button>
@@ -6888,7 +7008,7 @@ const handleAnalyzeDocument = async (docId: string) => {
                                              className="flex-[2] py-1.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg text-[9px] font-black uppercase tracking-widest transition-colors flex items-center justify-center gap-1"
                                           >
                                              <Plus className="w-3 h-3" />
-                                             Import
+                                             Nhập
                                           </button>
                                        )}
                                     </div>
@@ -6903,8 +7023,8 @@ const handleAnalyzeDocument = async (docId: string) => {
          )}
       </AnimatePresence>
       
-        {/* AI Chatbox - Only show if auth ready and user logged in */}
-        {authReady && user && !activeModal && (
+        {/* AI Chatbox - Only show if auth ready, user logged in, and AI is ready */}
+        {authReady && user && isAiCoreActive && !activeModal && !isPickingFromLibrary && !previewDocument && !isPickingTaskForDoc && !isSidebarOpen && (
           <FloatingChatbox
             isOpen={isChatOpen}
             onToggle={() => setIsChatOpen(!isChatOpen)}
