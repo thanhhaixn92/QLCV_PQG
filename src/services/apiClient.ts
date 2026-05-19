@@ -96,6 +96,14 @@ export async function apiFetchJson<T = any>(
         lastError = timeoutErr;
       }
 
+      // Handle Safari "Load failed" / Network errors
+      if (err instanceof TypeError && (err.message === 'Load failed' || err.message === 'Failed to fetch')) {
+        const networkErr: any = new Error('Lỗi kết nối mạng hoặc máy chủ đang khởi động lại. Vui lòng đợi trong giây lát.');
+        networkErr.status = 503; // Treat as 503 to allow retries
+        lastError = networkErr;
+        err = networkErr; // Re-assign so retry logic sees the new status
+      }
+
       // If it's a definitive error we shouldn't retry, re-throw it
       if (err.status && ((err.status >= 400 && err.status < 500) || err.status === 410)) {
         throw err;

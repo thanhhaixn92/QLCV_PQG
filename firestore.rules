@@ -24,8 +24,17 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == userId;
     }
 
+    function isAdmin() {
+      return isSignedIn() && request.auth.token.role == 'admin';
+    }
+
     function isValidId(id) {
       return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    match /admin_audit_logs/{logId} {
+      allow read: if isAdmin();
+      allow write: if false; // written by admin SDK server only
     }
 
     match /users/{userId} {
@@ -35,8 +44,10 @@ service cloud.firestore {
           && data.updatedAt is number;
       }
 
-      allow get: if isOwner(userId);
-      allow create, update: if isOwner(userId) && isValidUser(request.resource.data);
+      allow get: if isOwner(userId) || isAdmin();
+      allow list: if isAdmin();
+      allow create: if isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if (isOwner(userId) || isAdmin()) && isValidUser(request.resource.data) && (isAdmin() || request.resource.data.role == resource.data.role);
 
       // 2. Sessions Sub-collection
       match /sessions/{sessionId} {
@@ -49,11 +60,11 @@ service cloud.firestore {
             && data.updatedAt is number;
         }
 
-        allow read: if isOwner(userId);
+        allow read: if isOwner(userId) || isAdmin();
         allow create: if isOwner(userId) && isValidId(sessionId) && isValidSession(request.resource.data);
         allow update: if isOwner(userId) && isValidId(sessionId) && isValidSession(request.resource.data)
             && request.resource.data.createdAt == resource.data.createdAt;
-        allow delete: if isOwner(userId);
+        allow delete: if isOwner(userId) || isAdmin();
       }
 
       // 3. Tasks Collection
@@ -70,10 +81,10 @@ service cloud.firestore {
             && data.updatedAt is number;
         }
 
-        allow read: if isOwner(userId);
+        allow read, list: if isOwner(userId) || isAdmin();
         allow create: if isOwner(userId) && isValidWorkTask(request.resource.data);
         allow update: if isOwner(userId) && isValidWorkTask(request.resource.data);
-        allow delete: if isOwner(userId);
+        allow delete: if isOwner(userId) || isAdmin();
       }
 
       // 4. Documents Sub-collection
@@ -85,15 +96,16 @@ service cloud.firestore {
             && data.category in ['GENERAL', 'PROJECT'];
         }
 
-        allow read, list: if isOwner(userId);
+        allow read, list: if isOwner(userId) || isAdmin();
         allow create: if isOwner(userId) && isValidDocument(request.resource.data);
         allow update: if isOwner(userId) && isValidDocument(request.resource.data);
-        allow delete: if isOwner(userId);
+        allow delete: if isOwner(userId) || isAdmin();
       }
 
       // 5. Library Collections Sub-collection
       match /libraryCollections/{collectionId} {
-        allow read, list, create, update, delete: if isOwner(userId);
+        allow read, list: if isOwner(userId) || isAdmin();
+        allow create, update, delete: if isOwner(userId) || isAdmin();
       }
 
       // 6. Settings Sub-collection
@@ -115,18 +127,19 @@ service cloud.firestore {
             && (data.get('defaultTaskCategoryCode', '') is string && data.get('defaultTaskCategoryCode', '').size() <= 50);
         }
 
-        allow read: if isOwner(userId);
+        allow read: if isOwner(userId) || isAdmin();
         allow create, update: if isOwner(userId) && isValidProfile(request.resource.data);
-        allow delete: if isOwner(userId);
+        allow delete: if isOwner(userId) || isAdmin();
       }
       // 9. Chat Attachments Sub-collection
       match /chatAttachments/{attachmentId} {
-        allow read, write: if isOwner(userId);
+        allow read: if isOwner(userId) || isAdmin();
+        allow write: if isOwner(userId);
       }
 
       // 10. Activity Logs Sub-collection
       match /activityLogs/{logId} {
-        allow read: if isOwner(userId);
+        allow read, list: if isOwner(userId) || isAdmin();
         allow create: if isOwner(userId);
         allow update, delete: if false;
       }

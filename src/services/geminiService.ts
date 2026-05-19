@@ -64,6 +64,7 @@ export async function processTask(
   }
 
   const data = await response.json();
+  if (data.isReview) return data; 
   return data.text as string;
 }
 

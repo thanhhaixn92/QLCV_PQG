@@ -59,5 +59,10 @@ export const EDITORIAL_KIND_CONFIG: Record<EditorialDocumentKind, {
     label: "Tài liệu tổng hợp",
     description: "Dùng để tổng hợp nội dung ngắn gọn từ nhiều nguồn.",
     requiredFields: ["title", "summary", "sections"],
+  },
+  slide_outline: {
+    label: "Phác thảo Slide",
+    description: "Dùng để phác thảo cấu trúc bài chiếu PowerPoint.",
+    requiredFields: ["title"],
   }
 };

@@ -66,7 +66,8 @@ export function buildEditorialPrompt(
 - Tóm tắt tổng quan.
 - Phân tích chi tiết theo từng chủ đề hoặc sự kiện.
 - Điểm cần lưu ý hoặc xu hướng rút ra.
-- Trình bày rõ ràng, mạch lạc, dễ hiểu.`
+- Trình bày rõ ràng, mạch lạc, dễ hiểu.`,
+    slide_outline: `Bạn là chuyên gia xây dựng bài thuyết trình. Hãy tạo phác thảo trình chiếu theo yêu cầu.`
   };
 
   const instruction = instructionsByKind[kind] || instructionsByKind['website_article'];

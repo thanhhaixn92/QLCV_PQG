@@ -12,7 +12,7 @@ interface FloatingChatboxProps {
   messages: ChatMessage[];
   input: string;
   onInputChange: (val: string) => void;
-  onSend: (attachments?: ChatAttachment[]) => void;
+  onSend: (attachments?: ChatAttachment[], chatMode?: string) => void;
   loading: boolean;
   isAiReady: boolean;
   disabled?: boolean;
@@ -45,6 +45,7 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
   activeTab = 'home',
   onUploadAttachment
 }) => {
+  const [chatMode, setChatMode] = useState<string>('quick');
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -109,7 +110,7 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
   };
 
   useEffect(() => {
-    if (process.env.NODE_ENV === 'development') {
+    if ((import.meta as any).env.DEV) {
       console.info('[Chat Attachments]', attachments.map(a => ({
         id: a.id,
         name: a.name,
@@ -134,13 +135,16 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
 
   const handleSendWithAttachments = () => {
     if (!canSend || disabled) return;
-    onSend(attachments.length > 0 ? attachments.filter(a => a.status !== 'error') : undefined);
+    onSend(attachments.length > 0 ? attachments.filter(a => a.status !== 'error') : undefined, chatMode);
     setAttachments([]);
   };
 
   useEffect(() => {
     if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      scrollRef.current.scrollTo({
+        top: scrollRef.current.scrollHeight,
+        behavior: 'smooth'
+      });
     }
   }, [messages, loading]);
 
@@ -205,7 +209,7 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
         id="vms-chat-toggle"
         onClick={onToggle}
         className={cn(
-          "fixed bottom-[calc(1rem+env(safe-area-inset-bottom))] sm:bottom-[calc(1.5rem+env(safe-area-inset-bottom))] right-4 sm:right-6 w-12 h-12 sm:w-14 sm:h-14 rounded-full shadow-2xl flex items-center justify-center z-[70] transition-colors",
+          "fixed bottom-4 sm:bottom-6 right-4 sm:right-6 w-12 h-12 sm:w-14 sm:h-14 rounded-full shadow-sm flex items-center justify-center z-[100] transition-colors",
           isOpen ? "bg-slate-800 text-white" : "bg-[#002D56] text-white"
         )}
       >
@@ -216,11 +220,11 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
               messages.length === 0 && (
                 <span className="absolute -top-1 -right-1 flex h-3 w-3 sm:h-4 sm:w-4">
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-md bg-emerald-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-md h-3 w-3 sm:h-4 sm:w-4 bg-emerald-500 border-2 border-white shadow-sm"></span>
+                  <span className="relative inline-flex rounded-md h-3 w-3 sm:h-4 sm:w-4 bg-emerald-500 border border-white shadow-sm"></span>
                 </span>
               )
             ) : (
-              <span className="absolute -top-1 -right-1 w-3 h-3 sm:w-4 sm:h-4 rounded-full bg-rose-500 border-2 border-white shadow-sm" />
+              <span className="absolute -top-1 -right-1 w-3 h-3 sm:w-4 sm:h-4 rounded-full bg-rose-500 border border-white shadow-sm" />
             )}
           </>
         )}
@@ -233,22 +237,22 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
             initial={{ opacity: 0, y: 100, scale: 0.8, transformOrigin: 'bottom right' }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 100, scale: 0.8 }}
-            className="fixed bottom-[calc(4.5rem+env(safe-area-inset-bottom))] sm:bottom-[calc(1.5rem+env(safe-area-inset-bottom))] right-4 sm:right-[5.5rem] w-[calc(100vw-32px)] sm:w-[420px] h-[calc(100dvh-6rem)] sm:h-[600px] max-h-[80vh] sm:max-h-[min(600px,calc(100dvh-3rem))] bg-white rounded-md lg:rounded-lg shadow-2xl z-[90] flex flex-col overflow-hidden border border-slate-200"
+            className="fixed bottom-[4.5rem] sm:bottom-[5.5rem] right-4 sm:right-6 w-[calc(100vw-32px)] sm:w-[420px] h-[calc(100dvh-6rem)] sm:h-[600px] max-h-[80vh] sm:max-h-[min(600px,calc(100dvh-4rem))] bg-white flex flex-col overflow-hidden shadow-xl border border-slate-200 z-[100] rounded-lg"
           >
             {/* Header */}
-            <div className="p-5 bg-[#002D56] text-white flex items-center justify-between shrink-0 shadow-lg">
+            <div className="p-5 bg-[#002D56] text-white flex items-center justify-between shrink-0 shadow-sm">
               <div className="flex items-center gap-3">
                 <div className="p-2 bg-white/10 rounded-md">
                   <Bot className={cn("w-5 h-5", isAiReady ? "text-emerald-400" : "text-rose-400")} />
                 </div>
                 <div>
-                  <h4 className="text-xs sm:text-sm font-black uppercase tracking-tight">Trợ lý Hoa Tiêu MIỀN BẮC</h4>
+                  <h4 className="text-xs sm:text-sm font-semibold tracking-tight">Trợ lý Hoa Tiêu MIỀN BẮC</h4>
                   <div className="flex items-center gap-1.5">
                     <span className={cn(
                       "w-1.5 h-1.5 rounded-full",
                       isAiReady ? "bg-emerald-400 animate-pulse" : "bg-rose-500"
                     )} />
-                    <span className="text-[10px] font-bold text-white/50 uppercase tracking-widest leading-none">
+                    <span className="text-[10px] font-bold text-white/50 tracking-normal leading-none">
                       {isAiReady ? 'AI đang sẵn sàng' : 'AI ngoại tuyến'}
                     </span>
                   </div>
@@ -284,7 +288,7 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                   <div className="w-16 h-16 bg-[#002D56]/5 rounded-md flex items-center justify-center mb-4">
                     <Bot className="w-8 h-8 text-[#002D56]/20" />
                   </div>
-                  <p className="text-xs font-black text-slate-400 uppercase tracking-widest mb-2 font-mono">XIN CHÀO!</p>
+                  <p className="text-xs font-semibold text-slate-400 tracking-normal mb-2 font-mono">XIN CHÀO!</p>
                   <p className="text-xs font-bold text-slate-500 leading-relaxed italic">
                     Tôi là Hoa Tiêu AI. Hãy hỏi tôi về công việc, tóm tắt tài liệu hoặc soạn thảo văn bản giúp bạn.
                   </p>
@@ -323,7 +327,7 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                     )}>
                       {msg.role === 'user' ? <User className="w-3.5 h-3.5 text-slate-500" /> : <Bot className="w-3.5 h-3.5 text-emerald-400" />}
                     </div>
-                    <span className="text-[9px] font-black uppercase text-slate-400 tracking-widest">
+                    <span className="text-[9px] font-semibold uppercase text-slate-400 tracking-wide">
                       {msg.role === 'user' ? 'Bạn' : 'Hoa Tiêu AI'}
                     </span>
                   </div>
@@ -335,41 +339,94 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                         : "bg-white text-slate-700 rounded-tl-none border border-slate-100 leading-[1.65] text-[14px]"
                     )}>
                       {msg.role === 'assistant' ? (
-                        <div className="text-[14px] prose-strong:text-[#002D56]">
+                        <div className="text-[14px] prose-strong:text-[#002D56] text-slate-700">
                           {(() => {
                             let content = msg.content;
-                            try {
-                              const parsed = JSON.parse(msg.content);
-                              if (typeof parsed === 'object' && parsed.reply) {
-                                content = parsed.reply;
+                            
+                            // 1. Output Sanitizer
+                            const tryParse = (str: string) => {
+                              try {
+                                const parsed = JSON.parse(str);
+                                if (typeof parsed === 'object' && parsed.reply) return parsed.reply;
+                              } catch (e) {}
+                              return null;
+                            };
+
+                            let parsedReply = tryParse(content);
+                            if (!parsedReply) {
+                              const fencedMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/);
+                              if (fencedMatch?.[1]) {
+                                parsedReply = tryParse(fencedMatch[1].trim());
                               }
-                            } catch (e) {
-                              // If not JSON, keep as is
                             }
+                            if (!parsedReply) {
+                              const firstBrace = content.indexOf('{');
+                              const lastBrace = content.lastIndexOf('}');
+                              if (firstBrace >= 0 && lastBrace > firstBrace) {
+                                parsedReply = tryParse(content.slice(firstBrace, lastBrace + 1));
+                              }
+                            }
+                            
+                            if (parsedReply) {
+                              content = parsedReply;
+                            }
+
+                            // Remove any remaining raw JSON lookalikes if they somehow bypassed
+                            if (content.trim().startsWith('{') && content.includes('"reply"')) {
+                               content = "⚠️ Không thể hiển thị nội dung do lỗi định dạng từ AI.";
+                            }
+
+                            // 2. Response Presentation Engine & UI Typography
                             return (
                               <ReactMarkdown
                                 components={{
-                                  p: ({ children }) => <p className="mb-0.5 last:mb-0 leading-[1.5] text-justify">{children}</p>,
+                                  p: ({ children }) => <p className="mb-2.5 last:mb-0 leading-[1.65] text-justify text-slate-700">{children}</p>,
                                   strong: ({ children }) => <strong className="font-semibold text-[#002D56]">{children}</strong>,
-                                  ul: ({ children }) => <ul className="mb-0.5 mt-0.5 list-disc pl-4 space-y-0.5 leading-[1.5]">{children}</ul>,
-                                  ol: ({ children }) => <ol className="mb-0.5 mt-0.5 list-decimal pl-4 space-y-0.5 leading-[1.5]">{children}</ol>,
+                                  ul: ({ children }) => <ul className="mb-3 mt-1 list-none pl-1 space-y-1.5 leading-[1.6]">{children}</ul>,
+                                  ol: ({ children }) => <ol className="mb-3 mt-1 list-decimal pl-5 space-y-1.5 leading-[1.6] text-slate-700">{children}</ol>,
                                   li: ({ children, ...props }) => (
-                                    <li className="leading-[1.5] pl-0.5 marker:text-slate-400" {...props}>
+                                    <li className="leading-[1.6] relative pl-5 before:content-['•'] before:absolute before:left-1.5 before:text-[#002D56]/60 before:font-bold text-slate-700" {...props}>
                                       {children}
                                     </li>
                                   ),
-                                  h1: ({ children }) => <h1 className="text-[15px] font-black mt-2 mb-0.5 text-[#002D56]">{children}</h1>,
-                                  h2: ({ children }) => <h2 className="text-[14px] font-bold mt-1.5 mb-0.5 text-[#002D56]">{children}</h2>,
-                                  h3: ({ children }) => <h3 className="text-[13px] font-bold mt-1 mb-0.5 text-[#002D56]">{children}</h3>,
+                                  h1: ({ children }) => <h1 className="text-[16px] font-bold mt-4 mb-2 text-[#002D56] border-b border-slate-100 pb-1 uppercase tracking-wide">{children}</h1>,
+                                  h2: ({ children }) => <h2 className="text-[15px] font-bold mt-4 mb-2 text-[#002D56] flex items-center gap-1.5 before:content-[''] before:w-1 before:h-4 before:bg-[#002D56] before:rounded-sm">{children}</h2>,
+                                  h3: ({ children }) => <h3 className="text-[14px] font-bold mt-3 mb-1.5 text-[#002D56]">{children}</h3>,
+                                  blockquote: ({ children }) => <blockquote className="border-l-4 border-emerald-400 bg-emerald-50/50 italic py-2 pl-3 pr-2 my-2.5 rounded-r-md text-slate-700">{children}</blockquote>,
                                   code: ({ children, ...props }: any) => {
                                     const match = /language-(\w+)/.exec(props.className || '');
                                     const isInline = !match && !props.node?.properties?.className?.includes('language-');
                                     if (isInline) {
-                                      return <code className="rounded bg-slate-100 px-1 py-0.5 text-[13px] font-mono mx-0.5 text-slate-800" {...props}>{children}</code>;
+                                      return <code className="rounded bg-[#002D56]/5 px-1.5 py-0.5 text-[13px] font-mono mx-0.5 text-[#002D56] font-semibold" {...props}>{children}</code>;
                                     }
                                     return <code className="text-[13px] font-mono leading-[1.6]" {...props}>{children}</code>;
                                   },
-                                  pre: ({ children }) => <pre className="my-2 overflow-x-auto rounded-lg bg-slate-900 p-2.5 text-[13px] leading-[1.55] text-white shadow-sm">{children}</pre>
+                                  pre: ({ children, ...props }: any) => {
+                                    const codeContent = React.Children.toArray(children)
+                                      .map((child: any) => child.props.children)
+                                      .join('');
+                                    return (
+                                      <div className="relative group my-3">
+                                        <pre className="overflow-x-auto rounded-lg bg-slate-800 p-3 pt-8 text-[13px] leading-[1.55] text-slate-100 shadow-sm border border-slate-700" {...props}>
+                                          <div className="absolute top-0 left-0 w-full bg-slate-900 px-3 py-1.5 rounded-t-lg border-b border-slate-700 flex justify-between items-center">
+                                              <span className="text-[10px] text-slate-400 font-mono">CODE</span>
+                                              <button
+                                                onClick={() => {
+                                                  navigator.clipboard.writeText(codeContent);
+                                                  toast.success('Đã sao chép!');
+                                                }}
+                                                className="p-1 text-slate-400 hover:text-white transition-colors flex items-center gap-1"
+                                                title="Sao chép"
+                                              >
+                                                <Copy className="w-3 h-3" />
+                                                <span className="text-[9px] uppercase font-bold">Copy</span>
+                                              </button>
+                                          </div>
+                                          {children}
+                                        </pre>
+                                      </div>
+                                    );
+                                  }
                                 }}
                               >
                                 {content}
@@ -396,7 +453,7 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
 
                     {msg.role === 'assistant' && msg.taskDrafts && msg.taskDrafts.length > 0 && (
                       <div className="mt-3 space-y-3 w-full animate-in fade-in slide-in-from-top-2 duration-500">
-                        <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">
+                        <div className="text-[10px] font-semibold tracking-normal text-slate-400">
                           Công việc AI đề xuất - cần duyệt
                         </div>
                         {msg.taskDrafts.map((draft, dIdx) => (
@@ -409,16 +466,16 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                                 className="mt-1 w-4 h-4 rounded text-[#002D56] border-slate-300"
                               />
                               <div className="min-w-0 flex-1">
-                                <h5 className="text-xs font-black text-[#002D56] leading-5">{draft.title}</h5>
+                                <h5 className="text-xs font-semibold text-[#002D56] leading-5">{draft.title}</h5>
                                 <p className="text-[11px] text-slate-500 leading-normal mt-1">{draft.description}</p>
 
                                 <div className="flex flex-wrap gap-1.5 mt-3">
-                                  <span className="flex items-center gap-1 px-2 py-0.5 rounded-lg bg-blue-50 text-blue-700 text-[9px] font-black uppercase tracking-tight">
+                                  <span className="flex items-center gap-1 px-2 py-0.5 rounded-lg bg-blue-50 text-blue-700 text-[9px] font-semibold tracking-tight">
                                     <Tag className="w-2.5 h-2.5" />
                                     {draft.categoryName || draft.categoryCode}
                                   </span>
                                   <span className={cn(
-                                    "flex items-center gap-1 px-2 py-0.5 rounded-lg text-[9px] font-black uppercase tracking-tight",
+                                    "flex items-center gap-1 px-2 py-0.5 rounded-lg text-[9px] font-semibold tracking-tight",
                                     draft.priority === 'urgent' ? "bg-rose-50 text-rose-700" :
                                     draft.priority === 'high' ? "bg-orange-50 text-orange-700" :
                                     "bg-slate-50 text-slate-600"
@@ -426,7 +483,7 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                                     {draft.priority === 'urgent' ? 'Khẩn cấp' : draft.priority === 'high' ? 'Cao' : draft.priority === 'medium' ? 'Trung bình' : 'Thấp'}
                                   </span>
                                   {draft.dueDate && (
-                                    <span className="flex items-center gap-1 px-2 py-0.5 rounded-lg bg-emerald-50 text-emerald-700 text-[9px] font-black uppercase tracking-tight">
+                                    <span className="flex items-center gap-1 px-2 py-0.5 rounded-lg bg-emerald-50 text-emerald-700 text-[9px] font-semibold tracking-tight">
                                       <Calendar className="w-2.5 h-2.5" />
                                       {draft.dueDate}
                                     </span>
@@ -435,7 +492,7 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
 
                                 {draft.checklist && draft.checklist.length > 0 && (
                                   <div className="mt-4 bg-slate-50/80 rounded-md p-3 border border-slate-100">
-                                    <p className="text-[9px] font-black uppercase tracking-widest text-[#002D56]/40 mb-2 flex items-center gap-1.5">
+                                    <p className="text-[9px] font-semibold tracking-normal text-[#002D56]/40 mb-2 flex items-center gap-1.5">
                                       <CheckSquare className="w-2.5 h-2.5" />
                                       Checklist chi tiết
                                     </p>
@@ -455,7 +512,7 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                         ))}
                         <button
                           onClick={() => onCreateTasks?.(i)}
-                          className="w-full bg-[#002D56] text-white rounded-md py-3 text-[11px] font-black uppercase tracking-widest shadow-xl shadow-blue-900/10 hover:shadow-blue-900/20 active:scale-95 transition-all flex items-center justify-center gap-2"
+                          className="w-full bg-[#002D56] text-white rounded-md py-3 text-[11px] font-semibold tracking-normal shadow-md shadow-blue-900/10 hover:shadow-blue-900/20 active:scale-[0.98] transition-all flex items-center justify-center gap-2"
                         >
                           <Plus className="w-4 h-4" />
                           [+ Tạo danh sách công việc này]
@@ -499,11 +556,11 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                     <div className="w-6 h-6 rounded-lg bg-[#002D56] flex items-center justify-center shrink-0">
                       <Bot className="w-3.5 h-3.5 text-emerald-400" />
                     </div>
-                    <span className="text-[9px] font-black uppercase text-slate-400 tracking-widest">Hoa Tiêu AI</span>
+                    <span className="text-[9px] font-semibold uppercase text-slate-400 tracking-wide">Hoa Tiêu AI</span>
                   </div>
                   <div className="bg-white px-4 py-3 rounded-md rounded-tl-none border border-slate-100 shadow-sm flex items-center gap-2">
                     <Loader2 className="w-4 h-4 text-[#002D56] animate-spin" />
-                    <span className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Đang suy nghĩ...</span>
+                    <span className="text-[10px] font-semibold uppercase text-slate-400 tracking-wide">Đang suy nghĩ...</span>
                   </div>
                 </div>
               )}
@@ -517,11 +574,33 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                   disabledReason ? "bg-amber-50 border-amber-100 text-amber-600" : "bg-rose-50 border-rose-100 text-rose-600"
                 )}>
                   <div className={cn("w-1.5 h-1.5 rounded-full", disabledReason ? "bg-amber-500" : "bg-rose-500")} />
-                  <p className="text-[9px] font-bold uppercase tracking-tight leading-tight">
+                  <p className="text-[9px] font-bold tracking-tight leading-tight">
                     {disabledReason || 'AI đang ngoại tuyến. Hãy thiết lập Key cá nhân trong Cài đặt nếu cần.'}
                   </p>
                 </div>
               )}
+
+              {/* Chat mode selector */}
+              <div className="flex flex-wrap items-center gap-2 mb-3">
+                <span className="text-[10px] font-bold text-slate-500 font-medium text-xs text-slate-500">Nguồn:</span>
+                {[
+                  { id: 'quick', label: 'Hỏi nhanh' },
+                  { id: 'library', label: 'Kho tư liệu' },
+                  { id: 'tasks', label: 'Công việc' },
+                  { id: 'editor', label: 'Bài viết' }
+                ].map(m => (
+                  <button
+                    key={m.id}
+                    onClick={() => setChatMode(m.id)}
+                    className={cn(
+                      "px-2.5 py-1 rounded-md text-[10px] font-bold tracking-wide transition-all",
+                      chatMode === m.id ? "bg-[#002D56] text-white" : "bg-slate-100 text-slate-500 hover:bg-slate-200"
+                    )}
+                  >
+                    {m.label}
+                  </button>
+                ))}
+              </div>
 
               {attachments.length > 0 && (
                 <div className="flex flex-wrap gap-2 mb-3">
@@ -598,12 +677,12 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                 <button 
                   onClick={handleSendWithAttachments}
                   disabled={!canSend || !isAiReady}
-                  className="absolute right-2 bottom-2 p-2 bg-[#002D56] text-white rounded-md hover:shadow-lg disabled:opacity-30 disabled:grayscale transition-all active:scale-90"
+                  className="absolute right-2 bottom-2 p-2 bg-[#002D56] text-white rounded-md hover:shadow-sm disabled:opacity-30 disabled:grayscale transition-all active:scale-90"
                 >
                   <Send className="w-4 h-4" />
                 </button>
               </div>
-              <p className="text-[8px] text-center text-slate-400 font-bold uppercase tracking-[0.1em] mt-3">
+              <p className="text-[8px] text-center text-slate-500 font-semibold uppercase tracking-[0.1em] mt-3">
                 Đang dùng: {currentModel || 'Gemini'}
               </p>
             </div>

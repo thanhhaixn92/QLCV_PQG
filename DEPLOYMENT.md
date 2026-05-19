@@ -19,8 +19,8 @@ Tạo file `.env` từ `.env.example` và điền đầy đủ các giá trị:
 - `GEMINI_TEXT_MODEL`: Chốt ở `gemini-2.5-flash` cho hiệu năng cao.
 - `GEMINI_PRO_MODEL`: Chốt ở `gemini-2.5-pro` dùng cho phân tích sâu và lập kế hoạch công việc.
 - `GOOGLE_API_KEY`: API Key từ Google Cloud Console để quét thư mục Drive và Search.
-- `FIREBASE_PROJECT_ID`: ID dự án Firebase (`gen-lang-client-0733170002`).
-- `FIRESTORE_DATABASE_ID`: ID database Firestore (`ai-studio-b6074ed0-9102-4183-836c-45db24476dce`).
+- `FIREBASE_PROJECT_ID`: ID dự án Firebase (`YOUR_FIREBASE_PROJECT_ID`).
+- `FIRESTORE_DATABASE_ID`: ID database Firestore (`YOUR_FIRESTORE_DATABASE_ID`).
 - `FIREBASE_SERVICE_ACCOUNT_JSON`: Nội dung JSON Service Account.
 - `FIREBASE_SERVICE_ACCOUNT_JSON_BASE64`: Nội dung JSON Service Account dạng Base64 (nếu không hỗ trợ multiline secret).
 - `DEBUG_HEALTH`: Đặt `true` để xem chi tiết lỗi tại `/api/health`.

@@ -84,7 +84,7 @@ export function ActivityLogView({ onClose, onOpenEntity }: Props) {
     <div className="flex flex-col h-full bg-slate-50 relative">
       <div className="p-6 border-b border-slate-200 bg-white shrink-0 flex items-center gap-4 justify-between">
         <div>
-          <h2 className="text-xl font-black text-slate-800 uppercase tracking-tight flex items-center gap-2">
+          <h2 className="text-xl font-semibold text-slate-800 tracking-tight flex items-center gap-2">
             <Clock className="w-6 h-6 text-blue-600" />
             Nhật ký hoạt động
           </h2>
@@ -104,7 +104,7 @@ export function ActivityLogView({ onClose, onOpenEntity }: Props) {
               key={tab}
               onClick={() => setActiveTab(tab)}
               className={cn(
-                "px-4 py-2 rounded-md text-[11px] font-black uppercase tracking-widest transition-all",
+                "px-4 py-2 rounded-md text-[11px] font-semibold tracking-normal transition-all",
                 activeTab === tab
                   ? "bg-[#002D56] text-white shadow-md shadow-[#002D56]/20"
                   : "bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-700 border border-transparent hover:border-slate-200"
@@ -126,7 +126,7 @@ export function ActivityLogView({ onClose, onOpenEntity }: Props) {
             <div className="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center mx-auto mb-4">
                <Clock className="w-8 h-8 text-slate-300" />
             </div>
-            <h3 className="text-sm font-bold text-slate-400 uppercase tracking-widest">Chưa có nhật ký nào</h3>
+            <h3 className="text-sm font-bold text-slate-400 tracking-normal">Chưa có nhật ký nào</h3>
           </div>
         ) : (
           <div className="space-y-4 max-w-3xl mx-auto">
@@ -153,7 +153,7 @@ export function ActivityLogView({ onClose, onOpenEntity }: Props) {
                   </p>
                   <div className="flex items-center gap-3">
                     <span className={cn(
-                       "px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-widest border",
+                       "px-2 py-0.5 rounded-md text-[9px] font-semibold tracking-normal border",
                        log.module === 'library' ? "bg-emerald-50 text-emerald-700 border-emerald-100" :
                        log.module === 'task' ? "bg-blue-50 text-blue-700 border-blue-100" :
                        log.module === 'editorial' ? "bg-purple-50 text-purple-700 border-purple-100" :
@@ -177,9 +177,9 @@ export function ActivityLogView({ onClose, onOpenEntity }: Props) {
 
       {/* Detail Drawer */}
       {selectedLog && (
-        <div className="absolute inset-y-0 right-0 w-full sm:w-96 bg-white shadow-2xl border-l border-slate-200 z-50 flex flex-col animate-in slide-in-from-right-4 duration-300">
+        <div className="absolute inset-y-0 right-0 w-full sm:w-96 bg-white shadow-sm border-l border-slate-200 z-50 flex flex-col animate-in slide-in-from-right-4 duration-300">
           <div className="p-5 border-b border-slate-100 flex items-center justify-between bg-slate-50 shrink-0">
-            <h3 className="text-sm font-black uppercase tracking-widest text-[#002D56]">Chi tiết nhật ký</h3>
+            <h3 className="text-sm font-semibold tracking-normal text-[#002D56]">Chi tiết nhật ký</h3>
             <button onClick={() => setSelectedLog(null)} className="p-2 hover:bg-slate-200 rounded-md bg-white shadow-sm">
               <X className="w-4 h-4 text-slate-600" />
             </button>
@@ -206,22 +206,22 @@ export function ActivityLogView({ onClose, onOpenEntity }: Props) {
 
             <div className="grid grid-cols-2 gap-4">
                <div>
-                  <label className="block text-[9px] font-black uppercase tracking-widest text-slate-400 mb-1">Mô-đun</label>
+                  <label className="block text-[9px] font-semibold tracking-normal text-slate-400 mb-1">Mô-đun</label>
                   <p className="text-xs font-bold text-slate-700">{getModuleLabel(selectedLog.module)}</p>
                </div>
                <div>
-                  <label className="block text-[9px] font-black uppercase tracking-widest text-slate-400 mb-1">Loại thay đổi</label>
+                  <label className="block text-[9px] font-semibold tracking-normal text-slate-400 mb-1">Loại thay đổi</label>
                   <p className="text-xs font-bold text-slate-700">{selectedLog.action}</p>
                </div>
                {selectedLog.entityTitle && (
                   <div className="col-span-2">
-                     <label className="block text-[9px] font-black uppercase tracking-widest text-slate-400 mb-1">Đối tượng/Tệp</label>
+                     <label className="block text-[9px] font-semibold tracking-normal text-slate-400 mb-1">Đối tượng/Tệp</label>
                      <p className="text-xs font-bold text-[#002D56]">{selectedLog.entityTitle}</p>
                   </div>
                )}
                {selectedLog.actor?.displayName && (
                   <div className="col-span-2">
-                     <label className="block text-[9px] font-black uppercase tracking-widest text-slate-400 mb-1">Người thực hiện</label>
+                     <label className="block text-[9px] font-semibold tracking-normal text-slate-400 mb-1">Người thực hiện</label>
                      <p className="text-xs font-bold text-slate-700 flex items-center gap-2">
                         <User className="w-3.5 h-3.5" /> {selectedLog.actor.displayName} ({selectedLog.actor.email})
                      </p>
@@ -231,7 +231,7 @@ export function ActivityLogView({ onClose, onOpenEntity }: Props) {
 
             {selectedLog.changedFields && selectedLog.changedFields.length > 0 && (
                <div>
-                  <label className="block text-[9px] font-black uppercase tracking-widest text-slate-400 mb-2">Trường dữ liệu đã đổi</label>
+                  <label className="block text-[9px] font-semibold tracking-normal text-slate-400 mb-2">Trường dữ liệu đã đổi</label>
                   <div className="flex flex-wrap gap-2">
                      {selectedLog.changedFields.map(f => (
                         <span key={f} className="px-2 py-1 bg-blue-50 text-blue-600 text-[10px] font-bold rounded-md font-mono">{f}</span>
@@ -246,7 +246,7 @@ export function ActivityLogView({ onClose, onOpenEntity }: Props) {
                      onClick={() => {
                         onOpenEntity(selectedLog.entityType, selectedLog.entityId!);
                      }}
-                     className="w-full py-3 bg-[#002D56] text-white text-[11px] font-black uppercase tracking-widest rounded-md hover:bg-blue-900 transition-colors shadow-lg"
+                     className="w-full py-3 bg-[#002D56] text-white text-[11px] font-semibold tracking-normal rounded-md hover:bg-blue-900 transition-colors shadow-sm"
                   >
                      Xem đối tượng gốc
                   </button>

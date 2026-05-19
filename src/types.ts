@@ -1,5 +1,5 @@
 
-export type TaskType = 'WRITE_NEW' | 'REVIEW' | 'RESIZE' | 'SYNTHESIZE' | 'TASK_BUILDER';
+export type TaskType = 'WRITE_NEW' | 'REVIEW' | 'RESIZE' | 'SYNTHESIZE' | 'TASK_BUILDER' | 'SLIDE_OUTLINE' | 'EDITORIAL_POLITICAL' | 'CREATE_TITLES' | 'OUTLINE_REPORT' | 'OUTLINE_SPEECH' | 'NOTICE_DOC' | 'CONTENT_REVIEW' | 'SUMMARY_DOC' | 'SUMMARY_CARD';
 
 export type ActivityModule =
   | "all"
@@ -57,6 +57,7 @@ export interface ActivityLogEntry {
     linkedEntityTitle?: string;
     fileName?: string;
     fileMimeType?: string;
+    method?: string;
     exportFormat?: "docx" | "pdf" | "html" | "markdown";
     errorCode?: string;
     errorMessage?: string;
@@ -70,9 +71,33 @@ export interface ActivityLogEntry {
 }
 
 
+export interface ContentReviewIssue {
+  type: 'error' | 'warning' | 'suggestion';
+  message: string;
+  context?: string;
+}
+
+export interface ContentReview {
+  qualityScore: number;
+  summary: string;
+  purpose: string;
+  strengths: string[];
+  weaknesses: string[];
+  spellingIssues: string[];
+  structureIssues: string[];
+  styleIssues: string[];
+  duplicationIssues: string[];
+  missingContent: string[];
+  factualWarnings: string[];
+  improvementSuggestions: string[];
+  rewrittenPrompt: string;
+  improvedText?: string;
+  overallEvaluation?: string;
+}
+
 export type WritingStyle = 'FORMAL' | 'TECHNICAL' | 'EDITORIAL' | 'DYNAMISM';
 
-export type OutputFormat = 'ARTICLE' | 'NEWS' | 'PRESS_RELEASE' | 'REPORT' | 'ANNOUNCEMENT';
+export type OutputFormat = 'ARTICLE' | 'NEWS' | 'PRESS_RELEASE' | 'REPORT' | 'ANNOUNCEMENT' | 'PLAN' | 'MEETING_MINUTES' | 'SPEECH_OUTLINE' | 'SUMMARY_CARD' | 'SUMMARY_DOC' | 'SLIDE_OUTLINE' | 'JSON_CONTENT_REVIEW';
 
 export type LibrarySourceType =
   | 'upload'
@@ -102,6 +127,8 @@ export interface LibraryCollection {
 
 export interface DocumentSource {
   id: string;
+  temporary?: boolean;
+  parentDriveFolderId?: string;
   name: string;
   content: string;
   type: 'word' | 'pdf' | 'excel' | 'link' | 'text' | 'drive'; // 'drive' for unified drive items
@@ -118,7 +145,17 @@ export interface DocumentSource {
   driveWebViewLink?: string;
   driveSize?: string;
   sourceLimitNote?: string;
-  contentStatus?: 'metadata_only' | 'extracting' | 'extracted' | 'summary_only' | 'unavailable' | 'error' | 'too_large';
+  contentStatus?: 
+    | 'metadata_only' 
+    | 'extracting' 
+    | 'extracted' 
+    | 'summary_only' 
+    | 'unavailable' 
+    | 'error' 
+    | 'too_large'
+    | 'needs_ocr'
+    | 'ocr_processing'
+    | 'ocr_failed';
   
   // AI Classification & Summary
   documentKind?: 'van_ban_chi_dao' | 'quy_dinh_phap_ly' | 'bao_cao' | 'ke_hoach' | 'hop_dong' | 'tai_lieu_ky_thuat' | 'tai_lieu_an_toan' | 'tin_bai_truyen_thong' | 'tai_chinh_ke_toan' | 'nhan_su_lao_dong' | 'khac';
@@ -128,6 +165,7 @@ export interface DocumentSource {
     mainPoints: string[];
     keyPoints?: string[];
     keywords: string[];
+    tags?: string[];
     full?: string;
     entities: {
       people: string[];
@@ -291,6 +329,9 @@ export interface WorkTask {
   linkedDocumentIds?: string[]; // IDs of documents from the library
   checklist?: WorkTaskChecklistItem[];
   parentGroupTitle?: string;
+  sourceText?: string; // Đoạn trích từ nguồn gốc
+  assigneeText?: string; // Tên text thô trước khi link với ID
+  nextActions?: string[]; // Hành động tiếp theo
   createdAt: number;
   updatedAt: number;
   completedAt?: number;
@@ -317,8 +358,11 @@ export const TASK_CATEGORIES: TaskCategory[] = [
 export interface ArticleVersion {
   id: string;
   content: string;
-  timestamp: number;
-  note: string;
+  timestamp?: number;
+  note?: string;
+  version?: number;
+  structuredContent?: any;
+  createdAt?: number;
   illustrations?: EditorialIllustration[];
 }
 
@@ -337,6 +381,10 @@ export interface ProjectSession {
 }
 
 export interface UserProfile {
+  uid?: string;
+  email?: string;
+  photoURL?: string;
+  role?: string;
   displayName: string;
   title: string;
   department: string;

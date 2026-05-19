@@ -59,16 +59,16 @@ export const UserProfileSection: React.FC<UserProfileSectionProps> = ({ user, pr
         {/* Left Column: Avatar & Summary */}
         <div className="lg:col-span-1 space-y-6">
           <div className="bg-white rounded-md border border-slate-200 p-8 text-center flex flex-col items-center">
-            <div className="w-24 h-24 rounded-md bg-[#002D56] text-white flex items-center justify-center text-3xl font-black mb-4 shadow-xl shadow-[#002D56]/20">
+            <div className="w-24 h-24 rounded-md bg-[#002D56] text-white flex items-center justify-center text-3xl font-semibold mb-4 shadow-md shadow-[#002D56]/20">
               {formData.avatarText || (formData.displayName?.[0] || 'U').toUpperCase()}
             </div>
-            <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight">{formData.displayName || 'Người dùng'}</h3>
-            <p className="text-sm font-bold text-slate-400 uppercase tracking-widest mt-1">{formData.title || 'Chưa cập nhật chức danh'}</p>
+            <h3 className="text-xl font-semibold text-slate-800 tracking-tight">{formData.displayName || 'Người dùng'}</h3>
+            <p className="text-sm font-bold text-slate-400 tracking-normal mt-1">{formData.title || 'Chưa cập nhật chức danh'}</p>
             <div className="mt-6 flex flex-wrap justify-center gap-2">
-              <span className="px-3 py-1 bg-emerald-50 text-emerald-600 rounded-md text-[10px] font-black uppercase tracking-wider flex items-center gap-1">
+              <span className="px-3 py-1 bg-emerald-50 text-emerald-600 rounded-md text-[10px] font-semibold tracking-wide flex items-center gap-1">
                 <CheckCircle2 className="w-3 h-3" /> Đã xác thực
               </span>
-              <span className="px-3 py-1 bg-slate-100 text-slate-500 rounded-md text-[10px] font-black uppercase tracking-wider">
+              <span className="px-3 py-1 bg-slate-100 text-slate-500 rounded-md text-[10px] font-semibold tracking-wide">
                 {user?.email}
               </span>
             </div>
@@ -78,9 +78,9 @@ export const UserProfileSection: React.FC<UserProfileSectionProps> = ({ user, pr
              <div className="absolute top-0 right-0 p-6 opacity-10 group-hover:scale-125 transition-transform duration-500">
                 <Shield className="w-24 h-24" />
              </div>
-             <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/40 mb-2 relative z-10">Bảo mật hệ thống</p>
+             <p className="text-[10px] font-semibold tracking-normal text-white/40 mb-2 relative z-10">Bảo mật hệ thống</p>
              <h4 className="text-lg font-bold mb-4 relative z-10 leading-tight">Dữ liệu của bạn được mã hóa an toàn</h4>
-             <button className="text-[10px] font-black uppercase bg-white/10 hover:bg-white/20 px-4 py-2 rounded-md transition-all relative z-10">
+             <button className="text-[10px] font-semibold uppercase bg-white/10 hover:bg-white/20 px-4 py-2 rounded-md transition-all relative z-10">
                 Xem chi tiết
              </button>
           </div>
@@ -93,12 +93,12 @@ export const UserProfileSection: React.FC<UserProfileSectionProps> = ({ user, pr
                <div className="p-3 bg-blue-50 rounded-md">
                   <User className="w-6 h-6 text-[#002D56]" />
                </div>
-               <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight">Hồ sơ cá nhân</h3>
+               <h3 className="text-xl font-semibold text-slate-800 tracking-tight">Hồ sơ cá nhân</h3>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="space-y-2">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Họ và tên</label>
+                <label className="text-[10px] font-semibold text-slate-400 tracking-normal ml-1">Họ và tên</label>
                 <div className="relative">
                   <User className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-300" />
                   <input 
@@ -112,7 +112,7 @@ export const UserProfileSection: React.FC<UserProfileSectionProps> = ({ user, pr
               </div>
 
               <div className="space-y-2">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Chữ cái đại diện</label>
+                <label className="text-[10px] font-semibold text-slate-400 tracking-normal ml-1">Chữ cái đại diện</label>
                 <input 
                   type="text" 
                   maxLength={2}
@@ -124,7 +124,7 @@ export const UserProfileSection: React.FC<UserProfileSectionProps> = ({ user, pr
               </div>
 
               <div className="space-y-2">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Chức danh</label>
+                <label className="text-[10px] font-semibold text-slate-400 tracking-normal ml-1">Chức danh</label>
                 <div className="relative">
                   <Briefcase className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-300" />
                   <input 
@@ -138,7 +138,7 @@ export const UserProfileSection: React.FC<UserProfileSectionProps> = ({ user, pr
               </div>
 
               <div className="space-y-2">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Phòng ban</label>
+                <label className="text-[10px] font-semibold text-slate-400 tracking-normal ml-1">Phòng ban</label>
                 <input 
                   type="text" 
                   value={formData.department}
@@ -149,7 +149,7 @@ export const UserProfileSection: React.FC<UserProfileSectionProps> = ({ user, pr
               </div>
 
               <div className="space-y-2">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Số điện thoại</label>
+                <label className="text-[10px] font-semibold text-slate-400 tracking-normal ml-1">Số điện thoại</label>
                 <div className="relative">
                   <Phone className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-300" />
                   <input 
@@ -169,12 +169,12 @@ export const UserProfileSection: React.FC<UserProfileSectionProps> = ({ user, pr
                <div className="p-3 bg-orange-50 rounded-md">
                   <Tag className="w-6 h-6 text-orange-600" />
                </div>
-               <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight">Thiết lập mặc định</h3>
+               <h3 className="text-xl font-semibold text-slate-800 tracking-tight">Thiết lập mặc định</h3>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="space-y-2">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Người nhận việc mặc định</label>
+                <label className="text-[10px] font-semibold text-slate-400 tracking-normal ml-1">Người nhận việc mặc định</label>
                 <input 
                   type="text" 
                   value={formData.defaultAssigneeName}
@@ -185,7 +185,7 @@ export const UserProfileSection: React.FC<UserProfileSectionProps> = ({ user, pr
               </div>
 
               <div className="space-y-2">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Lĩnh vực mặc định</label>
+                <label className="text-[10px] font-semibold text-slate-400 tracking-normal ml-1">Lĩnh vực mặc định</label>
                 <select 
                   value={formData.defaultTaskCategoryCode}
                   onChange={e => setFormData({ ...formData, defaultTaskCategoryCode: e.target.value })}
@@ -200,7 +200,7 @@ export const UserProfileSection: React.FC<UserProfileSectionProps> = ({ user, pr
               <button 
                 onClick={handleSave}
                 disabled={isSaving}
-                className="bg-[#002D56] text-white px-10 py-4 rounded-md text-xs font-black uppercase tracking-[0.2em] shadow-2xl hover:shadow-[#002D56]/20 transition-all active:scale-95 flex items-center gap-2 disabled:opacity-50"
+                className="bg-[#002D56] text-white px-10 py-4 rounded-md text-xs font-semibold tracking-normal shadow-sm hover:shadow-[#002D56]/20 transition-all active:scale-[0.98] flex items-center gap-2 disabled:opacity-50"
               >
                 {isSaving ? (
                   <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-md animate-spin" />

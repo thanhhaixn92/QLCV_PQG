@@ -1,41 +1,73 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, setPersistence, browserLocalPersistence } from 'firebase/auth';
-import { getFirestore, doc, getDocFromServer, initializeFirestore } from 'firebase/firestore';
+import { initializeAuth, browserLocalPersistence, browserSessionPersistence, browserPopupRedirectResolver } from 'firebase/auth';
+import { initializeFirestore, memoryLocalCache, doc, getDocFromServer } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
-import firebaseConfig from '../../firebase-applet-config.json';
+
+// Requirement 1: Use VITE_ environment variables
+let projectId = import.meta.env.VITE_FIREBASE_PROJECT_ID || '';
+if (projectId === 'gen-lang-client-073317000') {
+  projectId = 'gen-lang-client-0733170002';
+}
+
+const firebaseConfig = {
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || '',
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || '',
+  projectId,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || '',
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || '',
+  appId: import.meta.env.VITE_FIREBASE_APP_ID || '',
+};
+
+let firestoreDatabaseId = import.meta.env.VITE_FIRESTORE_DATABASE_ID || '';
+if (firestoreDatabaseId && firestoreDatabaseId.startsWith('ai-studio-b6074ed0')) {
+  firestoreDatabaseId = 'ai-studio-b6074ed0-9102-4183-836c-45db24476dce';
+}
+
+// Validation check
+const missingKeys = Object.entries(firebaseConfig)
+  .filter(([_, value]) => !value)
+  .map(([key]) => key);
+
+if (missingKeys.length > 0 && typeof window !== 'undefined') {
+  console.error("Missing Firebase Configuration keys:", missingKeys);
+  // We throw a delayed error or handle it in the UI
+}
 
 const firebaseApp = initializeApp(firebaseConfig);
 
 // Safe database initialization
 let firestoreDb: any;
 try {
-  const dbId = (firebaseConfig as any).firestoreDatabaseId;
+  const dbId = firestoreDatabaseId;
   if (dbId && dbId !== '(default)') {
-    firestoreDb = initializeFirestore(firebaseApp, {}, dbId);
+    firestoreDb = initializeFirestore(firebaseApp, { 
+      localCache: memoryLocalCache(),
+      experimentalForceLongPolling: true
+    }, dbId);
   } else {
-    firestoreDb = getFirestore(firebaseApp);
+    firestoreDb = initializeFirestore(firebaseApp, { 
+      localCache: memoryLocalCache(),
+      experimentalForceLongPolling: true
+    });
   }
 } catch (e) {
   console.error("Firestore initialization failed. No fallback allowed for named database:", e);
-  throw e; // Do not fallback to (default)
+  throw e;
 }
 
 export const db = firestoreDb;
-export const auth = getAuth(firebaseApp);
 
-// Fix for "INTERNAL ASSERTION FAILED: Pending promise was never set"
-// This usually occurs when browserIndexedDbPersistence (default) fails in certain environments.
-if (typeof window !== 'undefined') {
-  setPersistence(auth, browserLocalPersistence).catch((err) => {
-    console.error("Firebase Auth persistence failed:", err);
-  });
-}
+export const auth = initializeAuth(firebaseApp, {
+  persistence: [browserLocalPersistence, browserSessionPersistence],
+  popupRedirectResolver: browserPopupRedirectResolver
+});
+
 export const storage = getStorage(firebaseApp);
 
 console.info("[Firebase Config]", {
   projectId: firebaseConfig.projectId,
   authDomain: firebaseConfig.authDomain,
-  firestoreDatabaseId: (firebaseConfig as any).firestoreDatabaseId
+  firestoreDatabaseId: firestoreDatabaseId
 });
 
 export interface FirestoreErrorInfo {
@@ -86,7 +118,7 @@ async function testConnection() {
     if (error.code === 'permission-denied') {
         console.warn("Firestore Client: Connection test returned permission-denied (Expected if not sharing public test root).");
     } else if (error.message && (error.message.includes('the client is offline') || error.message.includes('Database') || error.message.includes('not found'))) {
-      console.error("Firestore Client: Connection error. This often means the Firestore Database in your Firebase Project is not provisioned or configured correctly. Please visit the Firebase Console and ensure a Firestore Database exists (select '(default)' database).");
+      console.error("Firestore Client: Connection error. Kiểm tra Firestore databaseId trong firebase-applet-config.json và FIRESTORE_DATABASE_ID trên backend.");
     } else {
         console.error("Firestore Client: Connection test failed with error:", error);
     }

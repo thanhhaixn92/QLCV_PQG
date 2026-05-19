@@ -1,5 +1,3 @@
-import * as XLSX from 'xlsx';
-import mammoth from 'mammoth';
 import * as pdfjs from 'pdfjs-dist';
 
 // Configure PDF.js worker using CDN for compatibility
@@ -7,7 +5,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pd
 
 const MAX_DOCUMENT_SIZE = 10 * 1024 * 1024; // 10MB
 const MAX_PDF_PAGES = 80;
-const MAX_CHARS = 100000;
+const MAX_CHARS = 500000;
 
 export async function parseFile(file: File): Promise<string> {
   if (file.size > MAX_DOCUMENT_SIZE) {
@@ -51,12 +49,14 @@ export async function parseFile(file: File): Promise<string> {
 }
 
 async function parseDocx(file: File): Promise<string> {
+  const mammoth = await import('mammoth');
   const arrayBuffer = await file.arrayBuffer();
   const result = await mammoth.extractRawText({ arrayBuffer });
   return result.value;
 }
 
 async function parseExcel(file: File): Promise<string> {
+  const XLSX = await import('xlsx');
   const arrayBuffer = await file.arrayBuffer();
   const workbook = XLSX.read(arrayBuffer);
   let fullText = '';
@@ -91,6 +91,10 @@ async function parsePdf(file: File): Promise<string> {
     if (fullText.length > MAX_CHARS) break;
   }
   
+  if (fullText.trim().length === 0) {
+    throw new Error('Không thể đọc chữ từ file PDF (có thể đây là file scan/ảnh). Vui lòng dùng file chứa văn bản (text-based PDF).');
+  }
+
   if (pdf.numPages > MAX_PDF_PAGES) {
     fullText += `\n\n[Tài liệu quá dài, chỉ trích xuất nội dung của ${MAX_PDF_PAGES} trang đầu tiên.]`;
   }

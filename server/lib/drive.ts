@@ -1,9 +1,28 @@
 import axios from 'axios';
-import * as pdfNamespace from 'pdf-parse';
+import { extractPdfText } from './pdfText';
 import mammoth from 'mammoth';
 
-const pdf = (pdfNamespace as any).default || (pdfNamespace as any).pdf || pdfNamespace;
 import * as xlsx from 'xlsx';
+
+// Generic retry helper for Drive API
+export async function retryPromise<T>(fn: () => Promise<T>, retries = 3, delayMs = 1000): Promise<T> {
+  let attempt = 0;
+  while (attempt < retries) {
+    try {
+      return await fn();
+    } catch (error: any) {
+      attempt++;
+      if (attempt >= retries || (error.response?.status && error.response.status < 500 && error.response.status !== 429)) {
+        throw error; // Do not retry on client errors (4xx) except 429 Rate Limit
+      }
+      console.warn(`Retry attempt ${attempt} failed, retrying in ${delayMs}ms...`);
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+      // Exponential backoff
+      delayMs *= 2;
+    }
+  }
+  throw new Error('Unreachable');
+}
 
 export function parseDriveUrl(url: string): string | null {
   if (!url) return null;
@@ -26,7 +45,13 @@ export function parseDriveUrl(url: string): string | null {
 
 export async function getDriveMetadata(fileId: string, apiKey: string) {
   const fields = 'id, name, mimeType, description, size, iconLink, thumbnailLink, webViewLink, webContentLink, createdTime, modifiedTime, parents, exportLinks, md5Checksum';
-  const response = await axios.get(`https://www.googleapis.com/drive/v3/files/${fileId}?fields=${fields}&key=${apiKey}`);
+  const response = await axios.get(`https://www.googleapis.com/drive/v3/files/${fileId}`, {
+    params: {
+      fields,
+      key: apiKey,
+      supportsAllDrives: true
+    }
+  });
   return response.data;
 }
 
@@ -38,7 +63,7 @@ export function buildDrivePreviewUrl(fileId: string, mimeType: string): string {
   return `https://drive.google.com/file/d/${fileId}/preview`;
 }
 
-export async function extractDriveContent(fileId: string, mimeType: string, metadata: any, apiKey: string): Promise<{ content: string; contentStatus: 'extracted' | 'error' | 'unavailable' | 'too_large'; error?: string; sourceLimitNote?: string }> {
+export async function extractDriveContent(fileId: string, mimeType: string, metadata: any, apiKey: string): Promise<{ content: string; contentStatus: 'metadata_only' | 'extracting' | 'extracted' | 'summary_only' | 'unavailable' | 'error' | 'too_large' | 'needs_ocr' | 'ocr_processing' | 'ocr_failed'; error?: string; sourceLimitNote?: string }> {
   const maxChars = 100000;
   const timeout = 60000;
   const MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024; // 25MB
@@ -63,7 +88,7 @@ export async function extractDriveContent(fileId: string, mimeType: string, meta
     if (mimeType === 'application/vnd.google-apps.document') {
       const exportUrl = metadata.exportLinks?.['text/plain'];
       if (exportUrl) {
-        const resp = await axios.get(`${exportUrl}&key=${apiKey}`, axiosConfig);
+        const resp = await retryPromise(() => axios.get(`${exportUrl}&key=${apiKey}`, axiosConfig));
         const txt = String(resp.data);
         return { content: txt.length > maxChars ? txt.substring(0, maxChars) + '\n\n[Nội dung đã được rút gọn để tránh vượt giới hạn lưu trữ.]' : txt, contentStatus: 'extracted' };
       }
@@ -72,7 +97,7 @@ export async function extractDriveContent(fileId: string, mimeType: string, meta
     if (mimeType === 'application/vnd.google-apps.spreadsheet') {
       const exportUrl = metadata.exportLinks?.['text/csv'];
       if (exportUrl) {
-        const resp = await axios.get(`${exportUrl}&key=${apiKey}`, axiosConfig);
+        const resp = await retryPromise(() => axios.get(`${exportUrl}&key=${apiKey}`, axiosConfig));
         const txt = String(resp.data);
         return { content: txt.length > maxChars ? txt.substring(0, maxChars) + '\n\n[Nội dung đã được rút gọn để tránh vượt giới hạn lưu trữ.]' : txt, contentStatus: 'extracted' };
       }
@@ -81,24 +106,30 @@ export async function extractDriveContent(fileId: string, mimeType: string, meta
     if (mimeType === 'application/vnd.google-apps.presentation') {
       const exportUrl = metadata.exportLinks?.['text/plain'];
       if (exportUrl) {
-        const resp = await axios.get(`${exportUrl}&key=${apiKey}`, axiosConfig);
+        const resp = await retryPromise(() => axios.get(`${exportUrl}&key=${apiKey}`, axiosConfig));
         const txt = String(resp.data);
         return { content: txt.length > maxChars ? txt.substring(0, maxChars) + '\n\n[Nội dung đã được rút gọn để tránh vượt giới hạn lưu trữ.]' : txt, contentStatus: 'extracted' };
       }
     }
 
     // 2. Binary Files (Media Download)
-    const mediaUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&key=${apiKey}`;
+    const mediaUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&key=${apiKey}&supportsAllDrives=true`;
 
     if (mimeType === 'application/pdf') {
-      const resp = await axios.get(mediaUrl, { ...axiosConfig, responseType: 'arraybuffer' });
-      const data = await pdf(Buffer.from(resp.data));
-      const txt = data.text;
+      const resp = await retryPromise(() => axios.get(mediaUrl, { ...axiosConfig, responseType: 'arraybuffer' }));
+      const txt = await extractPdfText(Buffer.from(resp.data));
+      if (!txt || txt.trim().length === 0) {
+        return { content: '', contentStatus: 'needs_ocr', error: 'PDF không có văn bản hoặc có thể là bản quét (PDF Scan).' };
+      }
       return { content: txt.length > maxChars ? txt.substring(0, maxChars) + '\n\n[Nội dung đã được rút gọn để tránh vượt giới hạn lưu trữ.]' : txt, contentStatus: 'extracted' };
     }
 
+    if (mimeType.startsWith('image/')) {
+        return { content: '', contentStatus: 'needs_ocr', error: 'Tệp hình ảnh cần dùng AI OCR để đọc nội dung.' };
+    }
+
     if (mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
-      const resp = await axios.get(mediaUrl, { ...axiosConfig, responseType: 'arraybuffer' });
+      const resp = await retryPromise(() => axios.get(mediaUrl, { ...axiosConfig, responseType: 'arraybuffer' }));
       const data = await mammoth.extractRawText({ buffer: Buffer.from(resp.data) });
       const txt = data.value;
       return { content: txt.length > maxChars ? txt.substring(0, maxChars) + '\n\n[Nội dung đã được rút gọn để tránh vượt giới hạn lưu trữ.]' : txt, contentStatus: 'extracted' };
@@ -109,7 +140,7 @@ export async function extractDriveContent(fileId: string, mimeType: string, meta
       mimeType === 'application/vnd.ms-excel' ||
       mimeType === 'text/csv'
     ) {
-      const resp = await axios.get(mediaUrl, { ...axiosConfig, responseType: 'arraybuffer' });
+      const resp = await retryPromise(() => axios.get(mediaUrl, { ...axiosConfig, responseType: 'arraybuffer' }));
       const workbook = xlsx.read(resp.data, { type: 'buffer' });
       let fullText = '';
       workbook.SheetNames.forEach(name => {
@@ -120,7 +151,7 @@ export async function extractDriveContent(fileId: string, mimeType: string, meta
     }
 
     if (mimeType === 'text/plain' || mimeType === 'text/markdown' || mimeType.startsWith('text/')) {
-      const resp = await axios.get(mediaUrl, axiosConfig);
+      const resp = await retryPromise(() => axios.get(mediaUrl, axiosConfig));
       const txt = typeof resp.data === 'string' ? resp.data : JSON.stringify(resp.data);
       return { 
         content: txt.length > maxChars ? txt.substring(0, maxChars) + '\n\n[Nội dung đã được rút gọn để tránh vượt giới hạn lưu trữ.]' : txt,

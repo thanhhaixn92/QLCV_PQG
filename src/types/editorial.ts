@@ -9,7 +9,8 @@ export type EditorialDocumentKind =
   | "meeting_minutes"
   | "speech_outline"
   | "briefing_note"
-  | "summary_note";
+  | "summary_note"
+  | "slide_outline";
 
 export type EditorialStatus =
   | "draft"

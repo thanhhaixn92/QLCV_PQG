@@ -18,9 +18,27 @@ export function EditorialPreflightPanel({ kind, markdownContent }: Props) {
     {
       id: 'no_placeholders',
       label: 'Không còn [Cần bổ sung/kiểm chứng]',
-      passed: !markdownContent.includes('[Cần') && !markdownContent.includes('[cần') && !markdownContent.includes('...'),
+      passed: !markdownContent.includes('[Cần') && !markdownContent.includes('[cần') && !markdownContent.includes('...') && !markdownContent.includes('[cần trích nguồn]'),
     },
+    {
+      id: 'content_length',
+      label: 'Độ dài phù hợp',
+      passed: markdownContent.length > 50 && markdownContent.length < 20000,
+    }
   ];
+
+  // Image caption check if there are any markdown images
+  const mdImgMatches = markdownContent.match(/!\[(.*?)\]\([^)]+\)/g);
+  if (mdImgMatches && mdImgMatches.length > 0) {
+    checks.push({
+      id: 'image_captions',
+      label: 'Ảnh có chú thích',
+      passed: mdImgMatches.every(m => {
+        const altText = m.match(/!\[(.*?)\]/)?.[1];
+        return altText && altText.trim().length > 0;
+      })
+    });
+  }
 
   if (kind === 'news' || kind === 'press_release' || kind === 'website_article') {
     checks.push({
@@ -52,7 +70,7 @@ export function EditorialPreflightPanel({ kind, markdownContent }: Props) {
           <AlertCircle className="w-5 h-5 text-amber-500" />
         )}
         <h3 className={cn(
-          "font-black text-sm uppercase tracking-widest",
+          "font-semibold text-sm tracking-normal",
           allPassed ? "text-emerald-700" : "text-amber-700"
         )}>
           Kiểm tra xuất bản

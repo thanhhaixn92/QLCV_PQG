@@ -21,6 +21,25 @@
       ]
     },
     "allowImportingTsExtensions": true,
+    "types": ["vite/client"],
     "noEmit": true
-  }
+  },
+  "include": [
+    "src",
+    "server",
+    "server.ts",
+    "vite.config.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "app",
+    "scripts/dev",
+    "fix_*.js",
+    "raw.txt",
+    "temp.txt",
+    "script.ts",
+    "restore_js.js",
+    "update_routes.js"
+  ]
 }

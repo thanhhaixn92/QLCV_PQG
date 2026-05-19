@@ -1,6 +1,6 @@
 import { jsPDF } from "jspdf";
 import * as htmlToImage from 'html-to-image';
-import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, ImageRun } from "docx";
+import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, ImageRun, Table, TableRow, TableCell, BorderStyle, WidthType } from "docx";
 import { saveAs } from "file-saver";
 import { EditorialIllustration } from "../types";
 import { splitParagraphs, isPublishableIllustration, hasUnapprovedPlaceholders } from "./editorialImageUtils";
@@ -68,13 +68,21 @@ export async function exportVisualSnapshotPDF(elementId: string, filename: strin
     let heightLeft = imgHeight;
     let position = 0;
 
+    const addWatermark = (pdfDoc: jsPDF) => {
+      pdfDoc.setFontSize(10);
+      pdfDoc.setTextColor(150, 150, 150);
+      pdfDoc.text("Bản xem nhanh (Visual Snapshot)", pageWidth - 10, 10, { align: "right" });
+    };
+
     pdf.addImage(dataUrl, "PNG", 0, position, imgWidth, imgHeight);
+    addWatermark(pdf);
     heightLeft -= pageHeight;
 
-    while (heightLeft >= 0) {
+    while (heightLeft > 0) {
       position = heightLeft - imgHeight;
       pdf.addPage();
       pdf.addImage(dataUrl, "PNG", 0, position, imgWidth, imgHeight);
+      addWatermark(pdf);
       heightLeft -= pageHeight;
     }
 
@@ -85,25 +93,54 @@ export async function exportVisualSnapshotPDF(elementId: string, filename: strin
   }
 }
 
-export async function exportToWord(title: string, content: string, filename: string, illustrations: EditorialIllustration[] = []) {
+export async function exportToWord(title: string, content: string, filename: string, illustrations: EditorialIllustration[] = [], kind?: string) {
   if (!title.trim() && !content.trim()) {
     throw new Error("Nội dung bài viết trống, không thể xuất.");
   }
   
   const approved = illustrations.filter(isPublishableIllustration);
   
-  if (hasUnapprovedPlaceholders(content, approved)) {
-    // We can output a warning or just proceed depending on caller. The caller should check preflight.
-  }
-
   const paragraphs = splitParagraphs(content);
   
-  const children: Paragraph[] = [];
+  const children: any[] = [];
+
+  // Template System Headers
+  if (kind === 'official_letter' || kind === 'administrative_report' || kind === 'announcement' || kind === 'plan' || kind === 'meeting_minutes') {
+    children.push(
+      new Table({
+        rows: [
+          new TableRow({
+            children: [
+              new TableCell({
+                children: [
+                  new Paragraph({ children: [new TextRun({ text: "TỔNG CÔNG TY BẢO ĐẢM ATHH MIỀN BẮC"})], alignment: AlignmentType.CENTER }),
+                  new Paragraph({ children: [new TextRun({ text: "CÔNG TY TNHH MTV HOA TIÊU HÀNG HẢI MIỀN BẮC", bold: true})], alignment: AlignmentType.CENTER })
+                ],
+                borders: { top: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" }, bottom: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" }, left: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" }, right: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" } },
+                width: { size: 50, type: WidthType.PERCENTAGE }
+              }),
+              new TableCell({
+                children: [
+                  new Paragraph({ children: [new TextRun({ text: "CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM", bold: true})], alignment: AlignmentType.CENTER }),
+                  new Paragraph({ children: [new TextRun({ text: "Độc lập - Tự do - Hạnh phúc", bold: true})], alignment: AlignmentType.CENTER })
+                ],
+                borders: { top: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" }, bottom: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" }, left: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" }, right: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" } },
+                width: { size: 50, type: WidthType.PERCENTAGE }
+              })
+            ]
+          })
+        ],
+        width: { size: 100, type: WidthType.PERCENTAGE },
+        borders: { top: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" }, bottom: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" }, left: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" }, right: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" }, insideHorizontal: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" }, insideVertical: { style: BorderStyle.NONE, size: 0, color: "FFFFFF" } }
+      }),
+      new Paragraph({ spacing: { after: 600 } })
+    );
+  }
 
   // Add Title
   if (title.trim()) {
     children.push(new Paragraph({
-      text: title,
+      children: [new TextRun({ text: title.toUpperCase(), bold: true, size: 32 })],
       heading: HeadingLevel.HEADING_1,
       alignment: AlignmentType.CENTER,
       spacing: { after: 400 }
@@ -117,68 +154,139 @@ export async function exportToWord(title: string, content: string, filename: str
     grouped.set(img.paragraphIndex, arr);
   });
 
-  for (let i = 0; i < paragraphs.length; i++) {
-    const p = paragraphs[i].trim();
-    if (!p && !(grouped.has(i))) continue;
-    
-    let heading: any = undefined;
-    let text = p;
-    let isBullet = false;
-    let isNumbered = false;
-
-    if (p.startsWith('### ')) {
-      text = p.replace('### ', '');
-      heading = HeadingLevel.HEADING_3;
-    } else if (p.startsWith('## ')) {
-      text = p.replace('## ', '');
-      heading = HeadingLevel.HEADING_2;
-    } else if (p.startsWith('# ')) {
-      text = p.replace('# ', '');
-      heading = HeadingLevel.HEADING_1;
-    } else if (p.startsWith('- ') || p.startsWith('* ')) {
-      text = p.substring(2).trim();
-      isBullet = true;
-    } else if (/^\d+\. /.test(p)) {
-      text = p.replace(/^\d+\. /, '').trim();
-      isNumbered = true;
-    }
-
+  const parseTextRuns = (text: string): TextRun[] => {
     const textWithoutImages = text.replace(/!\[.*?\]\(.*?\)/g, '');
-    const parts = textWithoutImages.split(/(\*\*.*?\*\*)/g);
-    const textRuns = parts.reduce((acc: TextRun[], part) => {
+    const tokenRegex = /(\*\*.*?\*\*|\*[^*]+\*|_{1,2}[^_]+_{1,2})/g;
+    const parts = textWithoutImages.split(tokenRegex);
+    
+    return parts.reduce((acc: TextRun[], part) => {
       if (!part) return acc;
+      let bold = false;
+      let italics = false;
+      let cleanText = part;
+
       if (part.startsWith('**') && part.endsWith('**')) {
+        bold = true;
+        cleanText = part.slice(2, -2);
+      } else if (part.startsWith('__') && part.endsWith('__')) {
+        bold = true;
+        cleanText = part.slice(2, -2);
+      } else if (part.startsWith('*') && part.endsWith('*')) {
+        italics = true;
+        cleanText = part.slice(1, -1);
+      } else if (part.startsWith('_') && part.endsWith('_')) {
+        italics = true;
+        cleanText = part.slice(1, -1);
+      }
+
+      if (cleanText) {
         acc.push(new TextRun({ 
-          text: part.slice(2, -2), 
-          bold: true, 
-          font: "Times New Roman", 
-          size: 28 
-        }));
-      } else {
-        acc.push(new TextRun({ 
-          text: part, 
+          text: cleanText, 
+          bold,
+          italics,
           font: "Times New Roman", 
           size: 28 
         }));
       }
       return acc;
     }, []);
+  };
 
-    if (textRuns.length > 0 || heading) {
-      const pOptions: any = {
-        children: textRuns,
-        heading,
-        alignment: AlignmentType.JUSTIFIED,
-        spacing: { line: 360, before: heading ? 400 : 0, after: 200 }
-      };
+  const processLine = (line: string): Paragraph | null => {
+    const trimmed = line.trim();
+    if (!trimmed) return null;
 
-      if (isBullet) {
-        pOptions.numbering = { reference: "vms-bullet", level: 0 };
-      } else if (isNumbered) {
-        pOptions.numbering = { reference: "vms-numbered", level: 0 };
+    let heading: any = undefined;
+    let text = trimmed;
+    let isBullet = false;
+    let isNumbered = false;
+
+    if (text.startsWith('### ')) {
+      text = text.replace('### ', '');
+      heading = HeadingLevel.HEADING_3;
+    } else if (text.startsWith('## ')) {
+      text = text.replace('## ', '');
+      heading = HeadingLevel.HEADING_2;
+    } else if (text.startsWith('# ')) {
+      text = text.replace('# ', '');
+      heading = HeadingLevel.HEADING_1;
+    } else if (text.startsWith('- ') || text.startsWith('* ')) {
+      text = text.substring(2).trim();
+      isBullet = true;
+    } else if (/^\d+\.\s+/.test(text)) {
+      text = text.replace(/^\d+\.\s+/, '').trim();
+      isNumbered = true;
+    }
+
+    const textRuns = parseTextRuns(text);
+    if (textRuns.length === 0 && !heading) return null;
+
+    const pOptions: any = {
+      children: textRuns,
+      heading,
+      alignment: AlignmentType.JUSTIFIED,
+      spacing: { line: 360, before: heading ? 400 : 0, after: isBullet || isNumbered ? 100 : 200 }
+    };
+
+    if (isBullet) {
+      pOptions.numbering = { reference: "vms-bullet", level: 0 };
+    } else if (isNumbered) {
+      pOptions.numbering = { reference: "vms-numbered", level: 0 };
+    }
+
+    return new Paragraph(pOptions);
+  };
+
+  for (let i = 0; i < paragraphs.length; i++) {
+    const p = paragraphs[i].trim();
+    if (!p && !(grouped.has(i))) continue;
+    
+    if (p) {
+      const lines = p.split('\n').filter(l => l.trim());
+      const looksLikeTable = lines.length >= 2 && lines[1].includes('|') && lines[1].includes('-');
+      
+      if (looksLikeTable) {
+        try {
+          const tableRows = lines.filter((_, idx) => idx !== 1).map(line => {
+            const cells = line.split('|').map(c => c.trim());
+            // Remove empty outer cells common in markdown tables `| A | B |` -> ['', 'A', 'B', '']
+            if (cells.length > 0 && cells[0] === '') cells.shift();
+            if (cells.length > 0 && cells[cells.length - 1] === '') cells.pop();
+            
+            return new TableRow({
+              children: cells.map(c => new TableCell({
+                children: [new Paragraph({ children: parseTextRuns(c) })],
+                margins: { top: 100, bottom: 100, left: 100, right: 100 }
+              }))
+            });
+          });
+          
+          children.push(new Table({
+            rows: tableRows,
+            width: { size: 100, type: WidthType.PERCENTAGE },
+            borders: {
+              top: { style: BorderStyle.SINGLE, size: 1, color: "000000" },
+              bottom: { style: BorderStyle.SINGLE, size: 1, color: "000000" },
+              left: { style: BorderStyle.SINGLE, size: 1, color: "000000" },
+              right: { style: BorderStyle.SINGLE, size: 1, color: "000000" },
+              insideHorizontal: { style: BorderStyle.SINGLE, size: 1, color: "000000" },
+              insideVertical: { style: BorderStyle.SINGLE, size: 1, color: "000000" },
+            }
+          }));
+          children.push(new Paragraph({ spacing: { after: 200 } })); // Add spacing after table
+        } catch (e) {
+          // If table parsing fails, fallback to line-by-line
+          lines.forEach(l => {
+            const parsedLine = processLine(l);
+            if (parsedLine) children.push(parsedLine);
+          });
+        }
+      } else {
+        lines.forEach(l => {
+          const parsedLine = processLine(l);
+          if (parsedLine) children.push(parsedLine);
+        });
       }
-
-      children.push(new Paragraph(pOptions));
     }
 
     // Insert Images for this paragraph
