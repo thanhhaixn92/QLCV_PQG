@@ -228,6 +228,10 @@ export async function exportToWord(title: string, content: string, filename: str
       spacing: { line: 360, before: heading ? 400 : 0, after: isBullet || isNumbered ? 100 : 200 }
     };
 
+    if (!heading && !isBullet && !isNumbered && !text.startsWith('Tên báo cáo:') && !text.startsWith('THÔNG BÁO')) {
+       pOptions.indent = { firstLine: 720 };
+    }
+
     if (isBullet) {
       pOptions.numbering = { reference: "vms-bullet", level: 0 };
     } else if (isNumbered) {

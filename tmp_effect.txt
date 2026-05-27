@@ -1,0 +1,109 @@
+301-  const [isSaving, setIsSaving] = useState(false);
+302-
+303:  useEffect(() => {
+304-    setContent(docObj.content || "");
+305-    setSummary(
+--
+464-
+465-  // Persistence for chat
+466:  useEffect(() => {
+467-    if (user) {
+468-      const key = `vms_chat_messages_${user.uid}`;
+--
+472-
+473-  // Auto-close chat when modal opens
+474:  useEffect(() => {
+475-    if (activeModal && isChatOpen) {
+476-      setIsChatOpen(false);
+--
+478-  }, [activeModal]);
+479-
+480:  useEffect(() => {
+481-    let activityTimer: NodeJS.Timeout;
+482-    const resetActivity = () => {
+--
+639-
+640-  // Auth Observer
+641:  useEffect(() => {
+642-    if (!auth) {
+643-      console.warn("[BOOT] auth is not initialized, skipping onAuthStateChanged");
+--
+661-
+662-  // Backend Readiness
+663:  useEffect(() => {
+664-    let cancelled = false;
+665-
+--
+733-  const isEffectiveSidebarCollapsed = isSidebarCollapsed || (activeTab === 'proposals' && selectedProposalId !== null);
+734-
+735:  useEffect(() => {
+736-    const handleResize = () => {
+737-      if (window.innerWidth < 1180) {
+--
+805-  };
+806-
+807:  useEffect(() => {
+808-    if (backendReady && firestoreReady && authReady && user) {
+809-      fetchProfile();
+--
+1611-  };
+1612-
+1613:  useEffect(() => {
+1614-    if (backendReady && firestoreReady && authReady && user) {
+1615-      fetchAIKeyStatus();
+--
+1770-
+1771-  // Sync Profile
+1772:  useEffect(() => {
+1773-    if (!user || !db) {
+1774-      setProfile(null);
+--
+1793-
+1794-  // Sync Library Collections
+1795:  useEffect(() => {
+1796-    if (!user || !db) return;
+1797-    const collsRef = collection(db, "users", user.uid, "libraryCollections");
+--
+1826-
+1827-  // Sync Documents
+1828:  useEffect(() => {
+1829-    if (activeModal && isChatOpen) setIsChatOpen(false);
+1830-  }, [activeModal, isChatOpen]);
+1831-
+1832:  useEffect(() => {
+1833-    if (!user || !db) return;
+1834-    const docsRef = collection(db, "users", user.uid, "documents");
+--
+1848-
+1849-  // Sync Sessions
+1850:  useEffect(() => {
+1851-    if (!user || !db) return;
+1852-    const sessionsRef = query(
+--
+1865-
+1866-  // Separate effect for real-time tasks to properly manage subscription lifecycle
+1867:  useEffect(() => {
+1868-    if (!user || !db) return;
+1869-
+--
+2535-  };
+2536-
+2537:  useEffect(() => {
+2538-    if (!user) {
+2539-      setProposals([]);
+--
+2554-  const fileInputRef = useRef<HTMLInputElement>(null);
+2555-
+2556:  useEffect(() => {
+2557-    localStorage.setItem("vms_documents", JSON.stringify(documents));
+2558-  }, [documents]);
+2559-
+2560:  useEffect(() => {
+2561-    const lightSessions = sessions.map((s: any) => ({
+2562-      ...s,
+--
+3401-
+3402-  // Auto-close on outside click
+3403:  useEffect(() => {
+3404-    const handleClickOutside = (event: MouseEvent) => {
+3405-      if (

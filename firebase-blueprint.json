@@ -12,21 +12,46 @@
     },
     "ProjectSession": {
       "title": "Phiên làm việc",
-      "description": "Lịch sử biên tập và bản nháp bài viết",
+      "description": "Lịch sử biên tập và bản nháp bài viết (Chỉ chứa metadata)",
       "type": "object",
       "properties": {
         "title": { "type": "string" },
         "taskType": { "type": "string" },
         "style": { "type": "string" },
         "format": { "type": "string" },
-        "currentOutput": { "type": "string" },
+        "latestVersionId": { "type": "string" },
+        "latestPreview": { "type": "string" },
         "documentIds": { "type": "array", "items": { "type": "string" } },
-        "versions": { "type": "array", "items": { "type": "object" } },
-        "illustrations": { "type": "array", "items": { "type": "object" } },
         "createdAt": { "type": "number" },
         "updatedAt": { "type": "number" }
       },
-      "required": ["title", "taskType", "currentOutput", "createdAt", "updatedAt"]
+      "required": ["title", "taskType", "createdAt", "updatedAt"]
+    },
+    "SessionVersion": {
+      "title": "Phiên bản bài viết",
+      "description": "Nội dung chi tiết của một phiên bản bài viết trong session",
+      "type": "object",
+      "properties": {
+        "versionNumber": { "type": "number" },
+        "content": { "type": "string" },
+        "notes": { "type": "string" },
+        "prompt": { "type": "string" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["versionNumber", "content", "createdAt"]
+    },
+    "SessionIllustration": {
+      "title": "Ảnh minh họa",
+      "description": "Thông tin ảnh minh họa trong session",
+      "type": "object",
+      "properties": {
+        "url": { "type": "string" },
+        "storagePath": { "type": "string" },
+        "caption": { "type": "string" },
+        "position": { "type": "string" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["url", "createdAt"]
     },
     "DocumentSource": {
       "title": "Tư liệu nguồn",
@@ -55,6 +80,60 @@
         "defaultTaskCategoryCode": { "type": "string" },
         "updatedAt": { "type": "number" }
       }
+    },
+    "Proposal": {
+      "title": "Đề án",
+      "description": "Thông tin tổng quan về đề án",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "category": { "type": "string" },
+        "department": { "type": "string" },
+        "dueDate": { "type": "string" },
+        "progressPercent": { "type": "number" },
+        "status": { "type": "string", "enum": ["draft", "reviewing", "completed", "archived"] },
+        "ownerId": { "type": "string" },
+        "createdAt": { "type": "number" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["name", "category", "status", "ownerId", "updatedAt"]
+    },
+    "ProposalSource": {
+      "title": "Nguồn tài liệu đề án",
+      "description": "Các tài liệu gắn kèm đề án",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "sourceType": { "type": "string", "enum": ["legal", "data", "report", "draft", "other"] },
+        "content": { "type": "string" },
+        "summary": { "type": "string" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["name", "sourceType", "createdAt"]
+    },
+    "ProposalOutlineItem": {
+      "title": "Mục đề cương",
+      "description": "Cấu trúc đề cương của đề án",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "level": { "type": "number" },
+        "order": { "type": "number" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["title", "level", "createdAt"]
+    },
+    "ProposalDraft": {
+      "title": "Bản thảo nội dung",
+      "description": "Nội dung chi tiết từng phần của đề án",
+      "type": "object",
+      "properties": {
+        "content": { "type": "string" },
+        "authorId": { "type": "string" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["content", "createdAt"]
     }
   },
   "firestore": {
@@ -68,11 +147,39 @@
     },
     "/users/{userId}/sessions/{sessionId}": {
       "schema": "ProjectSession",
-      "description": "Các bài viết và phiên làm việc của người dùng"
+      "description": "Các bài viết và phiên làm việc của người dùng (Metadata)"
+    },
+    "/users/{userId}/sessions/{sessionId}/versions/{versionId}": {
+      "schema": "SessionVersion",
+      "description": "Lịch sử các phiên bản nội dung"
+    },
+    "/users/{userId}/sessions/{sessionId}/illustrations/{illustrationId}": {
+      "schema": "SessionIllustration",
+      "description": "Ảnh minh họa cho bài viết"
     },
     "/users/{userId}/documents/{docId}": {
       "schema": "DocumentSource",
       "description": "Kho tư liệu cá nhân của người dùng"
+    },
+    "/users/{userId}/proposals/{proposalId}": {
+      "schema": "Proposal",
+      "description": "Dự án đề án của người dùng"
+    },
+    "/users/{userId}/proposals/{proposalId}/sources/{sourceId}": {
+      "schema": "ProposalSource",
+      "description": "Nguồn tài liệu tham khảo cho đề án"
+    },
+    "/users/{userId}/proposals/{proposalId}/outlineItems/{itemId}": {
+      "schema": "ProposalOutlineItem",
+      "description": "Các mục trong cấu trúc đề cương"
+    },
+    "/users/{userId}/proposals/{proposalId}/drafts/{draftId}": {
+      "schema": "ProposalDraft",
+      "description": "Bản thảo nội dung chi tiết"
+    },
+    "/users/{userId}/proposals/{proposalId}/activityLogs/{logId}": {
+      "schema": { "type": "object" },
+      "description": "Nhật ký hoạt động của đề án"
     }
   }
 }

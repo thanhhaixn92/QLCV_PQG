@@ -6,9 +6,10 @@ import { auth } from '../../lib/firebase';
 
 interface Props {
   profile: UserProfile | null;
+  requestConfirmAsync: (msg: string) => Promise<boolean>;
 }
 
-export function AdminWorkspace({ profile }: Props) {
+export function AdminWorkspace({ profile, requestConfirmAsync }: Props) {
   const [activeSubTab, setActiveSubTab] = useState<'users' | 'data' | 'storage' | 'stats' | 'system'>('users');
 
   if (profile?.role !== 'admin') {
@@ -59,8 +60,8 @@ export function AdminWorkspace({ profile }: Props) {
 
       <div className="flex-1 overflow-y-auto p-8 custom-scrollbar">
         {activeSubTab === 'users' && <AdminUserList currentAdmin={profile} />}
-        {activeSubTab === 'storage' && <AdminStorageView />}
-        {activeSubTab === 'system' && <AdminSystemView />}
+        {activeSubTab === 'storage' && <AdminStorageView requestConfirmAsync={requestConfirmAsync} />}
+        {activeSubTab === 'system' && <AdminSystemView requestConfirmAsync={requestConfirmAsync} />}
         {activeSubTab === 'stats' && <AdminAuditLogs />}
       </div>
     </div>
@@ -203,7 +204,7 @@ function AdminDataView() {
   );
 }
 
-function AdminSystemView() {
+function AdminSystemView({ requestConfirmAsync }: { requestConfirmAsync: (msg: string) => Promise<boolean> }) {
   const [healthData, setHealthData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
@@ -225,7 +226,7 @@ function AdminSystemView() {
   };
 
   const handleCleanup = async () => {
-    if (!window.confirm('Hành động này sẽ xoá mềm các log hoạt động cũ hơn 180 ngày. Bạn có chắc chắn?')) return;
+    if (!(await requestConfirmAsync('Hành động này sẽ xoá mềm các log hoạt động cũ hơn 180 ngày. Bạn có chắc chắn?'))) return;
     try {
       const res = await adminFetch('/api/admin/system/cleanup', { 
         method: 'POST',
@@ -286,9 +287,9 @@ function AdminSystemView() {
            <div className="border border-slate-100 p-5 rounded-lg bg-slate-50 flex items-start justify-between gap-4">
               <div>
                 <h4 className="font-bold text-slate-800 mb-1">Backup dữ liệu</h4>
-                <p className="text-xs text-slate-500 mb-4">Tạo tác vụ chạy ngầm để sao lưu toàn bộ Collection quan trọng (users, tasks, documents).</p>
+                <p className="text-xs text-slate-500 mb-4">Ghi nhận yêu cầu sao lưu toàn bộ Collection quan trọng (mô phỏng).</p>
                 <button onClick={handleBackup} className="bg-[#002D56] text-white px-4 py-2 rounded text-xs font-bold hover:bg-slate-800 transition-colors">
-                   Thực hiện Backup
+                   Yêu cầu Backup
                 </button>
               </div>
            </div>
@@ -296,9 +297,9 @@ function AdminSystemView() {
            <div className="border border-slate-100 p-5 rounded-lg bg-slate-50 flex items-start justify-between gap-4">
               <div>
                 <h4 className="font-bold text-slate-800 mb-1">Dọn dẹp hệ thống</h4>
-                <p className="text-xs text-slate-500 mb-4">Xoá mềm các Activity Logs cũ hơn 180 ngày để giảm tải Database theo chính sách Retention.</p>
+                <p className="text-xs text-slate-500 mb-4">Ghi nhận yêu cầu xoá mềm các Activity Logs cũ (mô phỏng).</p>
                 <button onClick={handleCleanup} className="bg-red-100 text-red-700 hover:bg-red-200 px-4 py-2 rounded text-xs font-bold transition-colors">
-                   Chạy dọn dẹp
+                   Yêu cầu dọn dẹp
                 </button>
               </div>
            </div>
@@ -308,7 +309,7 @@ function AdminSystemView() {
   );
 }
 
-function AdminStorageView() {
+function AdminStorageView({ requestConfirmAsync }: { requestConfirmAsync: (msg: string) => Promise<boolean> }) {
   const [stats, setStats] = useState<{ fileCount: number; totalSize: number } | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -320,7 +321,7 @@ function AdminStorageView() {
   }, []);
 
   const handleClean = async () => {
-    if (!window.confirm('Bạn có chắc muốn dọn dẹp các tệp cũ không? Hành động này không thể hoàn tác.')) return;
+    if (!(await requestConfirmAsync('Bạn có chắc muốn dọn dẹp các tệp cũ không? Hành động này không thể hoàn tác.'))) return;
     try {
       await adminFetch('/api/admin/storage/clean', { method: 'DELETE' });
       toast.success('Đã dọn dẹp');

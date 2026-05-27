@@ -4,8 +4,8 @@ import { ActivityLogEntry } from '../types';
 
 export async function logActivity(entry: Omit<ActivityLogEntry, "id" | "createdAt" | "userId">): Promise<void> {
   try {
-    const user = auth.currentUser;
-    if (!user) return;
+    const user = auth?.currentUser;
+    if (!user || !db) return;
 
     const logId = doc(collection(db, 'users', user.uid, 'activityLogs')).id;
     

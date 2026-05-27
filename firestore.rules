@@ -52,11 +52,9 @@ service cloud.firestore {
       // 2. Sessions Sub-collection
       match /sessions/{sessionId} {
         function isValidSession(data) {
-          return data.size() >= 5
+          return data.size() >= 4
             && data.title is string
             && data.taskType is string
-            && data.currentOutput is string
-            && data.currentOutput.size() <= 700000 // Reduced further to avoid 1MiB limit
             && data.updatedAt is number;
         }
 
@@ -65,6 +63,24 @@ service cloud.firestore {
         allow update: if isOwner(userId) && isValidId(sessionId) && isValidSession(request.resource.data)
             && request.resource.data.createdAt == resource.data.createdAt;
         allow delete: if isOwner(userId) || isAdmin();
+
+        match /versions/{versionId} {
+          function isValidVersion(data) {
+             return (!data.keys().hasAll(['content']) || (data.content is string && data.content.size() <= 200000));
+          }
+          allow read: if isOwner(userId) || isAdmin();
+          allow create, update: if isOwner(userId) && isValidId(versionId) && isValidVersion(request.resource.data);
+          allow delete: if isOwner(userId) || isAdmin();
+        }
+
+        match /illustrations/{illustrationId} {
+          function isValidIllustration(data) {
+             return (!data.keys().hasAll(['status']) || data.status in ['pending', 'approved', 'rejected', 'uploading', 'error']);
+          }
+          allow read: if isOwner(userId) || isAdmin();
+          allow create, update: if isOwner(userId) && isValidId(illustrationId) && isValidIllustration(request.resource.data);
+          allow delete: if isOwner(userId) || isAdmin();
+        }
       }
 
       // 3. Tasks Collection
@@ -142,6 +158,79 @@ service cloud.firestore {
         allow read, list: if isOwner(userId) || isAdmin();
         allow create: if isOwner(userId);
         allow update, delete: if false;
+      }
+
+      // 11. Proposals Collection
+      match /proposals/{proposalId} {
+        allow read, list: if isOwner(userId) || isAdmin();
+        allow create, update: if isOwner(userId) && isValidId(proposalId);
+        allow delete: if isOwner(userId) || isAdmin();
+
+        match /sources/{sourceId} {
+          allow read, list: if isOwner(userId) || isAdmin();
+          allow create, update: if isOwner(userId) && isValidId(sourceId);
+          allow delete: if isOwner(userId) || isAdmin();
+        }
+
+        match /outlineItems/{itemId} {
+          allow read, list: if isOwner(userId) || isAdmin();
+          allow create, update: if isOwner(userId) && isValidId(itemId);
+          allow delete: if isOwner(userId) || isAdmin();
+        }
+
+        match /drafts/{draftId} {
+          allow read, list: if isOwner(userId) || isAdmin();
+          allow create, update: if isOwner(userId) && isValidId(draftId);
+          allow delete: if isOwner(userId) || isAdmin();
+
+          match /versions/{versionId} {
+            allow read, list: if isOwner(userId) || isAdmin();
+            allow create: if isOwner(userId) && isValidId(versionId);
+            allow update, delete: if isOwner(userId) || isAdmin();
+          }
+        }
+
+        match /dataTables/{tableId} {
+          allow read, list: if isOwner(userId) || isAdmin();
+          allow create, update: if isOwner(userId) && isValidId(tableId);
+          allow delete: if isOwner(userId) || isAdmin();
+        }
+
+        match /comments/{commentId} {
+          allow read, list: if isOwner(userId) || isAdmin();
+          allow create, update: if isOwner(userId) && isValidId(commentId);
+          allow delete: if isOwner(userId) || isAdmin();
+        }
+
+        match /exports/{exportId} {
+          allow read, list: if isOwner(userId) || isAdmin();
+          allow create: if isOwner(userId) && isValidId(exportId);
+          allow update, delete: if isOwner(userId) || isAdmin();
+        }
+
+        match /checklistItems/{itemId} {
+          allow read, list: if isOwner(userId) || isAdmin();
+          allow create, update: if isOwner(userId) && isValidId(itemId);
+          allow delete: if isOwner(userId) || isAdmin();
+        }
+
+        match /dataRequirements/{itemId} {
+          allow read, list: if isOwner(userId) || isAdmin();
+          allow create, update: if isOwner(userId) && isValidId(itemId);
+          allow delete: if isOwner(userId) || isAdmin();
+        }
+
+        match /evidenceLinks/{linkId} {
+          allow read, list: if isOwner(userId) || isAdmin();
+          allow create, update: if isOwner(userId) && isValidId(linkId);
+          allow delete: if isOwner(userId) || isAdmin();
+        }
+
+        match /activityLogs/{logId} {
+          allow read, list: if isOwner(userId) || isAdmin();
+          allow create: if isOwner(userId) && isValidId(logId);
+          allow update, delete: if false;
+        }
       }
     }
   }

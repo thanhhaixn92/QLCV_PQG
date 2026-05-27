@@ -1,10 +1,14 @@
 import React, { useRef, useEffect, useState } from 'react';
+import { FEATURE_FLAGS } from '../config/featureFlags';
 import { motion, AnimatePresence } from 'motion/react';
 import { MessageCircle, X, Send, Bot, User, Loader2, Trash2, Copy, Check, Sparkles, ExternalLink, Calendar, Tag, CheckSquare, Plus, Paperclip, File, AlertCircle } from 'lucide-react';
 import { cn } from '../lib/utils';
 import toast from 'react-hot-toast';
 import { ChatMessage, ChatSuggestedAction, ChatAttachment } from '../types';
+import { ProposalChatContext } from '../features/proposals/types';
 import ReactMarkdown from 'react-markdown';
+import { DraftImportPreviewCard } from './proposals/DraftImportPreviewCard';
+import { DraftImportAllocation } from '../features/proposals/types';
 
 interface FloatingChatboxProps {
   isOpen: boolean;
@@ -20,10 +24,12 @@ interface FloatingChatboxProps {
   currentModel?: string;
   onClear?: () => void;
   onExecuteAction?: (action: ChatSuggestedAction) => void;
+  onApplyImport?: (allocations: DraftImportAllocation[]) => void;
   onCreateTasks?: (messageIndex: number) => void;
   onToggleTaskDraft?: (messageIndex: number, clientId: string) => void;
   activeTab?: string;
   onUploadAttachment?: (file: File, onStatusUpdate?: (status: any) => void) => Promise<ChatAttachment>;
+  proposalContext?: ProposalChatContext | null;
 }
 
 export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
@@ -40,10 +46,12 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
   currentModel,
   onClear,
   onExecuteAction,
+  onApplyImport,
   onCreateTasks,
   onToggleTaskDraft,
   activeTab = 'home',
-  onUploadAttachment
+  onUploadAttachment,
+  proposalContext
 }) => {
   const [chatMode, setChatMode] = useState<string>('quick');
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -156,6 +164,26 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
   }, [input]);
 
   const getQuickPrompts = () => {
+    if (activeTab === 'proposals' && proposalContext && FEATURE_FLAGS.PROPOSAL_CHAT_CONTEXT) {
+      const prompts = [
+        { label: 'Viết bản thảo mục này', prompt: 'Hãy viết bản thảo chi tiết cho mục đề cương đang chọn.', mode: 'write_draft' },
+        { label: 'Biên tập văn phong', prompt: 'Hãy biên tập lại bản thảo này theo văn phong hành chính nghiệp vụ.', mode: 'improve_draft' },
+        { label: 'Rà soát logic', prompt: 'Rà soát tính logic và sự mạch lạc của đoạn thảo này.', mode: 'review_logic' },
+        { label: 'Tìm số liệu thiếu', prompt: 'Những số liệu, thông tin nào còn thiếu cần bổ sung cho phần này?', mode: 'missing_data' },
+        { label: 'Tóm tắt cho lãnh đạo', prompt: 'Tạo bản tóm tắt súc tích cho mục này dành cho lãnh đạo.', mode: 'executive_summary' },
+      ];
+
+      if (attachments.length > 0) {
+        prompts.unshift(
+          { label: 'Thêm file vào mục này', prompt: 'Đọc file này và thêm nội dung vào mục đang chọn.', mode: 'import_file_current' },
+          { label: 'Phân bổ file vào phần này', prompt: 'Phân bổ nội dung file này vào phần lớn đang chọn.', mode: 'import_file_section' },
+          { label: 'Phân bổ toàn bộ đề án', prompt: 'Phân bổ toàn bộ nội dung file này theo toàn bộ đề cương đề án.', mode: 'import_file_whole' }
+        );
+      }
+
+      return prompts;
+    }
+
     switch (activeTab) {
       case 'home':
         return [
@@ -170,13 +198,21 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
       case 'library':
         return [
           { label: 'Tóm tắt tài liệu này', prompt: 'Hãy tóm tắt nội dung chính của tài liệu tôi đang chọn.' },
-          { label: 'Tìm ý tưởng từ tư liệu', prompt: 'Dựa trên các tài liệu đã chọn, hãy gợi ý cho tôi vài ý tưởng mới.' }
+          { label: 'Tìm ý tưởng từ tư liệu', prompt: 'Dựa trên các tài liệu đã chọn, hãy gửi ý cho tôi vài ý tưởng mới.' }
         ];
       case 'editor':
         return [
           { label: 'Tạo dàn ý bài viết', prompt: 'Dựa vào thông tin này, hãy tạo cho tôi một dàn ý bài viết chi tiết.' },
           { label: 'Sửa lỗi diễn đạt', prompt: 'Hãy kiểm tra và sửa các lỗi diễn đạt trong đoạn văn này.' }
         ];
+      case 'proposals':
+        if (FEATURE_FLAGS.PROPOSAL_MODULE) {
+          return [
+            { label: 'AI hỗ trợ đề án', prompt: 'AI có thể hỗ trợ gì cho tôi trong việc lập đề án này?' },
+            { label: 'Chuẩn hoá đề cương', prompt: 'Hãy gợi ý cách để tối ưu hoá đề cương đề án của tôi.' }
+          ];
+        }
+        // fall through when disabled
       default:
         return [
           { label: 'Gợi ý kế hoạch công việc', prompt: 'Gợi ý cho tôi một kế hoạch công việc hiệu quả.' },
@@ -208,6 +244,9 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
         whileTap={{ scale: 0.9 }}
         id="vms-chat-toggle"
         onClick={onToggle}
+        aria-label={isOpen ? "Đóng AI Chatbox" : "Mở AI Chatbox"}
+        aria-expanded={isOpen}
+        aria-controls="vms-chatbox-panel"
         className={cn(
           "fixed bottom-4 sm:bottom-6 right-4 sm:right-6 w-12 h-12 sm:w-14 sm:h-14 rounded-full shadow-sm flex items-center justify-center z-[100] transition-colors",
           isOpen ? "bg-slate-800 text-white" : "bg-[#002D56] text-white"
@@ -237,6 +276,10 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
             initial={{ opacity: 0, y: 100, scale: 0.8, transformOrigin: 'bottom right' }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 100, scale: 0.8 }}
+            id="vms-chatbox-panel"
+            role="dialog"
+            aria-label="Khung Chat Hoa Tiêu AI"
+            aria-modal="false"
             className="fixed bottom-[4.5rem] sm:bottom-[5.5rem] right-4 sm:right-6 w-[calc(100vw-32px)] sm:w-[420px] h-[calc(100dvh-6rem)] sm:h-[600px] max-h-[80vh] sm:max-h-[min(600px,calc(100dvh-4rem))] bg-white flex flex-col overflow-hidden shadow-xl border border-slate-200 z-[100] rounded-lg"
           >
             {/* Header */}
@@ -263,7 +306,8 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                   <button 
                     onClick={onClear}
                     title="Xóa hội thoại"
-                    className="p-2 hover:bg-white/10 rounded-md transition-colors text-white/60 hover:text-white disabled:opacity-30"
+                    aria-label="Xóa hội thoại"
+                    className="p-2 hover:bg-white/10 rounded-md transition-colors text-white/60 hover:text-white disabled:opacity-30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
                     disabled={loading}
                   >
                     <Trash2 className="w-4 h-4" />
@@ -271,7 +315,8 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                 )}
                 <button 
                   onClick={onToggle}
-                  className="p-2 hover:bg-white/10 rounded-md transition-colors text-white/60 hover:text-white"
+                  aria-label="Đóng Chat"
+                  className="p-2 hover:bg-white/10 rounded-md transition-colors text-white/60 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
                 >
                   <X className="w-4 h-4" />
                 </button>
@@ -281,33 +326,63 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
             {/* Messages */}
             <div 
               ref={scrollRef}
-              className="flex-1 overflow-y-auto p-5 space-y-6 custom-scrollbar bg-slate-50/50"
+              className="flex-1 overflow-y-auto space-y-6 custom-scrollbar bg-slate-50/50"
             >
-              {messages.length === 0 && (
-                <div className="h-full flex flex-col items-center justify-center text-center px-6">
-                  <div className="w-16 h-16 bg-[#002D56]/5 rounded-md flex items-center justify-center mb-4">
-                    <Bot className="w-8 h-8 text-[#002D56]/20" />
+              {proposalContext && FEATURE_FLAGS.PROPOSAL_CHAT_CONTEXT && (
+                <div className="sticky top-0 z-10 p-3 bg-blue-50 border-b border-blue-100 flex items-start gap-3 backdrop-blur-sm">
+                  <div className="p-1.5 bg-blue-600 rounded-md shrink-0">
+                    <Sparkles className="w-3.5 h-3.5 text-white" />
                   </div>
-                  <p className="text-xs font-semibold text-slate-400 tracking-normal mb-2 font-mono">XIN CHÀO!</p>
-                  <p className="text-xs font-bold text-slate-500 leading-relaxed italic">
-                    Tôi là Hoa Tiêu AI. Hãy hỏi tôi về công việc, tóm tắt tài liệu hoặc soạn thảo văn bản giúp bạn.
-                  </p>
-                  {isAiReady && (
-                    <div className="mt-6 flex flex-wrap justify-center gap-2">
-                       {quickPrompts.map(qp => (
-                         <button 
-                           key={qp.label}
-                           onClick={() => onInputChange(qp.prompt)}
-                           className="px-3 py-1.5 bg-white border border-slate-200 rounded-md text-[10px] font-bold text-[#002D56] hover:bg-slate-50 transition-colors shadow-sm flex items-center gap-1.5"
-                         >
-                           <Sparkles className="w-3 h-3 text-emerald-500" />
-                           {qp.label}
-                         </button>
-                       ))}
-                    </div>
-                  )}
+                  <div className="min-w-0">
+                    <p className="text-[10px] font-bold text-blue-800 uppercase tracking-tight">Chế độ Trợ lý Đề án</p>
+                    <p className="text-[11px] font-semibold text-blue-900 truncate">
+                      {proposalContext.proposalTitle}
+                    </p>
+                    {proposalContext.selectedOutlineItemTitle && (
+                      <div className="flex items-center gap-1.5 mt-1">
+                        <Tag className="w-2.5 h-2.5 text-blue-400" />
+                        <span className="text-[10px] text-blue-700 font-medium truncate">
+                          Mục: {proposalContext.selectedOutlineItemCode ? `[${proposalContext.selectedOutlineItemCode}] ` : ''} 
+                          {proposalContext.selectedOutlineItemTitle}
+                        </span>
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
+
+              <div className="p-5 space-y-6">
+                {messages.length === 0 && (
+                  <div className="h-full flex flex-col items-center justify-center text-center px-6 py-10">
+                    <div className="w-16 h-16 bg-[#002D56]/5 rounded-md flex items-center justify-center mb-4">
+                      <Bot className="w-8 h-8 text-[#002D56]/20" />
+                    </div>
+                    <p className="text-xs font-semibold text-slate-400 tracking-normal mb-2 font-mono">XIN CHÀO!</p>
+                    <p className="text-xs font-bold text-slate-500 leading-relaxed italic">
+                      {proposalContext && FEATURE_FLAGS.PROPOSAL_CHAT_CONTEXT
+                        ? `Tôi đã sẵn sàng hỗ trợ bạn viết bản thảo cho mục ${proposalContext.selectedOutlineItemTitle || 'đang chọn'}. Hãy đặt câu hỏi hoặc chọn tác vụ nhanh bên dưới.`
+                        : 'Tôi là Hoa Tiêu AI. Hãy hỏi tôi về công việc, tóm tắt tài liệu hoặc soạn thảo văn bản giúp bạn.'
+                      }
+                    </p>
+                    {isAiReady && (
+                      <div className="mt-6 flex flex-wrap justify-center gap-2">
+                        {quickPrompts.map(qp => (
+                          <button 
+                            key={qp.label}
+                            onClick={() => {
+                              onInputChange(qp.prompt);
+                              if (qp.mode) setChatMode(qp.mode);
+                            }}
+                            className="px-3 py-1.5 bg-white border border-slate-200 rounded-md text-[10px] font-bold text-[#002D56] hover:bg-slate-50 transition-colors shadow-sm flex items-center gap-1.5"
+                          >
+                            <Sparkles className="w-3 h-3 text-emerald-500" />
+                            {qp.label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
 
               {messages.map((msg, i) => (
                 <div 
@@ -343,37 +418,50 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                           {(() => {
                             let content = msg.content;
                             
-                            // 1. Output Sanitizer
+                            // 1. Output Sanitizer - only attempt if it looks predominantly like a JSON dump
                             const tryParse = (str: string) => {
                               try {
-                                const parsed = JSON.parse(str);
-                                if (typeof parsed === 'object' && parsed.reply) return parsed.reply;
+                                const trimmed = str.trim();
+                                if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return null;
+                                const parsed = JSON.parse(trimmed);
+                                if (typeof parsed === 'object' && parsed !== null) {
+                                  return (
+                                    parsed.reply ||
+                                    parsed.message ||
+                                    parsed.data?.reply ||
+                                    parsed.data?.message ||
+                                    parsed.response ||
+                                    parsed.answer ||
+                                    parsed.messageToUser ||
+                                    parsed.summary
+                                  );
+                                }
                               } catch (e) {}
                               return null;
                             };
 
-                            let parsedReply = tryParse(content);
-                            if (!parsedReply) {
-                              const fencedMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/);
-                              if (fencedMatch?.[1]) {
-                                parsedReply = tryParse(fencedMatch[1].trim());
-                              }
-                            }
-                            if (!parsedReply) {
-                              const firstBrace = content.indexOf('{');
-                              const lastBrace = content.lastIndexOf('}');
-                              if (firstBrace >= 0 && lastBrace > firstBrace) {
-                                parsedReply = tryParse(content.slice(firstBrace, lastBrace + 1));
-                              }
-                            }
+                            // Only apply aggressive parsing if the message is almost entirely a JSON structure
+                            const isJsonDump = content.trim().startsWith('{') && content.trim().endsWith('}');
                             
-                            if (parsedReply) {
-                              content = parsedReply;
+                            if (isJsonDump) {
+                              const parsedReply = tryParse(content);
+                              if (parsedReply && typeof parsedReply === 'string') {
+                                content = parsedReply;
+                              }
+                            } else {
+                              // If it's mixed content, we might want to just strip the specific block if it's redundant
+                              // but for now, let's trust the backend already cleaned it up or keep it as is
+                              // Avoid replacing the entire content with just a matching regex group
                             }
 
-                            // Remove any remaining raw JSON lookalikes if they somehow bypassed
-                            if (content.trim().startsWith('{') && content.includes('"reply"')) {
-                               content = "⚠️ Không thể hiển thị nội dung do lỗi định dạng từ AI.";
+                            // If we still see a massive JSON block at the start or end, we carefully clean it
+                            if (content.length > 50 && content.includes('"reply"') && content.includes('{')) {
+                               // Heuristic: if it contains a large block that looks like our internal schema, 
+                               // but it's not the ONLY thing, we let it be or just try to clean obvious dumps.
+                               if (content.trim().startsWith('{') && content.trim().endsWith('}')) {
+                                   const cleaned = tryParse(content);
+                                   if (cleaned && typeof cleaned === 'string') content = cleaned;
+                               }
                             }
 
                             // 2. Response Presentation Engine & UI Typography
@@ -415,7 +503,8 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                                                   navigator.clipboard.writeText(codeContent);
                                                   toast.success('Đã sao chép!');
                                                 }}
-                                                className="p-1 text-slate-400 hover:text-white transition-colors flex items-center gap-1"
+                                                aria-label="Sao chép mã code"
+                                                className="p-1 text-slate-400 hover:text-white transition-colors flex items-center gap-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
                                                 title="Sao chép"
                                               >
                                                 <Copy className="w-3 h-3" />
@@ -453,7 +542,7 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
 
                     {msg.role === 'assistant' && msg.taskDrafts && msg.taskDrafts.length > 0 && (
                       <div className="mt-3 space-y-3 w-full animate-in fade-in slide-in-from-top-2 duration-500">
-                        <div className="text-[10px] font-semibold tracking-normal text-slate-400">
+                        <div className="text-[10px] font-semibold tracking-normal text-slate-400 uppercase">
                           Công việc AI đề xuất - cần duyệt
                         </div>
                         {msg.taskDrafts.map((draft, dIdx) => (
@@ -515,8 +604,95 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                           className="w-full bg-[#002D56] text-white rounded-md py-3 text-[11px] font-semibold tracking-normal shadow-md shadow-blue-900/10 hover:shadow-blue-900/20 active:scale-[0.98] transition-all flex items-center justify-center gap-2"
                         >
                           <Plus className="w-4 h-4" />
-                          [+ Tạo danh sách công việc này]
+                          Tạo danh sách công việc này
                         </button>
+                      </div>
+                    )}
+
+                    {/* Proposal Draft Assist Suggestions */}
+                    {msg.role === 'assistant' && msg.importPreview && FEATURE_FLAGS.PROPOSAL_CHAT_CONTEXT && (
+                      <div className="w-full">
+                         <DraftImportPreviewCard 
+                           preview={msg.importPreview}
+                           onApply={(allocs) => onApplyImport?.(allocs)}
+                           onCancel={() => {
+                             toast.success('Đã bỏ qua bản phân bổ');
+                           }}
+                         />
+                      </div>
+                    )}
+                    {msg.role === 'assistant' && msg.draftSuggestion && FEATURE_FLAGS.PROPOSAL_CHAT_CONTEXT && (
+                      <div className="mt-4 space-y-4 w-full animate-in fade-in slide-in-from-top-2 duration-500">
+                        <div className="bg-emerald-50 border border-emerald-100 rounded-md p-4 shadow-sm">
+                          <div className="flex items-center gap-2 mb-3">
+                            <Sparkles className="w-4 h-4 text-emerald-600" />
+                            <span className="text-[11px] font-bold text-emerald-800 uppercase tracking-tight">Đề xuất bản thảo</span>
+                            <span className="ml-auto text-[9px] font-bold bg-emerald-200 text-emerald-700 px-1.5 py-0.5 rounded">
+                              {msg.draftSuggestion.insertionMode === 'replace' ? 'THAY THẾ' : 
+                                msg.draftSuggestion.insertionMode === 'append' ? 'CHÈN THÊM' : 'GỢI Ý'}
+                            </span>
+                          </div>
+                          
+                          <div className="max-h-[200px] overflow-y-auto mb-4 p-3 bg-white border border-emerald-200 rounded text-sm text-slate-700 custom-scrollbar whitespace-pre-wrap font-mono text-[13px] leading-relaxed">
+                            {msg.draftSuggestion.content}
+                          </div>
+
+                          <div className="flex flex-wrap gap-2">
+                            <button 
+                              onClick={() => onExecuteAction?.({ 
+                                type: msg.draftSuggestion!.insertionMode === 'replace' ? 'apply_to_draft' : 'append_to_draft', 
+                                label: msg.draftSuggestion!.insertionMode === 'replace' ? 'Áp dụng thay thế' : 'Chèn vào bản thảo',
+                                payload: { content: msg.draftSuggestion!.content, outlineItemId: proposalContext?.selectedOutlineItemId } 
+                              })}
+                              className="flex-1 bg-emerald-600 text-white rounded py-2 text-[10px] font-bold hover:bg-emerald-700 transition shadow-sm active:scale-95"
+                            >
+                              Sử dụng bản thảo này
+                            </button>
+                            <button 
+                              onClick={() => {
+                                navigator.clipboard.writeText(msg.draftSuggestion!.content);
+                                toast.success('Đã sao chép');
+                              }}
+                              className="px-3 bg-white border border-emerald-200 text-emerald-700 rounded py-2 text-[10px] font-bold hover:bg-emerald-50 active:scale-95 transition"
+                            >
+                              Sao chép
+                            </button>
+                          </div>
+
+                          {msg.missingData && msg.missingData.length > 0 && (
+                            <div className="mt-4 pt-3 border-t border-emerald-200/50">
+                              <p className="text-[10px] font-bold text-emerald-800 uppercase mb-2 flex items-center gap-1.5">
+                                <AlertCircle className="w-3 h-3" />
+                                Cảnh báo số liệu còn thiếu
+                              </p>
+                              <ul className="space-y-1">
+                                {msg.missingData.map((m: string, idx: number) => (
+                                  <li key={idx} className="text-[11px] text-emerald-900 leading-tight flex items-start gap-1.5">
+                                    <span className="text-emerald-500 mt-0.5">•</span>
+                                    {m}
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+
+                          {msg.risks && msg.risks.length > 0 && (
+                            <div className="mt-4 pt-3 border-t border-rose-200/50">
+                              <p className="text-[10px] font-bold text-rose-800 uppercase mb-2 flex items-center gap-1.5">
+                                <AlertCircle className="w-3 h-3" />
+                                Rủi ro & Lưu ý
+                              </p>
+                              <ul className="space-y-1">
+                                {msg.risks.map((r: string, idx: number) => (
+                                  <li key={idx} className="text-[11px] text-rose-900 leading-tight flex items-start gap-1.5">
+                                    <span className="text-rose-500 mt-0.5">•</span>
+                                    {r}
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                        </div>
                       </div>
                     )}
                     {msg.role === 'assistant' && (
@@ -525,7 +701,7 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                           <div className="flex flex-wrap gap-1.5 mb-1">
                             {msg.suggestedActions.map((action, actionIdx) => (
                               <button
-                                key={actionIdx}
+                                key={action.id || `action-${actionIdx}`}
                                 onClick={() => onExecuteAction?.(action)}
                                 className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 border border-emerald-100 text-emerald-700 text-[10px] font-bold rounded-lg hover:bg-emerald-100 transition-colors shadow-sm"
                               >
@@ -538,8 +714,9 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                         <div className="flex justify-start">
                           <button 
                             onClick={() => handleCopy(msg.content, i)}
-                            className="p-1.5 text-slate-400 hover:text-[#002D56] transition-colors rounded-lg hover:bg-slate-100"
-                            title="Sao chép"
+                            className="p-1.5 text-slate-400 hover:text-[#002D56] transition-colors rounded-lg hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#002D56]"
+                            title="Sao chép tin nhắn"
+                            aria-label="Sao chép tin nhắn"
                           >
                             {copiedIndex === i ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
                           </button>
@@ -564,6 +741,7 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                   </div>
                 </div>
               )}
+              </div>
             </div>
 
             {/* Input */}
@@ -620,7 +798,10 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                         {att.originalName || att.name}
                       </span>
                       
-                      <button onClick={() => removeAttachment(att.id)} className={cn("p-0.5 rounded-md shrink-0", att.status === 'error' ? "hover:bg-red-200/50 text-red-400 hover:text-red-600" : "hover:bg-blue-200/50 text-blue-400 hover:text-blue-600")}>
+                      <button 
+                        onClick={() => removeAttachment(att.id)} 
+                        aria-label={`Xóa tệp đính kèm ${att.name}`}
+                        className={cn("p-0.5 rounded-md shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500", att.status === 'error' ? "hover:bg-red-200/50 text-red-400 hover:text-red-600" : "hover:bg-blue-200/50 text-blue-400 hover:text-blue-600")}>
                         <X className="w-3.5 h-3.5" />
                       </button>
                     </div>
@@ -635,23 +816,28 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
               )}
 
               <div className="relative group flex items-end gap-2 mb-2">
-                <input 
-                  type="file" 
-                  ref={fileInputRef} 
-                  onChange={handleFileChange} 
-                  className="hidden" 
-                  multiple 
-                  accept=".pdf,.docx,.xlsx,.xls,.csv,.txt,.md"
-                />
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={disabled || loading || hasPendingAttachment || attachments.length >= 3}
-                  className="p-3 bg-slate-50 border border-slate-200 text-slate-500 rounded-md hover:bg-slate-100 transition-colors disabled:opacity-50 shrink-0 mb-0.5"
-                  title="Đính kèm tệp"
-                >
-                  <Paperclip className="w-4 h-4" />
-                </button>
+                {onUploadAttachment && (
+                  <>
+                    <input 
+                      type="file" 
+                      ref={fileInputRef} 
+                      onChange={handleFileChange} 
+                      className="hidden" 
+                      multiple 
+                      accept=".pdf,.docx,.xlsx,.xls,.csv,.txt,.md"
+                    />
+                    <button
+                      type="button"
+                      aria-label="Đính kèm tệp"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={disabled || loading || hasPendingAttachment || attachments.length >= 3}
+                      className="p-3 bg-slate-50 border border-slate-200 text-slate-500 rounded-md hover:bg-slate-100 transition-colors disabled:opacity-50 shrink-0 mb-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#002D56]"
+                      title="Đính kèm tệp"
+                    >
+                      <Paperclip className="w-4 h-4" />
+                    </button>
+                  </>
+                )}
                 <textarea 
                   ref={textareaRef}
                   value={input}
@@ -676,8 +862,9 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                 />
                 <button 
                   onClick={handleSendWithAttachments}
+                  aria-label="Gửi tin nhắn"
                   disabled={!canSend || !isAiReady}
-                  className="absolute right-2 bottom-2 p-2 bg-[#002D56] text-white rounded-md hover:shadow-sm disabled:opacity-30 disabled:grayscale transition-all active:scale-90"
+                  className="absolute right-2 bottom-2 p-2 bg-[#002D56] text-white rounded-md hover:shadow-sm disabled:opacity-30 disabled:grayscale transition-all active:scale-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#002D56]"
                 >
                   <Send className="w-4 h-4" />
                 </button>

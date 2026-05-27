@@ -5,69 +5,78 @@ import { getStorage } from 'firebase/storage';
 
 // Requirement 1: Use VITE_ environment variables
 let projectId = import.meta.env.VITE_FIREBASE_PROJECT_ID || '';
-if (projectId === 'gen-lang-client-073317000') {
-  projectId = 'gen-lang-client-0733170002';
+const authDomain = import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || '';
+const storageBucket = import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || '';
+
+if (projectId && projectId.length === 30) {
+  // Try to repair truncated projectId from authDomain or storageBucket
+  if (authDomain && authDomain.startsWith(projectId)) {
+    projectId = authDomain.split('.firebaseapp.com')[0];
+  } else if (storageBucket && storageBucket.startsWith(projectId)) {
+    projectId = storageBucket.split('.firebasestorage.app')[0];
+  }
 }
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY || '',
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || '',
-  projectId,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || '',
+  authDomain: authDomain,
+  projectId: projectId,
+  storageBucket: storageBucket,
   messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || '',
   appId: import.meta.env.VITE_FIREBASE_APP_ID || '',
 };
 
-let firestoreDatabaseId = import.meta.env.VITE_FIRESTORE_DATABASE_ID || '';
-if (firestoreDatabaseId && firestoreDatabaseId.startsWith('ai-studio-b6074ed0')) {
-  firestoreDatabaseId = 'ai-studio-b6074ed0-9102-4183-836c-45db24476dce';
-}
+const firestoreDatabaseId = import.meta.env.VITE_FIRESTORE_DATABASE_ID || '';
 
 // Validation check
-const missingKeys = Object.entries(firebaseConfig)
-  .filter(([_, value]) => !value)
-  .map(([key]) => key);
+const isConfigured = !!firebaseConfig.projectId && !!firebaseConfig.apiKey;
 
-if (missingKeys.length > 0 && typeof window !== 'undefined') {
-  console.error("Missing Firebase Configuration keys:", missingKeys);
-  // We throw a delayed error or handle it in the UI
-}
+let firebaseApp: any = null;
+let firestoreDb: any = null;
+let authInstance: any = { currentUser: null, onAuthStateChanged: (cb: any) => () => {} };
+let storageInstance: any = null;
 
-const firebaseApp = initializeApp(firebaseConfig);
-
-// Safe database initialization
-let firestoreDb: any;
-try {
-  const dbId = firestoreDatabaseId;
-  if (dbId && dbId !== '(default)') {
-    firestoreDb = initializeFirestore(firebaseApp, { 
-      localCache: memoryLocalCache(),
-      experimentalForceLongPolling: true
-    }, dbId);
-  } else {
-    firestoreDb = initializeFirestore(firebaseApp, { 
-      localCache: memoryLocalCache(),
-      experimentalForceLongPolling: true
+if (isConfigured) {
+  try {
+    firebaseApp = initializeApp(firebaseConfig);
+    
+    authInstance = initializeAuth(firebaseApp, {
+      persistence: [browserLocalPersistence, browserSessionPersistence],
+      popupRedirectResolver: browserPopupRedirectResolver
     });
+    
+    storageInstance = getStorage(firebaseApp);
+
+    const dbId = firestoreDatabaseId;
+    if (dbId && dbId !== '(default)') {
+      firestoreDb = initializeFirestore(firebaseApp, { 
+        localCache: memoryLocalCache(),
+        experimentalForceLongPolling: true
+      }, dbId);
+    } else if (dbId === '(default)') {
+      firestoreDb = initializeFirestore(firebaseApp, { 
+        localCache: memoryLocalCache(),
+        experimentalForceLongPolling: true
+      });
+    } else {
+      console.warn("FIRESTORE_DATABASE_ID is missing. Firestore is not initialized.");
+    }
+  } catch (e) {
+    console.error("Firebase initialization failed:", e);
   }
-} catch (e) {
-  console.error("Firestore initialization failed. No fallback allowed for named database:", e);
-  throw e;
+} else {
+  console.warn("Firebase configuration is missing. App is running in degraded mode.");
 }
 
 export const db = firestoreDb;
-
-export const auth = initializeAuth(firebaseApp, {
-  persistence: [browserLocalPersistence, browserSessionPersistence],
-  popupRedirectResolver: browserPopupRedirectResolver
-});
-
-export const storage = getStorage(firebaseApp);
+export const auth = authInstance;
+export const storage = storageInstance;
 
 console.info("[Firebase Config]", {
   projectId: firebaseConfig.projectId,
   authDomain: firebaseConfig.authDomain,
-  firestoreDatabaseId: firestoreDatabaseId
+  firestoreDatabaseId: firestoreDatabaseId,
+  isConfigured
 });
 
 export interface FirestoreErrorInfo {
@@ -110,6 +119,10 @@ export function handleFirestoreError(error: any, operationType: FirestoreErrorIn
 
 // CRITICAL CONSTRAINT: Test connection on boot
 async function testConnection() {
+  if (!db) {
+    console.warn("Firestore Client: Connection test skipped because db is not initialized.");
+    return;
+  }
   try {
     // Try a simple read from the dedicated test path
     await getDocFromServer(doc(db, 'test', 'connection'));

@@ -298,7 +298,7 @@ export function SlideOutlineWorkspace({ initialResult, onSave, onCreateTask, tok
             <div className="w-full shrink-0 flex-col border-b border-slate-200 bg-white lg:w-64 lg:border-b-0 lg:border-r flex max-h-[30vh] lg:max-h-full">
               <div className="p-3 border-b border-slate-100 flex items-center justify-between shrink-0">
                 <h3 className="text-xs font-bold text-slate-400 tracking-normal">Storyboard</h3>
-                <button onClick={addNewSlide} className="p-1 text-[#002D56] hover:bg-blue-50 rounded" title="Thêm slide">
+                <button onClick={addNewSlide} className="p-1 text-[#002D56] hover:bg-blue-50 rounded" title="Thêm slide" aria-label="Thêm slide">
                   <Plus className="w-4 h-4" />
                 </button>
               </div>

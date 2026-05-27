@@ -97,7 +97,7 @@ export const DriveFolderBrowser: React.FC<DriveFolderBrowserProps> = ({
           <Folder className="w-4 h-4 text-[#002D56] shrink-0" />
           <div className="flex items-center text-[10px] font-bold tracking-tight text-slate-500 overflow-x-auto no-scrollbar whitespace-nowrap">
             {path.map((p, i) => (
-              <React.Fragment key={p.id}>
+              <React.Fragment key={`path-${p.id}-${i}`}>
                 <button 
                   onClick={() => handleBack(i)}
                   className={cn("hover:text-[#002D56] transition-colors", i === path.length - 1 ? "text-[#002D56]" : "")}
@@ -162,12 +162,14 @@ export const DriveFolderBrowser: React.FC<DriveFolderBrowserProps> = ({
           </div>
         ) : (
           <div className="divide-y divide-slate-50">
-            {filteredItems.map(item => (
-              <div 
-                key={item.id}
-                className="group flex items-center justify-between p-3 hover:bg-slate-50 transition-colors cursor-pointer"
-                onClick={() => item.mimeType === 'application/vnd.google-apps.folder' ? handleNavigate(item) : undefined}
-              >
+            {filteredItems.map((item, idx) => {
+              const kind = item.mimeType === 'application/vnd.google-apps.folder' ? 'drive_folder' : 'drive_file';
+              return (
+                <div 
+                  key={`${kind}:${item.id}:${idx}`}
+                  className="group flex items-center justify-between p-3 hover:bg-slate-50 transition-colors cursor-pointer"
+                  onClick={() => item.mimeType === 'application/vnd.google-apps.folder' ? handleNavigate(item) : undefined}
+                >
                 <div className="flex items-center gap-3 min-w-0">
                   <div className={cn(
                     "w-8 h-8 rounded flex items-center justify-center shrink-0",
@@ -216,9 +218,10 @@ export const DriveFolderBrowser: React.FC<DriveFolderBrowserProps> = ({
                    >
                      <ExternalLink className="w-3.5 h-3.5" />
                    </a>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
             {nextPageToken && (
                <div className="p-4 flex justify-center">
                  <button 

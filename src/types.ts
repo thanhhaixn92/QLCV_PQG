@@ -1,4 +1,6 @@
 
+import { DraftImportPreviewResponse } from './features/proposals/types';
+
 export type TaskType = 'WRITE_NEW' | 'REVIEW' | 'RESIZE' | 'SYNTHESIZE' | 'TASK_BUILDER' | 'SLIDE_OUTLINE' | 'EDITORIAL_POLITICAL' | 'CREATE_TITLES' | 'OUTLINE_REPORT' | 'OUTLINE_SPEECH' | 'NOTICE_DOC' | 'CONTENT_REVIEW' | 'SUMMARY_DOC' | 'SUMMARY_CARD';
 
 export type ActivityModule =
@@ -95,9 +97,9 @@ export interface ContentReview {
   overallEvaluation?: string;
 }
 
-export type WritingStyle = 'FORMAL' | 'TECHNICAL' | 'EDITORIAL' | 'DYNAMISM';
+export type WritingStyle = 'FORMAL' | 'TECHNICAL' | 'EDITORIAL' | 'DYNAMISM' | 'chuyen_nghiep' | 'administrative' | 'political_report' | 'professional_briefing' | 'training' | 'corporate_communication' | 'basic' | 'modern' | 'creative';
 
-export type OutputFormat = 'ARTICLE' | 'NEWS' | 'PRESS_RELEASE' | 'REPORT' | 'ANNOUNCEMENT' | 'PLAN' | 'MEETING_MINUTES' | 'SPEECH_OUTLINE' | 'SUMMARY_CARD' | 'SUMMARY_DOC' | 'SLIDE_OUTLINE' | 'JSON_CONTENT_REVIEW';
+export type OutputFormat = 'ARTICLE' | 'NEWS' | 'PRESS_RELEASE' | 'REPORT' | 'ANNOUNCEMENT' | 'PLAN' | 'MEETING_MINUTES' | 'SPEECH_OUTLINE' | 'SUMMARY_CARD' | 'SUMMARY_DOC' | 'SLIDE_OUTLINE' | 'JSON_CONTENT_REVIEW' | 'SLIDE';
 
 export type LibrarySourceType =
   | 'upload'
@@ -155,8 +157,13 @@ export interface DocumentSource {
     | 'too_large'
     | 'needs_ocr'
     | 'ocr_processing'
-    | 'ocr_failed';
+    | 'ocr_failed'
+    | 'analyzing'
+    | 'analyzed'
+    | 'ai_error'
+    | 'quota_exceeded';
   
+  isFolder?: boolean;
   // AI Classification & Summary
   documentKind?: 'van_ban_chi_dao' | 'quy_dinh_phap_ly' | 'bao_cao' | 'ke_hoach' | 'hop_dong' | 'tai_lieu_ky_thuat' | 'tai_lieu_an_toan' | 'tin_bai_truyen_thong' | 'tai_chinh_ke_toan' | 'nhan_su_lao_dong' | 'khac';
   taskCategoryCode?: string;
@@ -300,7 +307,7 @@ export interface ChatAttachment {
   updatedAt: number;
 }
 
-export type WorkTaskStatus = 'todo' | 'doing' | 'review' | 'done' | 'blocked';
+export type WorkTaskStatus = 'pending' | 'todo' | 'doing' | 'review' | 'done' | 'blocked' | 'in_progress' | 'completed' | 'waiting' | 'archived';
 export type WorkTaskPriority = 'low' | 'medium' | 'high' | 'urgent';
 
 export interface WorkTaskChecklistItem {
@@ -324,6 +331,13 @@ export interface WorkTask {
   status: WorkTaskStatus;
   priority: WorkTaskPriority;
   source: 'manual' | 'ai';
+  proposalId?: string; // Link to proposal
+  outlineItemId?: string; // Link to specific outline item
+  sourceType?: 'data_requirement' | 'checklist_item' | 'draft' | 'source' | 'other';
+  sourceId?: string;
+  sourceLabel?: string;
+  responsibleUnit?: string;
+  linkedOutlineCodes?: string[];
   ownerId?: string; // UID người tạo
   selected?: boolean; // UI selection logic
   linkedDocumentIds?: string[]; // IDs of documents from the library
@@ -357,13 +371,19 @@ export const TASK_CATEGORIES: TaskCategory[] = [
 
 export interface ArticleVersion {
   id: string;
+  sessionId: string;
+  versionNumber: number;
   content: string;
-  timestamp?: number;
   note?: string;
-  version?: number;
-  structuredContent?: any;
-  createdAt?: number;
-  illustrations?: EditorialIllustration[];
+  prompt?: string;
+  createdAt: number;
+}
+
+export interface SessionIllustration extends Partial<EditorialIllustration> {
+  id: string;
+  sessionId: string;
+  url: string;
+  createdAt: number;
 }
 
 export interface ProjectSession {
@@ -371,13 +391,19 @@ export interface ProjectSession {
   title: string;
   taskType: TaskType;
   style: WritingStyle;
-  documentIds: string[];
-  currentOutput: string;
   format: OutputFormat;
-  versions: ArticleVersion[];
-  illustrations?: EditorialIllustration[];
+  latestVersionId?: string;
+  latestPreview?: string;
+  documentIds: string[];
   createdAt: number;
   updatedAt: number;
+  
+  // Backward compatibility
+  currentOutput?: string;
+  
+  // These will be loaded separately or omitted from the main session doc
+  versions?: ArticleVersion[];
+  illustrations?: SessionIllustration[];
 }
 
 export interface UserProfile {
@@ -415,6 +441,7 @@ export interface ChatTaskDraft {
 }
 
 export interface ChatSuggestedAction {
+  id?: string;
   type: 'review_task_drafts' | 'open_tasks' | 'open_library' | 'open_editor' | 'create_task' | 'search_library' | 'summarize' | 'create_tasks' | 'write_article' | 'save_document' | 'link_to_task' | 'ask_followup' | string;
   label: string;
   payload?: any;
@@ -430,6 +457,16 @@ export interface ChatMessage {
   suggestedActions?: ChatSuggestedAction[];
   attachments?: ChatAttachment[];
   status?: 'normal' | 'error' | 'task_review';
+  importPreview?: DraftImportPreviewResponse;
+  draftSuggestion?: {
+    title?: string;
+    content: string;
+    insertionMode: 'replace' | 'append' | 'insert_after_cursor' | 'note_only';
+  };
+  missingData?: string[];
+  risks?: string[];
+  suggestedSources?: string[];
+  comments?: string[];
 }
 
 export interface AssistantResponse {

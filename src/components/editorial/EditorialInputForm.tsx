@@ -16,16 +16,26 @@ export function EditorialInputForm({ kind, onChange, initialValue = '' }: Props)
   });
 
   useEffect(() => {
+    setFormData({ generalContext: formData.generalContext || '' });
+  }, [kind]);
+
+  useEffect(() => {
     // Whenever formData changes, compile it to a single text prompt
     const parts = [];
     if (formData.generalContext) parts.push(`Yêu cầu / Bối cảnh: ${formData.generalContext}`);
-    if (formData.timeAndPlace) parts.push(`Thời gian & Địa điểm: ${formData.timeAndPlace}`);
-    if (formData.characters) parts.push(`Thành phần / Nhân vật: ${formData.characters}`);
+    
+    // Only include fields that are actually relevant to the selected kind
+    const allowTimeAndPlace = ['news', 'press_release', 'meeting_minutes'].includes(kind);
+    const allowRecipients = ['official_letter', 'announcement', 'administrative_report'].includes(kind);
+
+    if (allowTimeAndPlace && formData.timeAndPlace) parts.push(`Thời gian & Địa điểm: ${formData.timeAndPlace}`);
+    if (allowTimeAndPlace && formData.characters) parts.push(`Thành phần / Nhân vật: ${formData.characters}`);
+    if (allowRecipients && formData.recipients) parts.push(`Gửi đến: ${formData.recipients}`);
+    
     if (formData.mainPoints) parts.push(`Nội dung chính cần có: ${formData.mainPoints}`);
-    if (formData.recipients) parts.push(`Gửi đến: ${formData.recipients}`);
     
     onChange(parts.join('\n\n'));
-  }, [formData]);
+  }, [formData, kind]);
 
   const handleChange = (field: string, val: string) => {
     setFormData(prev => ({ ...prev, [field]: val }));

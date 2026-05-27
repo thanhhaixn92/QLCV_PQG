@@ -42,3 +42,6 @@ Cụ thể thay đổi bản cuối:
 
 ## Liên hệ
 Phòng Công nghệ thông tin - Công ty Hoa tiêu hàng hải miền Bắc.
+
+---
+*Internal Notice: Proposal module is temporarily disabled / legacy module for transition into standalone webapp.*

@@ -59,8 +59,29 @@ export async function processTask(
 
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
-    const errorMessage = data.error || `Lỗi server (${response.status}): ${response.statusText}`;
-    throw new Error(errorMessage);
+    const rawType = data.errorType || data.error;
+    const mappedMessage =
+      rawType === "quota_exceeded"
+        ? "Hạn mức AI tạm thời hết. Vui lòng thử lại sau hoặc đổi model/API key."
+        : rawType === "invalid_api_key"
+        ? "API key AI không hợp lệ hoặc chưa có quyền truy cập model."
+        : rawType === "model_not_available"
+        ? "Model AI đang chọn không khả dụng. Vui lòng đổi sang model ổn định hơn."
+        : rawType === "validation_error"
+        ? "Dữ liệu đầu vào hoặc định dạng trả về chưa hợp lệ."
+        : rawType === "provider_error"
+        ? "Nhà cung cấp AI trả lỗi. Vui lòng thử lại, kiểm tra model/API key/quota."
+        : `Lỗi server (${response.status}): ${response.statusText}`;
+
+    const errorMessage = data.message || data.errorMessage || mappedMessage;
+    const err = new Error(errorMessage) as any;
+    if (data.retryAfterSeconds) {
+       err.retryAfterSeconds = data.retryAfterSeconds;
+    }
+    if (rawType === "quota_exceeded") {
+       err.isQuota = true;
+    }
+    throw err;
   }
 
   const data = await response.json();

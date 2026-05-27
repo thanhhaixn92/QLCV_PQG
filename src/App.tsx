@@ -1,3 +1,8 @@
+import { HomeWorkspace } from "./components/home/HomeWorkspace";
+import { FEATURE_FLAGS } from "./config/featureFlags";
+import { HistoryWorkspace } from "./components/history/HistoryWorkspace";
+import { EditorWorkspace } from "./components/editorial/EditorWorkspace";
+import { LibraryWorkspace } from "./components/library/LibraryWorkspace";
 import { useState, useRef, useEffect, useMemo } from "react";
 import {
   FileText,
@@ -120,6 +125,21 @@ const ActivityLogView = React.lazy(() =>
     default: m.ActivityLogView,
   })),
 );
+const ProposalListPage = React.lazy(() =>
+  FEATURE_FLAGS.PROPOSAL_MODULE
+    ? import("./components/proposals/ProposalListPage").then((m) => ({ default: m.ProposalListPage }))
+    : Promise.resolve({ default: () => null as any })
+);
+const CreateProposalModal = React.lazy(() =>
+  FEATURE_FLAGS.PROPOSAL_MODULE
+    ? import("./components/proposals/CreateProposalModal").then((m) => ({ default: m.CreateProposalModal }))
+    : Promise.resolve({ default: () => null as any })
+);
+const ProposalDetailView = React.lazy(() =>
+  FEATURE_FLAGS.PROPOSAL_MODULE
+    ? import("./components/proposals/ProposalDetailView").then((m) => ({ default: m.ProposalDetailView }))
+    : Promise.resolve({ default: () => null as any })
+);
 
 import { cn } from "./lib/utils";
 import {
@@ -149,7 +169,11 @@ import {
   ChatSuggestedAction as SuggestedAction,
   ChatTaskDraft,
   ChatAttachment,
+  SessionIllustration,
 } from "./types";
+import { Proposal, ProposalChatContext, DraftImportAllocation } from "./features/proposals/types";
+import { listProposals, updateDraftByOutlineItem } from "./features/proposals/proposalService";
+import { SessionService } from "./services/sessionService";
 import { parseFile } from "./lib/fileParser";
 import { storage, auth, db, handleFirestoreError } from "./lib/firebase";
 import {
@@ -181,6 +205,7 @@ import {
   orderBy,
   onSnapshot,
   limit,
+  writeBatch,
 } from "firebase/firestore";
 import {
   buildLocalImageAnalysis,
@@ -198,69 +223,25 @@ import { type SlideOutlineResult } from "./types/slideOutline";
 import { EditorialPreflightPanel } from "./components/editorial/EditorialPreflightPanel";
 import { logActivity } from "./lib/activityLog";
 
-const TASK_STATUS_LABELS: Record<string, string> = {
-  todo: "Cần làm",
-  doing: "Đang làm",
-  review: "Chờ rà soát",
-  done: "Hoàn thành",
-  blocked: "Đang vướng",
-};
+import { 
+  TASK_STATUS_LABELS, 
+  TASK_PRIORITY_LABELS, 
+  HIGH_PRIORITY_FILTER, 
+  getCategoryName, 
+  localizeTaskForAI, 
+  getTaskDueEndTime, 
+  isTaskOverdue, 
+  isTaskUpcoming, 
+  NoTasksMessage, 
+  TaskTitleCell, 
+  TaskAssigneeCell, 
+  TaskPriorityCell, 
+  TaskStatusCell, 
+  TaskActionsCell 
+} from "./components/tasks/TaskHelpers";
 
-const TASK_PRIORITY_LABELS: Record<string, string> = {
-  low: "Thấp",
-  medium: "Trung bình",
-  high: "Cao",
-  urgent: "Khẩn cấp",
-};
-
-const HIGH_PRIORITY_FILTER = "high_urgent";
-
-function getCategoryName(code: string) {
-  const cat = TASK_CATEGORIES.find((c) => c.code === code);
-  return cat ? cat.name : code;
-}
-
-const localizeTaskForAI = (t: WorkTask) => ({
-  title: t.title,
-  status: t.status,
-  statusLabel: TASK_STATUS_LABELS[t.status] || t.status,
-  priority: t.priority,
-  priorityLabel: TASK_PRIORITY_LABELS[t.priority] || t.priority,
-  assignee: t.assignee || "Chưa phân công",
-  dueDate: t.dueDate || "Chưa có hạn",
-  categoryCode: t.categoryCode,
-  categoryName: getCategoryName(t.categoryCode),
-  description: String(t.description || "").slice(0, 800),
-  checklist: (t.checklist || []).slice(0, 10).map((item) => ({
-    title: item.title,
-    done: item.done,
-  })),
-});
-
-function getTaskDueEndTime(dueDate: string | undefined): number | null {
-  if (!dueDate) return null;
-  try {
-    const date = new Date(dueDate);
-    date.setHours(23, 59, 59, 999);
-    return date.getTime();
-  } catch (e) {
-    return null;
-  }
-}
-
-function isTaskOverdue(task: WorkTask): boolean {
-  if (task.status === "done") return false;
-  const endTime = getTaskDueEndTime(task.dueDate);
-  return !!(endTime && endTime < Date.now());
-}
-
-function isTaskUpcoming(task: WorkTask, days: number = 3): boolean {
-  if (task.status === "done" || isTaskOverdue(task)) return false;
-  const endTime = getTaskDueEndTime(task.dueDate);
-  if (!endTime) return false;
-  const now = Date.now();
-  return endTime > now && endTime < now + days * 24 * 60 * 60 * 1000;
-}
+import { getEditorialTool } from "./lib/editorialTools";
+import { EditorialToolSelector } from "./components/editorial/EditorialToolSelector";
 
 function getUserDisplayName(user: FirebaseUser | null, profile?: any) {
   if (profile?.displayName) return profile.displayName;
@@ -286,375 +267,18 @@ function safeParseSlideOutline(value?: string): SlideOutlineResult | undefined {
 
 // --- TASK HELPER COMPONENTS ---
 
-function NoTasksMessage({
-  setTaskFilters,
-}: {
-  setTaskFilters: (f: any) => void;
-}) {
-  return (
-    <div className="flex flex-col items-center gap-3 py-10 w-full">
-      <div className="p-4 bg-slate-50 rounded-md">
-        <ListTodo className="w-10 h-10 text-slate-200" />
-      </div>
-      <p className="text-slate-400 font-bold text-sm">
-        Chưa có công việc nào thỏa mãn điều kiện lọc.
-      </p>
-      <button
-        onClick={() =>
-          setTaskFilters((prev: any) => ({
-            ...prev,
-            status: "all",
-            priority: "all",
-            category: "all",
-            search: "",
-          }))
-        }
-        className="text-[#002D56] text-xs font-semibold hover:underline"
-      >
-        Xóa bộ lọc để xem lại →
-      </button>
-    </div>
-  );
-}
-
-function TaskTitleCell({ task, documents }: { task: any; documents: any[] }) {
-  return (
-    <div className="flex flex-col min-w-0">
-      <span className="text-sm font-bold text-slate-800 mb-1 leading-tight line-clamp-2">
-        {task.title}
-      </span>
-      <div className="flex flex-col gap-1.5">
-        <div className="flex items-center gap-2 flex-wrap">
-          {task.isDeputy && (
-            <span className="text-[8px] font-semibold uppercase text-amber-600 bg-amber-50 px-1 rounded-sm border border-amber-100">
-              Kiêm nhiệm
-            </span>
-          )}
-          <span className="text-[10px] text-slate-400 line-clamp-1 truncate">
-            {task.description}
-          </span>
-        </div>
-        {task.linkedDocumentIds && task.linkedDocumentIds.length > 0 && (
-          <div className="flex flex-wrap gap-1">
-            {task.linkedDocumentIds
-              .slice(0, 3)
-              .map((docId: string, idx: number) => {
-                const doc = documents.find((d) => d.id === docId);
-                if (!doc) return null;
-                return (
-                  <div
-                    key={`${docId}-${idx}`}
-                    className="flex items-center gap-1 bg-slate-100 text-slate-500 px-2 py-0.5 rounded-md text-[8px] font-semibold uppercase border border-slate-200"
-                  >
-                    <FileText className="w-2.5 h-2.5" />
-                    <span className="truncate max-w-[80px]">{doc.name}</span>
-                  </div>
-                );
-              })}
-            {task.linkedDocumentIds.length > 3 && (
-              <span className="text-[8px] font-semibold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200">
-                +{task.linkedDocumentIds.length - 3}
-              </span>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function TaskAssigneeCell({ task }: { task: any }) {
-  return (
-    <div className="flex items-center gap-2 min-w-0">
-      <div className="w-7 h-7 rounded-full bg-slate-200 flex items-center justify-center text-[10px] font-semibold text-slate-500 uppercase shrink-0">
-        {(task.assignee || "UV").slice(0, 2)}
-      </div>
-      <span className="text-xs font-bold text-slate-600 truncate">
-        {task.assignee || "Chưa định danh"}
-      </span>
-    </div>
-  );
-}
-
-function TaskPriorityCell({ task }: { task: any }) {
-  return (
-    <div
-      className={cn(
-        "flex items-center gap-1.5 text-[10px] font-semibold uppercase shrink-0",
-        task.priority === "urgent"
-          ? "text-red-600"
-          : task.priority === "high"
-            ? "text-orange-600"
-            : task.priority === "medium"
-              ? "text-blue-600"
-              : "text-slate-400",
-      )}
-    >
-      <div
-        className={cn(
-          "w-1.5 h-1.5 rounded-full",
-          task.priority === "urgent"
-            ? "bg-red-500"
-            : task.priority === "high"
-              ? "bg-orange-500"
-              : task.priority === "medium"
-                ? "bg-blue-500"
-                : "bg-slate-300",
-        )}
-      />
-      {task.priority === "urgent"
-        ? "Khẩn"
-        : task.priority === "high"
-          ? "Cao"
-          : task.priority === "medium"
-            ? "Vừa"
-            : "Thấp"}
-    </div>
-  );
-}
-
-function TaskStatusCell({
-  task,
-  updateTaskStatus,
-}: {
-  task: any;
-  updateTaskStatus: any;
-}) {
-  return (
-    <div className="flex justify-center shrink-0">
-      <select
-        value={task.status}
-        onChange={(e) => updateTaskStatus(task.id, e.target.value as any)}
-        className={cn(
-          "px-3 py-1.5 rounded-md text-[10px] font-semibold tracking-wide border-2 transition-all cursor-pointer",
-          task.status === "done"
-            ? "bg-emerald-50 border-emerald-200 text-emerald-600"
-            : task.status === "doing"
-              ? "bg-blue-50 border-blue-200 text-blue-600"
-              : task.status === "blocked"
-                ? "bg-red-50 border-red-200 text-red-600"
-                : task.status === "review"
-                  ? "bg-amber-50 border-amber-200 text-amber-600"
-                  : "bg-slate-50 border-slate-200 text-slate-400",
-        )}
-      >
-        <option value="todo">Cần làm</option>
-        <option value="doing">Đang làm</option>
-        <option value="review">Duyệt</option>
-        <option value="done">Xong</option>
-        <option value="blocked">Vướng</option>
-      </select>
-    </div>
-  );
-}
-
-function TaskActionsCell({
-  task,
-  onDelete,
-}: {
-  task: any;
-  onDelete: (id: string) => void;
-}) {
-  return (
-    <button
-      onClick={(e) => {
-        e.stopPropagation();
-        onDelete(task.id);
-      }}
-      className="p-2 text-slate-300 hover:text-red-500 transition-colors opacity-100 sm:opacity-0 sm:group-hover:opacity-100 shrink-0"
-    >
-      <Trash2 className="w-4 h-4" />
-    </button>
-  );
-}
-
-const DEFAULT_LIBRARY_COLLECTIONS: LibraryCollection[] = [
-  {
-    id: "lib-personal",
-    name: "Cá nhân",
-    type: "personal",
-    icon: "User",
-    color: "blue",
-    ownerId: "default",
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-  },
-  {
-    id: "lib-work",
-    name: "Công việc",
-    type: "work",
-    icon: "Briefcase",
-    color: "indigo",
-    ownerId: "default",
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-  },
-  {
-    id: "lib-editorial",
-    name: "Viết báo / Biên tập",
-    type: "editorial",
-    icon: "Edit3",
-    color: "emerald",
-    ownerId: "default",
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-  },
-  {
-    id: "lib-shared",
-    name: "Dùng chung",
-    type: "shared",
-    icon: "Users",
-    color: "purple",
-    ownerId: "default",
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-  },
-  {
-    id: "lib-drive",
-    name: "Google Drive",
-    type: "drive",
-    icon: "Database",
-    color: "amber",
-    ownerId: "default",
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-  },
-];
-
-const DOCUMENT_KIND_LABELS: Record<string, string> = {
-  van_ban_chi_dao: "Văn bản chỉ đạo",
-  quy_dinh_phap_ly: "Quy định pháp lý",
-  bao_cao: "Báo cáo",
-  ke_hoach: "Kế hoạch",
-  hop_dong: "Hợp đồng",
-  tai_lieu_ky_thuat: "Tài liệu kỹ thuật",
-  tai_lieu_an_toan: "Tài liệu an toàn",
-  tin_bai_truyen_thong: "Tin bài truyền thông",
-  tai_chinh_ke_toan: "Tài chính - Kế toán",
-  nhan_su_lao_dong: "Nhân sự - Lao động",
-  khac: "Khác",
-};
-
-const matchesSearch = (
-  d: DocumentSource,
-  query: string,
-  filters?: { kind?: string; status?: string },
-) => {
-  if (filters) {
-    if (
-      filters.kind &&
-      filters.kind !== "all" &&
-      d.documentKind !== filters.kind
-    )
-      return false;
-    if (
-      filters.status &&
-      filters.status !== "all" &&
-      d.contentStatus !== filters.status
-    )
-      return false;
-  }
-
-  const q = query.toLowerCase().trim();
-  if (!q) return true;
-
-  const summary: any = d.summary || {};
-  const mainPoints = Array.isArray(summary.mainPoints)
-    ? summary.mainPoints.join(" ")
-    : "";
-  const keyPoints = Array.isArray(summary.keyPoints)
-    ? summary.keyPoints.join(" ")
-    : "";
-  const keywords = Array.isArray(summary.keywords)
-    ? summary.keywords.join(" ")
-    : "";
-  const entities = summary.entities ? JSON.stringify(summary.entities) : "";
-  const metadataDesc = d.metadata?.description || "";
-
-  const searchText = [
-    d.name,
-    d.content,
-    summary.short || "",
-    mainPoints,
-    keyPoints,
-    keywords,
-    entities,
-    d.documentKind,
-    DOCUMENT_KIND_LABELS[d.documentKind || ""] || "",
-    d.taskCategoryCode,
-    metadataDesc,
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-
-  return searchText.includes(q);
-};
-
-const TYPE_MAPPING: Record<string, string> = {
-  drive: "Google Drive",
-  pdf: "PDF",
-  word: "Bản Word",
-  excel: "Bảng tính",
-  text: "Văn bản thô",
-  link: "Liên kết Web",
-};
-
-const SOURCE_TYPE_MAPPING: Record<string, string> = {
-  upload: "Tải lên",
-  drive: "Drive",
-  text: "Ghi chú",
-  web_extraction: "Trích xuất Web",
-};
-
-function getDocTypeLabel(type?: string) {
-  if (!type) return "Văn bản";
-  return TYPE_MAPPING[type.toLowerCase()] || type.toUpperCase();
-}
-
-function getSourceTypeLabel(sourceType?: string) {
-  if (!sourceType) return "Nội bộ";
-  return (
-    SOURCE_TYPE_MAPPING[sourceType.toLowerCase()] || sourceType.toUpperCase()
-  );
-}
-
-function getDocumentPreviewUrl(d: DocumentSource): string {
-  return (
-    d.metadata?.previewUrl ||
-    d.metadata?.googleViewerUrl ||
-    d.driveWebViewLink?.replace("/view", "/preview") ||
-    d.driveWebViewLink ||
-    d.metadata?.driveWebViewLink ||
-    d.metadata?.openUrl ||
-    d.metadata?.url ||
-    ""
-  );
-}
-
-function getDocumentOpenUrl(d: DocumentSource): string {
-  return (
-    d.driveWebViewLink ||
-    d.metadata?.driveWebViewLink ||
-    d.metadata?.openUrl ||
-    d.metadata?.url ||
-    ""
-  );
-}
-
-function cleanDisplayTitle(value?: string): string {
-  if (!value) return "Bài viết không tiêu đề";
-  return (
-    value
-      .replace(/^#{1,6}\s*/g, "")
-      .replace(/\*\*(.*?)\*\*/g, "$1")
-      .replace(/\*(.*?)\*/g, "$1")
-      .replace(/!\[.*?\]\(.*?\)/g, "")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 160) || "Bài viết không tiêu đề"
-  );
-}
+import { 
+  DEFAULT_LIBRARY_COLLECTIONS, 
+  DOCUMENT_KIND_LABELS, 
+  matchesSearch, 
+  TYPE_MAPPING, 
+  SOURCE_TYPE_MAPPING, 
+  getDocTypeLabel, 
+  getSourceTypeLabel, 
+  getDocumentPreviewUrl, 
+  getDocumentOpenUrl, 
+  cleanDisplayTitle 
+} from "./components/library/LibraryHelpers";
 
 export type BackgroundTask = {
   id: string;
@@ -733,296 +357,15 @@ const ManualSummaryTab = ({
 };
 
 import { AdminWorkspace } from "./components/admin/AdminWorkspace";
-
-const ContentReviewDisplay = ({ review }: { review: ContentReview }) => {
-  return (
-    <motion.div
-      initial={{ opacity: 0, scale: 0.95 }}
-      animate={{ opacity: 1, scale: 1 }}
-      className="bg-white rounded-xl border-2 border-[#002D56]/10 shadow-xl overflow-hidden mb-12 no-print"
-    >
-      <div className="bg-[#002D56] p-6 text-white flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <div className="p-3 bg-white/10 rounded-lg">
-            <Activity className="w-6 h-6" />
-          </div>
-          <div>
-            <h3 className="text-xl font-bold uppercase tracking-tight">
-              Kế hoạch Chẩn đoán & Đánh giá
-            </h3>
-            <p className="text-white/60 text-[10px] font-bold uppercase tracking-wider">
-              Phân tích bởi AI Ban Biên tập VMS Hoa Tiêu Miền Bắc
-            </p>
-          </div>
-        </div>
-        <div className="flex flex-col items-end">
-          <span className="text-[10px] font-bold uppercase tracking-wider opacity-60">
-            Điểm nội bộ
-          </span>
-          <span className="text-4xl font-bold tracking-tight">
-            {review.qualityScore}
-            <span className="text-lg opacity-40 ml-1">/100</span>
-          </span>
-        </div>
-      </div>
-
-      <div className="p-8 space-y-10">
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
-          <div className="space-y-6">
-            <div className="bg-slate-50 p-6 rounded-lg border border-slate-100 h-full">
-              <h4 className="text-[11px] font-bold text-[#002D56] uppercase tracking-wider mb-4 flex items-center gap-2">
-                <Sparkles className="w-4 h-4" /> Tóm lược AI
-              </h4>
-              <p className="text-sm font-semibold text-slate-800 leading-relaxed text-justify mb-4">
-                {review.summary}
-              </p>
-              <div className="pt-4 border-t border-slate-200">
-                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-tight mb-2 italic">
-                  Mục đích chính:
-                </p>
-                <p className="text-xs font-bold text-slate-600">
-                  {review.purpose}
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <div className="space-y-6">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="p-5 bg-emerald-50 border border-emerald-100 rounded-lg">
-                <h5 className="text-[10px] font-bold text-emerald-600 uppercase tracking-wider mb-3 flex items-center gap-2">
-                  <CheckCircle2 className="w-4 h-4" /> Điểm mạnh
-                </h5>
-                <ul className="space-y-2">
-                  {review.strengths.map((s, idx) => (
-                    <li
-                      key={idx}
-                      className="text-xs font-semibold text-emerald-900 leading-tight flex gap-2"
-                    >
-                      <span className="shrink-0">•</span> {s}
-                    </li>
-                  ))}
-                  {review.strengths.length === 0 && (
-                    <li className="text-[10px] text-emerald-400 italic">
-                      Không có dữ liệu
-                    </li>
-                  )}
-                </ul>
-              </div>
-              <div className="p-5 bg-rose-50 border border-rose-100 rounded-lg">
-                <h5 className="text-[10px] font-bold text-rose-600 uppercase tracking-wider mb-3 flex items-center gap-2">
-                  <AlertTriangle className="w-4 h-4" /> Hạn chế
-                </h5>
-                <ul className="space-y-2">
-                  {review.weaknesses.map((w, idx) => (
-                    <li
-                      key={idx}
-                      className="text-xs font-semibold text-rose-900 leading-tight flex gap-2"
-                    >
-                      <span className="shrink-0">•</span> {w}
-                    </li>
-                  ))}
-                  {review.weaknesses.length === 0 && (
-                    <li className="text-[10px] text-rose-400 italic">
-                      Không phát hiện
-                    </li>
-                  )}
-                </ul>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {[
-            {
-              id: "spelling",
-              label: "Lỗi chính tả / dùng từ",
-              data: review.spellingIssues,
-              icon: Type,
-              color: "rose",
-            },
-            {
-              id: "structure",
-              label: "Bố cục / Sắp xếp",
-              data: review.structureIssues,
-              icon: ListTree,
-              color: "amber",
-            },
-            {
-              id: "style",
-              label: "Văn phong / Sắc thái",
-              data: review.styleIssues,
-              icon: Edit3,
-              color: "blue",
-            },
-            {
-              id: "duplication",
-              label: "Trùng lặp nội dung",
-              data: review.duplicationIssues,
-              icon: Files,
-              color: "slate",
-            },
-            {
-              id: "missing",
-              label: "Thiếu sót nội dung",
-              data: review.missingContent,
-              icon: Target,
-              color: "indigo",
-            },
-            {
-              id: "factual",
-              label: "Rủi ro dữ kiện",
-              data: review.factualWarnings,
-              icon: ShieldAlert,
-              color: "orange",
-            },
-          ].map((group) => (
-            <div
-              key={group.id}
-              className="bg-white p-5 rounded-lg border border-slate-100 shadow-sm hover:border-blue-100 transition-colors"
-            >
-              <div className="flex items-center gap-3 mb-4">
-                <div
-                  className={cn(
-                    "p-2 rounded-lg",
-                    group.color === "rose"
-                      ? "bg-rose-100 text-rose-600"
-                      : group.color === "amber"
-                        ? "bg-amber-100 text-amber-600"
-                        : group.color === "blue"
-                          ? "bg-blue-100 text-blue-600"
-                          : group.color === "indigo"
-                            ? "bg-indigo-100 text-indigo-600"
-                            : group.color === "orange"
-                              ? "bg-orange-100 text-orange-600"
-                              : "bg-slate-100 text-slate-600",
-                  )}
-                >
-                  <group.icon className="w-4 h-4" />
-                </div>
-                <h5 className="text-[10px] font-bold text-slate-800 tracking-tight uppercase">
-                  {group.label}
-                </h5>
-              </div>
-              <div className="space-y-2">
-                {group.data && group.data.length > 0 ? (
-                  group.data.map((item, idx) => (
-                    <div key={idx} className="flex gap-2 items-start">
-                      <span className="text-slate-300 mt-0.5 shrink-0">•</span>
-                      <p className="text-xs font-medium text-slate-600 leading-tight">
-                        {item}
-                      </p>
-                    </div>
-                  ))
-                ) : (
-                  <p className="text-[10px] text-slate-300 font-bold italic tracking-tight">
-                    Tất cả đều ổn
-                  </p>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          <div className="bg-emerald-50/50 p-6 rounded-lg border border-emerald-100">
-            <h4 className="text-[10px] font-bold text-emerald-600 uppercase tracking-wider mb-4 flex items-center gap-2">
-              <Zap className="w-4 h-4" /> Đề xuất nâng cấp
-            </h4>
-            <div className="space-y-3">
-              {review.improvementSuggestions &&
-                review.improvementSuggestions.map((s, idx) => (
-                  <div key={idx} className="flex gap-3 items-center">
-                    <div className="w-5 h-5 bg-emerald-100 text-emerald-600 rounded flex items-center justify-center text-[10px] font-bold shrink-0">
-                      {idx + 1}
-                    </div>
-                    <p className="text-xs font-semibold text-slate-700 leading-tight">
-                      {s}
-                    </p>
-                  </div>
-                ))}
-            </div>
-          </div>
-
-          <div className="bg-slate-900 border border-slate-800 p-6 rounded-lg shadow-inner relative overflow-hidden">
-            <div className="absolute -right-4 -top-4 opacity-5">
-              <Bot className="w-32 h-32 text-white" />
-            </div>
-            <h4 className="text-[10px] font-bold text-white/40 uppercase tracking-wider mb-4 flex items-center gap-2">
-              <MessageSquare className="w-4 h-4" /> Prompt gợi ý tối ưu
-            </h4>
-            <div className="bg-white/10 rounded border border-white/10 p-4 text-xs font-mono text-emerald-400 leading-relaxed italic">
-              "{review.rewrittenPrompt}"
-            </div>
-            <div className="mt-4 flex items-center gap-2">
-              <button
-                onClick={() => {
-                  navigator.clipboard.writeText(review.rewrittenPrompt);
-                  toast.success("Đã sao chép prompt!");
-                }}
-                className="px-4 py-2 bg-white/10 hover:bg-white text-white hover:text-slate-900 rounded text-[9px] font-bold uppercase transition-all flex items-center gap-2"
-              >
-                <Copy className="w-3 h-3" /> Sao chép prompt
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </motion.div>
-  );
-};
-
-function StartupOverlay({
-  state,
-}: {
-  state: "booting" | "ready" | "degraded" | "failed";
-}) {
-  const isVisible = state === "booting";
-  return (
-    <div
-      className={`fixed inset-0 z-[9999] flex items-center justify-center bg-slate-50 font-sans p-6 transition-opacity duration-500 ${isVisible ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"}`}
-    >
-      <div className="flex flex-col items-center gap-4 text-center max-w-sm">
-        <div className="w-16 h-16 rounded-2xl bg-white shadow-xl flex items-center justify-center animate-bounce duration-1000">
-          <Ship className="w-8 h-8 text-[#002D56]" />
-        </div>
-        <h2 className="text-xl font-bold text-slate-800 animate-pulse">
-          Đang khởi tạo hệ thống...
-        </h2>
-        <p className="text-slate-500 text-sm">Vui lòng đợi giây lát</p>
-      </div>
-    </div>
-  );
-}
-
-function DegradedBanner({
-  state,
-  error,
-  onRetry,
-}: {
-  state: "booting" | "ready" | "degraded" | "failed";
-  error: string | null;
-  onRetry: () => void;
-}) {
-  if (state !== "degraded" && state !== "failed") return null;
-  return (
-    <div className="fixed top-0 left-0 right-0 z-[9990] bg-amber-500 text-white px-4 py-2 text-sm font-medium flex items-center justify-center gap-4 shadow-md">
-      <AlertTriangle className="w-4 h-4" />
-      <span>Một số dịch vụ đang ngoại tuyến ${error ? `(${error})` : ""}</span>
-      <button
-        onClick={onRetry}
-        className="bg-white/20 hover:bg-white/30 px-3 py-1 rounded-md text-xs font-bold transition-colors"
-      >
-        Thử lại
-      </button>
-    </div>
-  );
-}
+import { ContentReviewDisplay } from "./components/editorial/ContentReviewDisplay";
+import { TasksTabWorkspace } from "./components/tasks/TasksTabWorkspace";
+import { TaskAICreateModal } from "./components/tasks/TaskAICreateModal";
+import { StartupOverlay, DegradedBanner } from "./components/layout/StartupBoundary";
 
 function App() {
   const [inactiveTime, setInactiveTime] = useState(0);
   const [backgroundTasks, setBackgroundTasks] = useState<BackgroundTask[]>([]);
+  const [selectedEditorialToolId, setSelectedEditorialToolId] = useState<string>("draft_new");
   const [taskType, setTaskType] = useState<TaskType>("WRITE_NEW");
   const [style, setStyle] = useState<WritingStyle>("FORMAL");
   const [outputFormat, setOutputFormat] = useState<OutputFormat>("ARTICLE");
@@ -1036,6 +379,7 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [isParsing, setIsParsing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [aiCooldownUntil, setAiCooldownUntil] = useState<number | null>(null);
   const [copySuccess, setCopySuccess] = useState(false);
   const [activeTab, setActiveTab] = useState<
     | "home"
@@ -1043,10 +387,13 @@ function App() {
     | "editor"
     | "library"
     | "history"
+    | "proposals"
     | "settings"
     | "activity"
     | "admin"
   >("home");
+  const [selectedProposalId, setSelectedProposalId] = useState<string | null>(null);
+  const [proposalChatContext, setProposalChatContext] = useState<ProposalChatContext | null>(null);
   const [density, setDensity] = useState<"comfortable" | "compact">(
     "comfortable",
   );
@@ -1096,17 +443,21 @@ function App() {
   // Task & Work Management State
   const [allTasks, setAllTasks] = useState<WorkTask[]>([]);
   const [editingTask, setEditingTask] = useState<WorkTask | null>(null);
+  const [isAiCreateModalOpen, setIsAiCreateModalOpen] = useState(false);
   const [taskFilters, setTaskFilters] = useState({
     status: "all",
     priority: "all",
     category: "all",
+    proposalId: "all",
     search: "",
   });
+  const [proposals, setProposals] = useState<Proposal[]>([]);
   const [builtTasks, setBuiltTasks] = useState<WorkTask[]>([]);
   const [isBuildingTasks, setIsBuildingTasks] = useState(false);
 
   // Chat/AI State
   const [isChatOpen, setIsChatOpen] = useState(false);
+  const [isCreateProposalModalOpen, setIsCreateProposalModalOpen] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>(() => {
     try {
       const saved = localStorage.getItem(
@@ -1134,6 +485,12 @@ function App() {
       setIsChatOpen(false);
     }
   }, [activeModal]);
+
+  useEffect(() => {
+    const handleOpenSettings = () => setActiveTab("settings");
+    document.addEventListener("open-settings", handleOpenSettings);
+    return () => document.removeEventListener("open-settings", handleOpenSettings);
+  }, []);
 
   useEffect(() => {
     let activityTimer: NodeJS.Timeout;
@@ -1165,6 +522,7 @@ function App() {
       status: "all",
       priority: "all",
       category: "all",
+      proposalId: "all",
       search: "",
       ...filters,
     });
@@ -1231,20 +589,23 @@ function App() {
     if (!user) return;
     try {
       setIsParsing(true);
-      const token = await user.getIdToken();
-      const response = await fetch("/api/drive/import-public-link", {
+      const data = await apiFetchJson<any>("/api/drive/import-public-link", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
         body: JSON.stringify({ url, collectionId: activeLibraryId }),
       });
-      const data = await response.json();
-      if (!data.success) throw new Error(data.message);
       toast.success("Đã nhập thành công từ Google Drive");
       if (data.document) {
-        setDocuments((prev) => [data.document, ...prev]);
+        setDocuments((prev) => {
+          const exists = prev.findIndex(d => d.id === data.document.id);
+          if (exists >= 0) {
+            const next = [...prev];
+            next[exists] = data.document;
+            return next;
+          }
+          return [data.document, ...prev];
+        });
+        setNewLinkUrl("");
+        setIsAddingLink(false);
       }
     } catch (err: any) {
       toast.error(err.message || "Lỗi nhập liên kết Drive");
@@ -1293,6 +654,11 @@ function App() {
 
   // Auth Observer
   useEffect(() => {
+    if (!auth) {
+      console.warn("[BOOT] auth is not initialized, skipping onAuthStateChanged");
+      setAuthReady(true);
+      return;
+    }
     const unsubscribe = onAuthStateChanged(
       auth,
       (firebaseUser) => {
@@ -1379,6 +745,7 @@ function App() {
   }, []);
 
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const isEffectiveSidebarCollapsed = isSidebarCollapsed || (activeTab === 'proposals' && selectedProposalId !== null);
 
   useEffect(() => {
     const handleResize = () => {
@@ -1667,6 +1034,52 @@ function App() {
       };
 
       try {
+        if (activeTab === 'proposals' && selectedProposalId) {
+          // Check for special import mode from quick prompts
+          if (chatMode?.startsWith('import_file_') && attachments && attachments.length > 0) {
+            const targetModeMapping: Record<string, string> = {
+              'import_file_current': 'current_item',
+              'import_file_section': 'target_section',
+              'import_file_whole': 'whole_proposal'
+            };
+
+            return await apiFetchJson(`/api/proposals/${selectedProposalId}/draft/import-from-chat-file`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${authToken}`
+              },
+              body: JSON.stringify({
+                message,
+                attachmentId: attachments[0].id,
+                targetMode: targetModeMapping[chatMode] || 'current_item',
+                targetOutlineItemId: proposalChatContext?.selectedOutlineItemId,
+                targetOutlineCode: proposalChatContext?.selectedOutlineItemCode
+              }),
+              timeoutMs: 120000
+            });
+          }
+
+          return await apiFetchJson(`/api/proposals/${selectedProposalId}/chat-draft`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${authToken}`,
+            },
+            body: JSON.stringify({
+              message,
+              outlineItemId: proposalChatContext?.selectedOutlineItemId || null,
+              draftId: proposalChatContext?.selectedDraftId || null,
+              currentDraftContent: proposalChatContext?.currentDraftContent || "",
+              mode: chatMode || "auto",
+              selectedSourceIds: proposalChatContext?.selectedSourceIds || [],
+              context: proposalChatContext
+            }),
+            retries: 2,
+            timeoutMs: 90000,
+          });
+        }
+
         if (attachments && attachments.length > 0) {
           const endpoint = "/api/chat/with-attachments";
           return await apiFetchJson(endpoint, {
@@ -1720,11 +1133,35 @@ function App() {
         }
       }
 
-      let aiContent =
-        aiResponse.reply ||
-        aiResponse.answer ||
-        "AI không có nội dung phản hồi.";
-      if (aiResponse.warnings && aiResponse.warnings.length > 0) {
+      let aiContent = "";
+      if (typeof aiResponse === "string") {
+        aiContent = aiResponse;
+      } else if (aiResponse && typeof aiResponse === "object") {
+        aiContent =
+          aiResponse.reply ||
+          aiResponse.message ||
+          aiResponse.data?.reply ||
+          aiResponse.data?.message ||
+          aiResponse.response ||
+          aiResponse.answer ||
+          aiResponse.messageToUser ||
+          aiResponse.summary ||
+          "";
+      }
+
+      if (!aiContent && aiResponse && typeof aiResponse === "object") {
+        try {
+          aiContent = JSON.stringify(aiResponse);
+        } catch {
+          aiContent = "AI không có nội dung phản hồi.";
+        }
+      }
+
+      if (!aiContent || aiContent.trim() === "") {
+        aiContent = "AI không có nội dung phản hồi.";
+      }
+
+      if (aiResponse && aiResponse.warnings && aiResponse.warnings.length > 0) {
         aiContent +=
           "\n\n**Cảnh báo:**\n" +
           aiResponse.warnings.map((w: string) => "- " + w).join("\n");
@@ -1733,25 +1170,54 @@ function App() {
       const assistantMessage: ChatMessage = {
         role: "assistant",
         content: aiContent,
-        taskDrafts: Array.isArray(aiResponse.taskDrafts)
+        taskDrafts: aiResponse && Array.isArray(aiResponse.taskDrafts)
           ? aiResponse.taskDrafts.map(normalizeChatTaskDraft)
           : [],
-        suggestedActions: Array.isArray(aiResponse.actions)
+        suggestedActions: aiResponse && Array.isArray(aiResponse.actions)
           ? aiResponse.actions
-          : Array.isArray(aiResponse.suggestedActions)
+          : aiResponse && Array.isArray(aiResponse.suggestedActions)
             ? aiResponse.suggestedActions
             : [],
-        status: aiResponse.taskDrafts?.length > 0 ? "task_review" : "normal",
+        status: aiResponse?.taskDrafts?.length > 0 ? "task_review" : "normal",
+        draftSuggestion: aiResponse?.draftSuggestion,
+        importPreview: aiResponse?.allocations ? aiResponse : undefined,
+        missingData: aiResponse?.missingData || [],
+        risks: aiResponse?.risks || [],
+        suggestedSources: aiResponse && Array.isArray(aiResponse.sources)
+          ? aiResponse.sources
+          : aiResponse && Array.isArray(aiResponse.suggestedSources)
+            ? aiResponse.suggestedSources
+            : [],
+        comments: aiResponse?.comments || [],
         createdAt: Date.now(),
       };
 
       setChatMessages((prev) => [...prev, assistantMessage]);
     } catch (err: any) {
-      console.error("AI Chat Error:", err);
-      const msg =
-        err?.name === "AbortError"
-          ? "AI phản hồi quá lâu (hết thời gian chờ). Vui lòng thử lại."
-          : err?.message || "Không thể kết nối với máy chủ AI.";
+      console.info("AI Chat Error (Handled):", err);
+      let msg = err?.message || "Không thể kết nối với máy chủ AI.";
+
+      if (err?.name === "AbortError") {
+        msg = "AI phản hồi quá lâu (hết thời gian chờ). Vui lòng thử lại.";
+      }
+
+      if (err?.errorType === "missing_outline_item") {
+        toast.error("Vui lòng chọn một mục đề cương để viết bản thảo.");
+        const el = document.getElementById("outline-item-selector");
+        if (el) {
+          el.scrollIntoView({ behavior: "smooth", block: "center" });
+          el.classList.add("ring-4", "ring-blue-400", "transition-all");
+          setTimeout(() => el.classList.remove("ring-4", "ring-blue-400"), 3000);
+        }
+        setIsChatLoading(false);
+        return;
+      }
+
+      if (err?.errorType === "not_draftable_item") {
+        toast.error("Đây là phần lớn. Vui lòng chọn một mục nội dung cụ thể bên trong.");
+        setIsChatLoading(false);
+        return;
+      }
 
       const isKeyMissing =
         msg.toLowerCase().includes("api key") ||
@@ -1814,6 +1280,51 @@ function App() {
         break;
       case "search_library":
         setActiveTab("library");
+        break;
+      case "apply_to_draft":
+      case "append_to_draft":
+        if (!user) throw new Error("Vui lòng đăng nhập.");
+        if (!selectedProposalId) throw new Error("Vui lòng mở đề án.");
+        if (!action.payload?.outlineItemId)
+          throw new Error("Vui lòng chọn mục đề cương.");
+
+        const isReplace = action.type === "apply_to_draft";
+        if (isReplace && proposalChatContext?.currentDraftContent) {
+          const confirmed = await requestConfirmAsync(
+            "Bản thảo hiện tại đã có nội dung. Anh/chị có chắc muốn thay thế bằng kết quả AI không?"
+          );
+          if (!confirmed) return;
+        }
+
+        const loadingId = toast.loading("Đang cập nhật bản thảo...");
+        try {
+          const content = action.payload.content;
+          const outlineItemId = action.payload.outlineItemId;
+
+          let finalContent = content;
+          if (
+            action.type === "append_to_draft" &&
+            proposalChatContext?.currentDraftContent
+          ) {
+            finalContent =
+              proposalChatContext.currentDraftContent + "\n\n" + content;
+          }
+
+          await updateDraftByOutlineItem(
+            user.uid,
+            selectedProposalId,
+            outlineItemId,
+            finalContent,
+          );
+          toast.success("Đã cập nhật bản thảo!", { id: loadingId });
+          
+          // Clear context draft content to reflect change
+          setProposalChatContext(prev => prev ? { ...prev, currentDraftContent: finalContent } : null);
+        } catch (err: any) {
+          toast.error("Lỗi khi cập nhật bản thảo: " + err.message, {
+            id: loadingId,
+          });
+        }
         break;
       case "save_document":
       case "create_tasks":
@@ -1929,7 +1440,7 @@ function App() {
   const [lastAiInput, setLastAiInput] = useState<string>("");
   const [lastAiOutput, setLastAiOutput] = useState<string>("");
 
-  const limitSourceContent = (sources: DocumentSource[]) => {
+  const limitSourceContent = (sources: DocumentSource[], currentTaskType?: string) => {
     const expanded: DocumentSource[] = [];
     for (const s of sources) {
       if (s.driveMimeType === "application/vnd.google-apps.folder") {
@@ -1951,6 +1462,12 @@ function App() {
       }
     }
 
+    // Determine max length per document based on task type to save quota
+    let maxLen = 6000;
+    if (currentTaskType === "CREATE_TITLES") maxLen = 2000;
+    if (currentTaskType === "REVIEW" || currentTaskType === "EDITORIAL_POLITICAL") maxLen = 8000;
+    if (currentTaskType === "RESIZE") maxLen = 8000;
+
     return expanded.map((s) => {
       const hasRealContent = s.content && s.content.trim().length > 50;
       let displayContent = s.content;
@@ -1961,10 +1478,10 @@ function App() {
         - Loại: ${s.type}
         - Nguồn: ${s.sourceType || "Không xác định"}
         - Mô tả: ${s.metadata?.description || "Không có mô tả"}`;
-      } else if (s.content && s.content.length > 6000) {
+      } else if (s.content && s.content.length > maxLen) {
         displayContent =
-          s.content.substring(0, 6000) +
-          "... (Nội dung đã được thu gọn để tối ưu hạn mức AI)";
+          s.content.substring(0, maxLen) +
+          "\n\n[Nội dung đã được rút gọn để tránh vượt hạn mức AI.]";
       }
 
       return {
@@ -1979,24 +1496,43 @@ function App() {
   const [recentLogs, setRecentLogs] = useState<any[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
 
+  const activeTasks = useMemo(() => {
+    const map = new Map<string, WorkTask>();
+    allTasks.forEach((t) => {
+      const id = t.id || `task-stable-${t.createdAt || Date.now()}-${t.title}`;
+      if (!map.has(id)) {
+        map.set(id, { ...t, id });
+      }
+    });
+    const dedupedList = Array.from(map.values());
+    return dedupedList.filter(t => {
+      if (!FEATURE_FLAGS.PROPOSAL_MODULE) {
+        if (t.proposalId || t.outlineItemId || t.title.startsWith("Thực hiện mục:")) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }, [allTasks]);
+
   const taskStats = useMemo(() => {
     return {
-      total: allTasks.length,
-      todo: allTasks.filter((t) => t.status === "todo").length,
-      doing: allTasks.filter((t) => t.status === "doing").length,
-      review: allTasks.filter((t) => t.status === "review").length,
-      blocked: allTasks.filter((t) => t.status === "blocked").length,
-      done: allTasks.filter((t) => t.status === "done").length,
-      overdue: allTasks.filter((t) => isTaskOverdue(t)).length,
-      upcoming: allTasks.filter((t) => isTaskUpcoming(t)).length,
-      highPriority: allTasks.filter(
+      total: activeTasks.length,
+      todo: activeTasks.filter((t) => t.status === "todo" || t.status === "pending").length,
+      doing: activeTasks.filter((t) => t.status === "doing" || t.status === "in_progress").length,
+      waiting: activeTasks.filter((t) => t.status === "waiting" || t.status === "review").length,
+      blocked: activeTasks.filter((t) => t.status === "blocked").length,
+      done: activeTasks.filter((t) => t.status === "done" || t.status === "completed").length,
+      overdue: activeTasks.filter((t) => isTaskOverdue(t)).length,
+      upcoming: activeTasks.filter((t) => isTaskUpcoming(t)).length,
+      highPriority: activeTasks.filter(
         (t) => t.priority === "urgent" || t.priority === "high",
       ).length,
     };
-  }, [allTasks]);
+  }, [activeTasks]);
 
   const filteredTasks = useMemo(() => {
-    return allTasks.filter((t) => {
+    return activeTasks.filter((t) => {
       const isSearchMatched =
         !taskFilters.search ||
         t.title.toLowerCase().includes(taskFilters.search.toLowerCase()) ||
@@ -2005,8 +1541,19 @@ function App() {
           .includes(taskFilters.search.toLowerCase()) ||
         t.assignee.toLowerCase().includes(taskFilters.search.toLowerCase());
 
-      let matchesStatus =
-        taskFilters.status === "all" || t.status === taskFilters.status;
+      let matchesStatus = taskFilters.status === "all" && t.status !== "archived";
+      if (taskFilters.status === "todo") matchesStatus = t.status === "todo" || t.status === "pending";
+      if (taskFilters.status === "developing" || taskFilters.status === "doing" || taskFilters.status === "in_progress") {
+        matchesStatus = t.status === "doing" || t.status === "in_progress";
+      }
+      if (taskFilters.status === "waiting" || taskFilters.status === "review") {
+        matchesStatus = t.status === "waiting" || t.status === "review";
+      }
+      if (taskFilters.status === "done") {
+        matchesStatus = t.status === "done" || t.status === "completed";
+      }
+      if (taskFilters.status === "archived") matchesStatus = t.status === "archived";
+      if (taskFilters.status === "blocked") matchesStatus = t.status === "blocked";
 
       const priorityFilterValue = taskFilters.priority;
       let matchesPriority = true;
@@ -2024,12 +1571,41 @@ function App() {
 
       if (taskFilters.status === "overdue") matchesStatus = isTaskOverdue(t);
       if (taskFilters.status === "upcoming") matchesStatus = isTaskUpcoming(t);
+      
+      // new filter: mytasks, today, thisweek
+      if (taskFilters.status === "mytasks") {
+        matchesStatus = user && t.assignee.toLowerCase().includes(user.email?.split("@")[0].toLowerCase() || "");
+      }
+      if (taskFilters.status === "today") {
+        const today = new Date().toISOString().split("T")[0];
+        matchesStatus = t.dueDate && t.dueDate.startsWith(today);
+      }
+      if (taskFilters.status === "thisweek") {
+        if (!t.dueDate) matchesStatus = false;
+        else {
+          const due = new Date(t.dueDate);
+          const now = new Date();
+          const day = now.getDay();
+          const diff = now.getDate() - day + (day === 0 ? -6 : 1);
+          const startOfWeek = new Date(now.setDate(diff));
+          const endOfWeek = new Date(now.setDate(startOfWeek.getDate() + 6));
+          matchesStatus = due >= startOfWeek && due <= endOfWeek;
+        }
+      }
+
+      const matchesProposal = 
+        taskFilters.proposalId === "all" || 
+        t.proposalId === taskFilters.proposalId;
 
       return (
-        isSearchMatched && matchesStatus && matchesPriority && matchesCategory
+        isSearchMatched && 
+        matchesStatus && 
+        matchesPriority && 
+        matchesCategory &&
+        matchesProposal
       );
     });
-  }, [allTasks, taskFilters]);
+  }, [activeTasks, taskFilters, user]);
 
   const filteredDocs = useMemo(() => {
     return documents.filter((d) => {
@@ -2719,7 +2295,13 @@ function App() {
               ? { ...s, ...sessionData, updatedAt: timestamp }
               : s,
           );
-          localStorage.setItem("vms_sessions", JSON.stringify(updated));
+          const lightUpdated = updated.map((s: any) => ({
+            ...s,
+            versions: s.versions?.map((v: any) => ({ ...v, content: undefined })),
+            currentOutput: s.currentOutput?.length > 1000 ? s.currentOutput.slice(0, 1000) + '... (truncated)' : s.currentOutput,
+            illustrations: s.illustrations?.map((i: any) => ({ ...i, dataUrl: undefined, url: i.dataUrl ? null : i.url }))
+          }));
+          localStorage.setItem("vms_sessions", JSON.stringify(lightUpdated));
           return updated as ProjectSession[];
         });
         return existingId;
@@ -2733,7 +2315,13 @@ function App() {
         } as ProjectSession;
         setSessions((prev) => {
           const updated = [newSession, ...prev];
-          localStorage.setItem("vms_sessions", JSON.stringify(updated));
+          const lightUpdated = updated.map((s: any) => ({
+            ...s,
+            versions: s.versions?.map((v: any) => ({ ...v, content: undefined })),
+            currentOutput: s.currentOutput?.length > 1000 ? s.currentOutput.slice(0, 1000) + '... (truncated)' : s.currentOutput,
+            illustrations: s.illustrations?.map((i: any) => ({ ...i, dataUrl: undefined, url: i.dataUrl ? null : i.url }))
+          }));
+          localStorage.setItem("vms_sessions", JSON.stringify(lightUpdated));
           return updated;
         });
         return id;
@@ -2835,25 +2423,24 @@ function App() {
             .trim()
             .replace(/[\r\n]/g, "")
         : "";
-      const response = await fetch("/api/drive/sync-public-folder", {
+      const data = await apiFetchJson<any>("/api/drive/sync-public-folder", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
         body: JSON.stringify({ folderId, collectionId: activeLibraryId }),
       });
 
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Lỗi khi đồng bộ Drive");
+      const { added = 0, updated = 0, missing = 0, failed = 0, analyzed = 0, skippedAnalysis = 0 } = data.stats || {};
 
-      if (data.stats.added > 0 || data.stats.updated > 0) {
+      if (failed > 0) {
+        toast.error(`Đồng bộ có lỗi: Tải thêm ${added}, Cập nhật ${updated}, Thất bại ${failed}, Bỏ qua phân tích ${skippedAnalysis}`);
+      } else if (added > 0 || updated > 0) {
         toast.success(
-          `Đã đồng bộ ${folderName}: ${data.stats.added} mới, ${data.stats.updated} cập nhật.`,
+          `Đã đồng bộ ${folderName}: ${added} mới, ${updated} cập nhật.`
         );
       } else {
-        toast.success("Dữ liệu thư mục đã được cập nhật bản mới nhất.");
+        toast.success(`Dữ liệu thư mục đã được cập nhật bản mới nhất. (Thiếu: ${missing}, Lỗi: ${failed})`);
       }
+
+      // Realtime listener handles rendering updates
 
       await logActivity({
         module: "library",
@@ -2862,7 +2449,7 @@ function App() {
         entityId: folderId,
         entityTitle: folderName,
         title: "Đồng bộ Google Drive",
-        summary: `Đã đồng bộ thư mục "${folderName}": thêm ${data.stats?.added || 0}, cập nhật ${data.stats?.updated || 0}, lỗi ${data.stats?.failed || 0}.`,
+        summary: `Đã đồng bộ thư mục "${folderName}": thêm ${added}, cập nhật ${updated}, lỗi ${failed}.`,
         metadata: { source: "drive_sync" },
       });
     } catch (err: any) {
@@ -2876,6 +2463,7 @@ function App() {
   const handleAnalyzeDocument = async (docId: string) => {
     if (!user) return;
     setIsAnalyzing(docId);
+
     try {
       const rawToken = await user.getIdToken();
       const token = rawToken
@@ -2895,7 +2483,7 @@ function App() {
         const analysis = data.analysis || {};
         const summaryData = analysis.summary || data.document?.summary;
         const docUpdates: any = {
-          contentStatus: data.document?.contentStatus || "extracted",
+          contentStatus: "extracted", // Dùng extracted hoặc summary_only 
           updatedAt: Date.now(),
         };
         if (summaryData) docUpdates.summary = summaryData;
@@ -2935,7 +2523,25 @@ function App() {
       });
     } catch (err: any) {
       console.error("Analyze Error:", err);
-      toast.error("Lỗi phân tích: " + err.message);
+      let status: any = "ai_error";
+      let msg = err.message || "Đã xảy ra lỗi khi phân tích.";
+
+      if (err.errorType === "quota_exceeded" || err.status === 429) {
+        status = "quota_exceeded";
+        msg = "Đã vượt hạn mức AI tạm thời. Nguồn đã được lưu, vui lòng phân tích lại sau.";
+      } else if (err.errorType === "ai_overloaded" || err.status === 503) {
+        status = "ai_error";
+        msg = "AI hiện quá tải, có thể phân tích lại sau.";
+      }
+
+      setDocuments((prev) =>
+        prev.map((d) => (d.id === docId ? { ...d, contentStatus: status } : d)),
+      );
+      if (previewDocument?.id === docId) {
+        setPreviewDocument((prev) => (prev ? { ...prev, contentStatus: status } : null));
+      }
+
+      toast.error(msg);
     } finally {
       setIsAnalyzing(null);
     }
@@ -2994,10 +2600,6 @@ function App() {
       );
       if (previewDocument?.id === documentId) {
         setPreviewDocument((prev) => (prev ? { ...prev, ...updates } : null));
-        if (data.needsAnalyze) {
-          setDocumentDetailTab("ai");
-          handleAnalyzeDocument(documentId);
-        }
       }
 
       await logActivity({
@@ -3030,6 +2632,51 @@ function App() {
     }
   };
 
+  useEffect(() => {
+    // Initial tool sync
+    if (selectedEditorialToolId) {
+      const tool = getEditorialTool(selectedEditorialToolId as any);
+      if (tool) {
+        setTaskType(tool.taskType);
+        setOutputFormat(tool.outputFormat);
+      }
+    }
+  }, []);
+
+  const handleToolChange = (toolId: string) => {
+    setSelectedEditorialToolId(toolId);
+    const tool = getEditorialTool(toolId as any);
+    if (tool) {
+      setTaskType(tool.taskType);
+      setOutputFormat(tool.outputFormat);
+      if (tool.requiresDocumentKind && tool.defaultDocumentKind) {
+        setEditorialKind(tool.defaultDocumentKind);
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === "proposals" && !FEATURE_FLAGS.PROPOSAL_MODULE) {
+      setActiveTab("home");
+    }
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (!user || !FEATURE_FLAGS.PROPOSAL_MODULE) {
+      setProposals([]);
+      return;
+    }
+    const fetchProposals = async () => {
+      try {
+        const data = await listProposals(user.uid);
+        setProposals(data);
+      } catch (err) {
+        console.error("Failed to fetch proposals for App:", err);
+      }
+    };
+    fetchProposals();
+  }, [user]);
+
   const outputRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -3038,7 +2685,13 @@ function App() {
   }, [documents]);
 
   useEffect(() => {
-    localStorage.setItem("vms_sessions", JSON.stringify(sessions));
+    const lightSessions = sessions.map((s: any) => ({
+      ...s,
+      versions: s.versions?.map((v: any) => ({ ...v, content: undefined })),
+      currentOutput: s.currentOutput?.length > 1000 ? s.currentOutput.slice(0, 1000) + '... (truncated)' : s.currentOutput,
+      illustrations: s.illustrations?.map((i: any) => ({ ...i, dataUrl: undefined, url: i.dataUrl ? null : i.url }))
+    }));
+    localStorage.setItem("vms_sessions", JSON.stringify(lightSessions));
   }, [sessions]);
 
   const saveCurrentToSession = async (newOutput?: string) => {
@@ -3056,10 +2709,11 @@ function App() {
     const timestamp = Date.now();
     const newVersion: ArticleVersion = {
       id: Math.random().toString(36).substr(2, 9),
+      sessionId: currentSessionId || '',
+      versionNumber: (sessions.find(s => s.id === currentSessionId)?.versions?.length || 0) + 1,
       content: finalOutput,
-      timestamp,
+      createdAt: timestamp,
       note: isEditing ? "Chỉnh sửa bởi người dùng" : "Tạo mới bởi AI",
-      illustrations,
     };
 
     const sessionData: Omit<ProjectSession, "id"> = {
@@ -3069,34 +2723,72 @@ function App() {
       style,
       format: outputFormat,
       documentIds: selectedSourceDocIds,
-      currentOutput: finalOutput,
-      versions: [] as ArticleVersion[],
-      illustrations,
+      latestVersionId: newVersion.id,
+      latestPreview: finalOutput.substring(0, 200),
       createdAt:
         sessions.find((s) => s.id === currentSessionId)?.createdAt ||
         Date.now(),
       updatedAt: Date.now(),
     };
 
-    if (currentSessionId) {
-      const currentSess = sessions.find((s) => s.id === currentSessionId);
-      sessionData.versions = [newVersion, ...(currentSess?.versions || [])];
-      await persistSession(sessionData, currentSessionId);
-    } else {
-      sessionData.versions = [newVersion];
-      const newId = await persistSession(sessionData);
+    if (currentSessionId && user) {
+      // Use SessionService for subcollections
+      await SessionService.saveVersion(user.uid, currentSessionId, newVersion);
+      await SessionService.updateSession(user.uid, currentSessionId, sessionData);
+      
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.id === currentSessionId
+            ? { ...s, ...sessionData, updatedAt: Date.now() }
+            : s,
+        ),
+      );
+    } else if (user) {
+      const newId = await SessionService.createSession(user.uid, sessionData, [newVersion]);
       if (newId) setCurrentSessionId(newId);
+      
+      const newFullSession = { ...sessionData, id: newId || 'temp', versions: [newVersion] };
+      setSessions(prev => [newFullSession as ProjectSession, ...prev]);
     }
   };
 
-  const loadSession = (session: ProjectSession) => {
+  const loadSession = async (session: ProjectSession) => {
     setCurrentSessionId(session.id);
     setTaskType(session.taskType);
     setStyle(session.style);
     setInput(session.title);
-    setOutput(session.currentOutput);
+    
+    if (user) {
+      try {
+        const versions = await SessionService.getVersions(user.uid, session.id);
+        const illustrationsList = await SessionService.getIllustrations(user.uid, session.id);
+        
+        let displayOutput = "";
+        if (versions.length > 0) {
+          displayOutput = versions[0].content;
+        } else {
+          // Fallback for unmigrated sessions
+          displayOutput = session.currentOutput || "";
+        }
+        
+        setOutput(displayOutput);
+        
+        if (illustrationsList.length > 0) {
+          setIllustrations(illustrationsList as any);
+        } else {
+          // Fallback for unmigrated sessions
+          setIllustrations(session.illustrations as any || []);
+        }
+        
+        // Update local session state with loaded sub-data
+        setSessions(prev => prev.map(s => s.id === session.id ? { ...s, versions, illustrations: (illustrationsList.length > 0 ? illustrationsList : (s.illustrations || [])) as any } : s));
+      } catch (err) {
+        console.error("Failed to load session details:", err);
+        setOutput(session.currentOutput || ""); 
+      }
+    }
+
     setSelectedSourceDocIds(session.documentIds);
-    setIllustrations(session.illustrations || []);
     setActiveTab("editor");
   };
 
@@ -3120,62 +2812,51 @@ function App() {
       const currentSess = sessions.find((s) => s.id === currentSessionId);
       const isCurrentSlideSession =
         currentSessionId && currentSess?.taskType === "SLIDE_OUTLINE";
+      
       let actualSessionId = isCurrentSlideSession
         ? currentSessionId
-        : undefined;
+        : "";
       let versionNumber = 1;
 
-      if (!actualSessionId) {
-        actualSessionId = `slide-${Date.now()}`;
-      } else if (currentSess) {
+      if (currentSess && isCurrentSlideSession) {
         versionNumber = (currentSess.versions?.length || 0) + 1;
       }
 
-      const sessionRef = doc(
-        db,
-        "users",
-        user.uid,
-        "sessions",
-        actualSessionId,
-      );
-
-      const newVersion = {
+      const newVersion: ArticleVersion = {
         id: `v-${Date.now()}`,
-        version: versionNumber,
+        sessionId: actualSessionId || '',
+        versionNumber,
         content: JSON.stringify(result, null, 2),
-        structuredContent: result,
+        // we store the structured result in content as JSON, or we could add a field if we wanted
+        note: `Slide outline v${versionNumber}`,
         createdAt: Date.now(),
       };
 
-      if (!isCurrentSlideSession || !currentSessionId) {
-        const sessionData = {
-          id: actualSessionId,
-          taskType: "SLIDE_OUTLINE",
-          style: result.style || "chuyen_nghiep",
-          format: "SLIDE",
-          title: result.title,
-          currentOutput: JSON.stringify(result, null, 2),
-          documentIds: selectedSourceDocIds,
-          versions: [newVersion],
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-        };
-        await setDoc(sessionRef, sessionData);
-        setSessions((prev) => [sessionData as any, ...prev]);
-        setCurrentSessionId(actualSessionId);
-      } else {
-        const updatePayload = {
-          title: result.title,
-          currentOutput: JSON.stringify(result, null, 2),
-          documentIds: selectedSourceDocIds,
-          versions: [newVersion, ...(currentSess?.versions || [])],
-          updatedAt: Date.now(),
-        };
+      const sessionData: Omit<ProjectSession, "id"> = {
+        taskType: "SLIDE_OUTLINE",
+        style: result.style || "chuyen_nghiep",
+        format: "SLIDE",
+        title: result.title,
+        latestVersionId: newVersion.id,
+        latestPreview: result.mainMessage || result.title,
+        documentIds: selectedSourceDocIds,
+        createdAt: isCurrentSlideSession && currentSess ? currentSess.createdAt : Date.now(),
+        updatedAt: Date.now(),
+      };
 
-        await updateDoc(sessionRef, updatePayload);
+      if (!isCurrentSlideSession || !currentSessionId) {
+        const newId = await SessionService.createSession(user.uid, sessionData, [newVersion]);
+        if (newId) {
+          setCurrentSessionId(newId);
+          setSessions((prev) => [{ ...sessionData, id: newId, versions: [newVersion] } as ProjectSession, ...prev]);
+        }
+      } else {
+        await SessionService.saveVersion(user.uid, currentSessionId, newVersion);
+        await SessionService.updateSession(user.uid, currentSessionId, sessionData);
+        
         setSessions((prev) =>
           prev.map((s) =>
-            s.id === actualSessionId ? { ...s, ...updatePayload } : s,
+            s.id === currentSessionId ? { ...s, ...sessionData, versions: [newVersion, ...(s.versions || [])] } : s,
           ),
         );
       }
@@ -3184,7 +2865,7 @@ function App() {
         action: isCurrentSlideSession ? "updated" : "created",
         module: "editorial",
         entityType: "editorial_session",
-        entityId: actualSessionId,
+        entityId: currentSessionId || 'new',
         entityTitle: result.title,
         title: "Lưu phác thảo Slide",
         summary: `Đã lưu phác thảo slide "${result.title}" gồm ${result.slideCount} slide.`,
@@ -3479,7 +3160,22 @@ function App() {
   };
 
   const handleProcess = async () => {
-    if (!input.trim() && selectedSourceDocIds.length === 0) return;
+    const currentTool = getEditorialTool(selectedEditorialToolId as any);
+
+    if (!input.trim() && selectedSourceDocIds.length === 0) {
+      toast.error("Vui lòng nhập nội dung hoặc chọn tài liệu nguồn trước khi xử lý.");
+      return;
+    }
+
+    if (currentTool?.taskType === 'WRITE_NEW' && !input.trim() && selectedSourceDocIds.length === 0) {
+      toast.error("Vui lòng nhập bối cảnh/yêu cầu trước khi soạn thảo văn bản mới.");
+      return;
+    }
+
+    if (['REVIEW', 'RESIZE', 'SYNTHESIZE', 'EDITORIAL_POLITICAL'].includes(currentTool?.taskType || '') && !input.trim() && selectedSourceDocIds.length === 0) {
+      toast.error("Vui lòng cung cấp văn bản đầu vào hoặc chọn tài liệu nguồn cần xử lý.");
+      return;
+    }
 
     // Cache check
     const currentInputSignature = `${taskType}-${style}-${outputFormat}-${input.substring(0, 500)}-${selectedSourceDocIds.join(",")}`;
@@ -3558,14 +3254,15 @@ function App() {
         outputRef.current.scrollIntoView({ behavior: "smooth" });
       }
     } catch (err: any) {
-      const isQuota =
-        err?.message?.includes("429") || err?.message?.includes("Hạn mức");
-      const msg = isQuota
-        ? "Hệ thống AI đang tạm thời hết hạn mức. Vui lòng thử lại sau 1 phút hoặc biên tập bài viết thủ công."
-        : err?.message ||
-          "Đã xảy ra lỗi khi xử lý. Vui lòng kiểm tra lại kết nối hoặc API Key.";
+      if (err?.isQuota && err?.retryAfterSeconds) {
+         setAiCooldownUntil(Date.now() + err.retryAfterSeconds * 1000);
+      }
+      const msg = err?.message || "Đã xảy ra lỗi khi xử lý từ hệ thống AI.";
       setError(msg);
-      toast.error(msg);
+      toast.error(msg, { duration: 6000 });
+      if (msg.includes("không khả dụng")) {
+         toast("Vào Cài đặt/Tài khoản → AI Models để kiểm tra lại model đang chọn.", { icon: "ℹ️", duration: 8000 });
+      }
     } finally {
       setIsLoading(false);
     }
@@ -3992,6 +3689,15 @@ function App() {
     setActiveModal("task-edit");
   };
 
+  const openTaskEditor = (task: WorkTask | null) => {
+    if (task) {
+      setEditingTask(task);
+      setActiveModal("task-edit");
+    } else {
+      openCreateTask();
+    }
+  };
+
   const openAiTaskBuilder = () => {
     closeMobileDrawer();
     setActiveTab("editor");
@@ -4009,6 +3715,90 @@ function App() {
   const openSettings = () => {
     closeMobileDrawer();
     setActiveTab("settings");
+  };
+
+  const handleAnalyzeTasks = async (content: string) => {
+    try {
+      const authToken = await getChatAuthToken();
+      if (!authToken) {
+        toast.error("Vui lòng đăng nhập lại để sử dụng AI.");
+        return { success: false, errorType: "unauthorized", message: "Vui lòng đăng nhập lại để sử dụng AI." };
+      }
+      setIsAnalyzing("tasks");
+      const payload = {
+        message: `Phân tích văn bản sau và tách thành các công việc (nhiệm vụ). Trả về mảng JSON chứa các object:
+- title: (string) Tên công việc ngắn gọn
+- description: (string) Chi tiết yêu cầu
+- assignee: (string) Người xử lý (nếu có, hoặc rỗng)
+- priority: (string) Chọn 1 trong: low, medium, high, urgent
+- categoryCode: (string) Chọn 1 bộ phận phù hợp: LV_DH, LV_AT, LV_KT, LV_TC, LV_NS, LV_HC, LV_KD. (Mặc định LV_DH)
+- dueDate: (string) ISO Format yyyy-mm-dd nếu có hạn
+
+Trả về CHỈ mảng JSON, KHÔNG format markdown, ví dụ:
+[{"title":"...","description":"...","assignee":"...","priority":"...","categoryCode":"..."}]
+
+Nội dung văn bản:\n` + content,
+        mode: "task_extraction"
+      };
+
+      const res = await apiFetchJson("/api/ai/chat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${authToken}`
+        },
+        body: JSON.stringify(payload)
+      });
+      
+      let text = "";
+      if (res.taskDrafts && res.taskDrafts.length > 0) {
+        text = JSON.stringify(res.taskDrafts);
+      } else {
+        text = res.reply || res.response || res.message || "";
+      }
+
+      if (!text) {
+        return { success: false, errorType: "empty_response", message: "AI trả về rỗng." };
+      }
+      
+      return { success: true, text };
+    } catch (e: any) {
+      console.info("AI Task extraction error (Handled):", e);
+      const errorType = e.errorType || e.errorCode || "ai_error";
+      const message = e.message || "Lỗi khi gọi AI phân tích công việc.";
+      toast.error(message);
+      return { success: false, errorType, message };
+    } finally {
+      setIsAnalyzing(null);
+    }
+  };
+
+  const saveAiTasks = async (tasks: any[]) => {
+    if (!user) return;
+    try {
+      const batch = writeBatch(db);
+      tasks.forEach(t => {
+        const ref = doc(collection(db, "users", user.uid, "tasks"));
+        batch.set(ref, {
+          ...t,
+          id: ref.id,
+          title: t.title || "Công việc không tên",
+          priority: t.priority || "medium",
+          categoryCode: t.categoryCode || "LV_DH",
+          assignee: t.assignee || "",
+          dueDate: t.dueDate || "",
+          description: t.description || "",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          status: 'todo',
+          source: 'ai'
+        });
+      });
+      await batch.commit();
+      toast.success(`Đã lưu ${tasks.length} công việc!`);
+    } catch (e: any) {
+      toast.error("Lưu công việc thất bại: " + e.message);
+    }
   };
 
   const handleDeleteTask = async (taskId: string) => {
@@ -4238,6 +4028,49 @@ function App() {
 
   const [authMode, setAuthMode] = useState<"login" | "register">("login");
 
+  const handleApplyDraftImport = async (allocations: DraftImportAllocation[]) => {
+    if (!user || !selectedProposalId) return;
+    try {
+      setIsChatLoading(true);
+      const token = await user.getIdToken();
+      const res = await apiFetchJson(`/api/proposals/${selectedProposalId}/draft/apply-import-allocation`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ allocations })
+      });
+
+      if (!res.success) throw new Error(res.message);
+
+      toast.success(`Đã áp dụng thành công ${res.appliedCount} mục bản thảo.`);
+      
+      // Update chat to remove the preview or mark it as applied
+      setChatMessages(prev => {
+        const last = prev[prev.length - 1];
+        if (last && last.role === 'assistant' && last.importPreview) {
+          return [
+            ...prev.slice(0, -1),
+            { 
+              ...last, 
+              importPreview: undefined, 
+              content: `${last.content}\n\n✅ **Đã áp dụng ${res.appliedCount} mục bản thảo vào đề án.**` 
+            }
+          ];
+        }
+        return prev;
+      });
+
+      // We might need to refresh proposal data if the user is looking at drafts
+      // For now, toast is enough, or we could trigger a global refresh if needed.
+    } catch (err: any) {
+      toast.error(err.message || "Lỗi khi áp dụng bản thảo");
+    } finally {
+      setIsChatLoading(false);
+    }
+  };
+
   const [confirmDialog, setConfirmDialog] = useState<{
     message: string;
     resolve: (val: boolean) => void;
@@ -4301,6 +4134,18 @@ function App() {
       setSessions([]);
       setCurrentSessionId(null);
       setActiveModal(null);
+      
+      // Clear sensitive local cache
+      localStorage.removeItem('vms_documents');
+      localStorage.removeItem('vms_sessions');
+      localStorage.removeItem('vms_chat_history'); // generic cache keys
+
+      // Also remove any specific user chat caches
+      for (const key of Object.keys(localStorage)) {
+        if (key.startsWith('vms_chat_') || key.startsWith('vms_session_')) {
+          localStorage.removeItem(key);
+        }
+      }
     } catch (err: any) {
       setError(`Lỗi Đăng Xuất: ${err.message}`);
     }
@@ -4803,7 +4648,7 @@ function App() {
           {/* Auth Modal Inside Landing */}
           <AnimatePresence>
             {activeModal === "auth" && (
-              <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 overflow-y-auto overscroll-contain">
+              <div role="dialog" aria-modal="true" className="fixed inset-0 z-[100] flex items-center justify-center p-4 overflow-y-auto overscroll-contain">
                 <motion.div
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
@@ -5067,7 +4912,7 @@ function App() {
       <aside
         className={cn(
           "fixed inset-y-0 left-0 z-[50] bg-[#002D56] text-white transition-all duration-300 ease-in-out shadow-lg flex flex-col",
-          isSidebarCollapsed
+          isEffectiveSidebarCollapsed
             ? "lg:w-20 w-[280px]"
             : "lg:w-72 xl:w-80 w-[280px]",
           isSidebarOpen
@@ -5079,12 +4924,12 @@ function App() {
         <div
           className={cn(
             "relative h-24 flex items-center border-b border-white/5 shrink-0 gap-3 px-6",
-            isSidebarCollapsed && !isSidebarOpen
+            isEffectiveSidebarCollapsed && !isSidebarOpen
               ? "justify-center px-0"
               : "justify-between",
           )}
         >
-          {(!isSidebarCollapsed || isSidebarOpen) && (
+          {(!isEffectiveSidebarCollapsed || isSidebarOpen) && (
             <div className="flex items-center gap-4 flex-1 min-w-0">
               <div className="bg-gradient-to-br from-blue-400 to-blue-600 p-2.5 rounded-xl text-white shadow-lg shadow-blue-900/50 shrink-0 transform -rotate-3 transition-transform hover:rotate-0">
                 <Ship className="w-6 h-6" />
@@ -5107,7 +4952,7 @@ function App() {
             </div>
           )}
 
-          {isSidebarCollapsed && !isSidebarOpen && (
+          {isEffectiveSidebarCollapsed && !isSidebarOpen && (
             <div
               className="bg-white/10 p-2 rounded-md backdrop-blur-md border border-white/20 shrink-0 cursor-pointer hover:bg-white/20 transition-all group"
               onClick={() => setIsSidebarCollapsed(false)}
@@ -5119,7 +4964,7 @@ function App() {
           )}
 
           {/* Sidebar Toggle/Close */}
-          {(!isSidebarCollapsed || isSidebarOpen) && (
+          {(!isEffectiveSidebarCollapsed || isSidebarOpen) && (
             <div className="flex items-center shrink-0">
               <button
                 onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
@@ -5152,6 +4997,7 @@ function App() {
               ).length,
             },
             { id: "editor", label: "Trợ lý biên tập", icon: Edit3 },
+            ...(FEATURE_FLAGS.PROPOSAL_MENU ? [{ id: "proposals", label: "Quản lý Đề án", icon: Briefcase }] : []),
             { id: "library", label: "Kho tư liệu", icon: Database },
             { id: "history", label: "Lịch sử bài viết", icon: History },
             { id: "activity", label: "Nhật ký hoạt động", icon: Clock },
@@ -5176,7 +5022,7 @@ function App() {
                   ? "bg-white text-[#002D56] shadow-xl shadow-blue-900/20 active:scale-95"
                   : "text-white/60 hover:bg-white/5 hover:text-white",
               )}
-              title={isSidebarCollapsed ? item.label : ""}
+              title={isEffectiveSidebarCollapsed ? item.label : ""}
             >
               <item.icon
                 className={cn(
@@ -5184,7 +5030,7 @@ function App() {
                   activeTab === item.id ? "text-[#002D56]" : "text-white/40",
                 )}
               />
-              {(!isSidebarCollapsed || isSidebarOpen) && (
+              {(!isEffectiveSidebarCollapsed || isSidebarOpen) && (
                 <span className="text-sm font-bold truncate leading-none uppercase tracking-tight">
                   {item.label}
                 </span>
@@ -5196,7 +5042,7 @@ function App() {
                     activeTab === item.id
                       ? "bg-red-500 text-white -top-1 -right-1"
                       : "bg-red-500 text-white top-2 right-2",
-                    isSidebarCollapsed && activeTab !== item.id
+                    isEffectiveSidebarCollapsed && activeTab !== item.id
                       ? "top-1 right-1"
                       : "",
                   )}
@@ -5214,7 +5060,7 @@ function App() {
           ))}
 
           <div className="pt-6 mt-6 border-t border-white/5 space-y-2">
-            {(!isSidebarCollapsed || isSidebarOpen) && (
+            {(!isEffectiveSidebarCollapsed || isSidebarOpen) && (
               <p className="px-4 text-[10px] font-semibold uppercase text-white/30 tracking-wide mb-3">
                 Tác vụ nhanh
               </p>
@@ -5223,12 +5069,12 @@ function App() {
               onClick={createNewSession}
               className={cn(
                 "w-full flex items-center gap-3 px-4 py-3.5 rounded-md bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500 hover:text-white transition-all group border border-transparent hover:border-emerald-500/50",
-                isSidebarCollapsed ? "justify-center" : "",
+                isEffectiveSidebarCollapsed ? "justify-center" : "",
               )}
-              title={isSidebarCollapsed ? "Bài viết mới" : ""}
+              title={isEffectiveSidebarCollapsed ? "Bài viết mới" : ""}
             >
               <FilePlus className="w-5 h-5 shrink-0" />
-              {(!isSidebarCollapsed || isSidebarOpen) && (
+              {(!isEffectiveSidebarCollapsed || isSidebarOpen) && (
                 <span className="text-sm font-semibold">Bài viết mới</span>
               )}
             </button>
@@ -5236,12 +5082,12 @@ function App() {
               onClick={openCreateTask}
               className={cn(
                 "w-full flex items-center gap-3 px-4 py-3.5 rounded-md bg-blue-500/10 text-blue-400 hover:bg-blue-500 hover:text-white transition-all group border border-transparent hover:border-blue-500/50",
-                isSidebarCollapsed && !isSidebarOpen ? "justify-center" : "",
+                isEffectiveSidebarCollapsed && !isSidebarOpen ? "justify-center" : "",
               )}
-              title={isSidebarCollapsed ? "Thêm việc" : ""}
+              title={isEffectiveSidebarCollapsed ? "Thêm việc" : ""}
             >
               <CheckSquare className="w-5 h-5 shrink-0" />
-              {(!isSidebarCollapsed || isSidebarOpen) && (
+              {(!isEffectiveSidebarCollapsed || isSidebarOpen) && (
                 <span className="text-sm font-semibold">Thêm việc</span>
               )}
             </button>
@@ -5249,12 +5095,12 @@ function App() {
               onClick={openAiTaskBuilder}
               className={cn(
                 "w-full flex items-center gap-3 px-4 py-3.5 rounded-md bg-orange-500/10 text-orange-400 hover:bg-orange-500 hover:text-white transition-all group border border-transparent hover:border-orange-500/50",
-                isSidebarCollapsed && !isSidebarOpen ? "justify-center" : "",
+                isEffectiveSidebarCollapsed && !isSidebarOpen ? "justify-center" : "",
               )}
-              title={isSidebarCollapsed ? "Tạo công việc bằng AI" : ""}
+              title={isEffectiveSidebarCollapsed ? "Tạo công việc bằng AI" : ""}
             >
               <Bot className="w-5 h-5 shrink-0" />
-              {(!isSidebarCollapsed || isSidebarOpen) && (
+              {(!isEffectiveSidebarCollapsed || isSidebarOpen) && (
                 <span className="text-sm font-semibold">Tạo công việc AI</span>
               )}
             </button>
@@ -5267,13 +5113,13 @@ function App() {
             <div
               className={cn(
                 "flex items-center gap-3 p-2 rounded-md bg-white/5 border border-white/10",
-                isSidebarCollapsed ? "justify-center" : "",
+                isEffectiveSidebarCollapsed ? "justify-center" : "",
               )}
             >
               <div className="w-8 h-8 rounded-md bg-white/10 flex items-center justify-center text-xs font-semibold text-white shrink-0 border border-white/10 uppercase">
                 {profile?.avatarText || user.email?.[0]}
               </div>
-              {(!isSidebarCollapsed || isSidebarOpen) && (
+              {(!isEffectiveSidebarCollapsed || isSidebarOpen) && (
                 <div className="flex-1 min-w-0">
                   <p className="text-[10px] font-semibold text-white/40 tracking-normal leading-none mb-1">
                     Thành viên
@@ -5283,7 +5129,7 @@ function App() {
                   </p>
                 </div>
               )}
-              {(!isSidebarCollapsed || isSidebarOpen) && (
+              {(!isEffectiveSidebarCollapsed || isSidebarOpen) && (
                 <button
                   onClick={() => {
                     closeMobileDrawer();
@@ -5300,17 +5146,17 @@ function App() {
               onClick={() => setActiveModal("auth")}
               className={cn(
                 "w-full flex items-center gap-3 px-4 py-3.5 rounded-md bg-white/10 text-white font-bold hover:bg-white/20 transition-all border border-white/10",
-                isSidebarCollapsed && !isSidebarOpen ? "justify-center" : "",
+                isEffectiveSidebarCollapsed && !isSidebarOpen ? "justify-center" : "",
               )}
             >
               <User className="w-5 h-5 shrink-0" />
-              {(!isSidebarCollapsed || isSidebarOpen) && (
+              {(!isEffectiveSidebarCollapsed || isSidebarOpen) && (
                 <span className="text-sm">Đăng nhập</span>
               )}
             </button>
           )}
 
-          {(!isSidebarCollapsed || isSidebarOpen) && (
+          {(!isEffectiveSidebarCollapsed || isSidebarOpen) && (
             <div className="mt-4 flex items-center justify-between px-2">
               <div
                 className="flex items-center gap-2"
@@ -5434,12 +5280,15 @@ function App() {
       <div
         className={cn(
           "flex-1 flex flex-col h-dvh transition-all duration-300 ease-in-out min-w-0 overflow-x-hidden pt-16 lg:pt-0",
-          isSidebarCollapsed ? "lg:ml-20" : "lg:ml-72 xl:ml-80",
+          isEffectiveSidebarCollapsed ? "lg:ml-20" : "lg:ml-72 xl:ml-80",
         )}
       >
         {/* Main Viewport */}
-        <main className="flex-1 overflow-y-auto overscroll-contain overflow-x-hidden p-4 md:p-6 lg:p-10 custom-scrollbar pb-[calc(24px+env(safe-area-inset-bottom))] md:pb-10 w-full min-w-0">
-          <div className="max-w-6xl mx-auto space-y-8 w-full min-w-0">
+        <main className="flex-1 overflow-y-auto overscroll-contain overflow-x-hidden p-4 md:p-6 lg:p-10 custom-scrollbar pb-24 sm:pb-32 w-full min-w-0">
+          <div className={cn(
+            "mx-auto space-y-8 w-full min-w-0",
+            activeTab === 'proposals' && selectedProposalId ? "max-w-none px-2" : "max-w-6xl"
+          )}>
             <AnimatePresence mode="wait">
               <motion.div
                 key={activeTab}
@@ -5456,2847 +5305,163 @@ function App() {
                   }
                 >
                   {activeTab === "home" ? (
-                    <div className="space-y-8 pb-10 relative">
-                      {/* Background Decorative Blob */}
-                      <div className="absolute -top-24 -right-24 w-64 h-64 bg-blue-500/5 rounded-full blur-3xl pointer-events-none" />
-
-                      {/* Welcome Header */}
-                      <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 relative z-10">
-                        <motion.div
-                          initial={{ opacity: 0, x: -20 }}
-                          animate={{ opacity: 1, x: 0 }}
-                        >
-                          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#002D56] text-white text-[10px] font-bold uppercase tracking-wider mb-4">
-                            <Zap className="w-3 h-3 text-yellow-400" /> Hệ thống
-                            đang vận hành tốt
-                          </div>
-                          <h2 className="text-3xl sm:text-4xl font-bold text-slate-800 tracking-tight mb-2 leading-[1.1]">
-                            {getGreeting()},{" "}
-                            <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-indigo-600">
-                              {getUserDisplayName(user, profile)
-                                .split(" ")
-                                .pop()}
-                              !
-                            </span>
-                          </h2>
-                          <p className="text-slate-500 font-bold text-sm uppercase tracking-tight">
-                            Cùng kiến tạo những nội dung nghiệp vụ xuất sắc hôm
-                            nay.
-                          </p>
-                        </motion.div>
-                      </div>
-
-                      {/* System Status Grid */}
-                      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                        {[
-                          {
-                            label: "Cloud Firestore",
-                            active: health?.firestoreReady,
-                            icon: Database,
-                          },
-                          {
-                            label: "Hoa Tiêu AI Core",
-                            active: isAiCoreActive,
-                            icon: Bot,
-                          },
-                          {
-                            label: "Workspace Drive",
-                            active: health?.hasGoogleDriveKey,
-                            icon: "DriveIcon",
-                          },
-                          {
-                            label: "Bảo mật dữ liệu",
-                            active: health?.hasEncryptionSecret,
-                            icon: ShieldCheck,
-                          },
-                        ].map((sys, idx) => {
-                          const IconComp =
-                            sys.icon === "DriveIcon"
-                              ? HardDrive
-                              : (sys.icon as any);
-                          return (
-                            <div
-                              key={idx}
-                              className="flex items-center gap-3 bg-white p-4 rounded-2xl border border-slate-100 shadow-sm hover:shadow-md transition-shadow"
-                            >
-                              <div
-                                className={cn(
-                                  "p-2.5 rounded-xl shrink-0",
-                                  sys.active
-                                    ? "bg-emerald-50 text-emerald-600"
-                                    : "bg-rose-50 text-rose-600",
-                                )}
-                              >
-                                <IconComp className="w-5 h-5" />
-                              </div>
-                              <div className="flex flex-col min-w-0">
-                                <span className="text-[10px] font-bold text-slate-400 tracking-wider uppercase truncate">
-                                  {sys.label}
-                                </span>
-                                <span
-                                  className={cn(
-                                    "text-xs font-bold truncate",
-                                    sys.active
-                                      ? "text-emerald-700"
-                                      : "text-rose-600",
-                                  )}
-                                >
-                                  {sys.active ? "TRỰC TUYẾN" : "CHƯA CẤU HÌNH"}
-                                </span>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-
-                      {/* Bento Stats Grid */}
-                      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
-                        {[
-                          {
-                            label: "Tổng việc",
-                            value: taskStats.total,
-                            icon: ListTodo,
-                            color: "text-white",
-                            bg: "bg-[#002D56]",
-                            onClick: () => openTaskOverview(),
-                            className: "col-span-2",
-                          },
-                          {
-                            label: "Cần làm",
-                            value: taskStats.todo,
-                            icon: Target,
-                            color: "text-blue-600",
-                            bg: "bg-blue-50",
-                            onClick: () => openTaskOverview({ status: "todo" }),
-                          },
-                          {
-                            label: "Đang làm",
-                            value: taskStats.doing,
-                            icon: Clock,
-                            color: "text-orange-600",
-                            bg: "bg-orange-50",
-                            onClick: () =>
-                              openTaskOverview({ status: "doing" }),
-                          },
-                          {
-                            label: "Quá hạn",
-                            value: taskStats.overdue,
-                            icon: AlertCircle,
-                            color: "text-red-600",
-                            bg: "bg-red-50",
-                            onClick: () =>
-                              openTaskOverview({ status: "overdue" }),
-                          },
-                          {
-                            label: "Gần hạn",
-                            value: taskStats.upcoming,
-                            icon: Calendar,
-                            color: "text-amber-600",
-                            bg: "bg-amber-50",
-                            onClick: () =>
-                              openTaskOverview({ status: "upcoming" }),
-                          },
-                          {
-                            label: "Ưu tiên",
-                            value: taskStats.highPriority,
-                            icon: AlertTriangle,
-                            color: "text-indigo-600",
-                            bg: "bg-indigo-50",
-                            onClick: () =>
-                              openTaskOverview({
-                                priority: HIGH_PRIORITY_FILTER,
-                              }),
-                          },
-                        ].map((stat, i) => (
-                          <motion.button
-                            key={i}
-                            whileHover={{ y: -5, scale: 1.02 }}
-                            whileTap={{ scale: 0.98 }}
-                            onClick={stat.onClick}
-                            className={cn(
-                              "group relative overflow-hidden rounded-3xl border border-slate-200 bg-white p-5 text-left shadow-sm transition-all hover:border-[#002D56]/30 hover:shadow-xl",
-                              stat.className,
-                            )}
-                          >
-                            <div
-                              className={cn(
-                                "mb-4 flex h-12 w-12 items-center justify-center rounded-2xl shrink-0 transition-transform group-hover:rotate-12",
-                                stat.bg,
-                                stat.color,
-                              )}
-                            >
-                              <stat.icon className="h-6 w-6" />
-                            </div>
-                            <div className="min-w-0">
-                              <p className="text-[10px] font-bold tracking-wider text-slate-400 truncate uppercase mb-1">
-                                {stat.label}
-                              </p>
-                              <p className="text-3xl sm:text-4xl font-bold text-slate-800 tracking-tight">
-                                {stat.value}
-                              </p>
-                            </div>
-                            <div className="absolute -right-4 -bottom-4 opacity-5 transition-transform group-hover:scale-150 group-hover:rotate-12">
-                              <stat.icon className="h-20 w-20" />
-                            </div>
-                          </motion.button>
-                        ))}
-                      </div>
-
-                      {/* Quick Actions / Featured */}
-                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                        <motion.button
-                          whileHover={{ y: -5 }}
-                          onClick={createNewSession}
-                          className="relative overflow-hidden rounded-[2rem] bg-gradient-to-br from-[#002D56] to-blue-800 p-8 text-white shadow-xl group"
-                        >
-                          <div className="relative z-10">
-                            <div className="p-4 bg-white/10 rounded-2xl w-fit mb-6 animate-float">
-                              <Edit3 className="w-8 h-8" />
-                            </div>
-                            <h3 className="text-2xl font-bold text-slate-800   tracking-tight">
-                              Biên tập bài viết
-                            </h3>
-                            <p className="text-sm font-medium text-blue-100 mt-2 opacity-80 leading-relaxed">
-                              Sử dụng AI để phác thảo nội dung nghiệp vụ chuyên
-                              sâu.
-                            </p>
-                            <div className="mt-8 flex items-center gap-2 font-bold text-[10px] uppercase tracking-wider">
-                              Bắt đầu ngay{" "}
-                              <ArrowRight className="w-4 h-4 group-hover:translate-x-2 transition-transform" />
-                            </div>
-                          </div>
-                          <div className="absolute -right-16 -bottom-16 w-64 h-64 bg-white/5 rounded-full blur-3xl group-hover:bg-white/10 transition-colors" />
-                        </motion.button>
-
-                        <motion.button
-                          whileHover={{ y: -5 }}
-                          onClick={openCreateTask}
-                          className="rounded-[2rem] border-2 border-slate-100 bg-white p-8 shadow-sm transition-all hover:border-blue-500/50 hover:shadow-2xl group flex flex-col"
-                        >
-                          <div className="p-4 bg-emerald-50 text-emerald-600 rounded-2xl w-fit mb-6 transition-colors group-hover:bg-emerald-100">
-                            <CheckSquare className="w-8 h-8" />
-                          </div>
-                          <h3 className="text-xl sm:text-2xl font-bold text-slate-800   tracking-tight">
-                            Quản lý Nhiệm vụ
-                          </h3>
-                          <p className="text-sm font-bold text-slate-400 mt-2">
-                            Theo dõi và phối hợp công việc trơn tru.
-                          </p>
-                          <div className="mt-auto pt-8">
-                            <div className="h-1.5 w-12 bg-slate-100 rounded-full group-hover:w-full group-hover:bg-emerald-500 transition-all duration-500" />
-                          </div>
-                        </motion.button>
-
-                        <motion.button
-                          whileHover={{ y: -5 }}
-                          onClick={openAiTaskBuilder}
-                          className="rounded-[2rem] border-2 border-slate-100 bg-white p-8 shadow-sm transition-all hover:border-orange-500/50 hover:shadow-2xl group flex flex-col"
-                        >
-                          <div className="p-4 bg-orange-50 text-orange-600 rounded-2xl w-fit mb-6 transition-colors group-hover:bg-orange-100">
-                            <Bot className="w-8 h-8" />
-                          </div>
-                          <h3 className="text-xl sm:text-2xl font-bold text-slate-800   tracking-tight">
-                            AI Task Planner
-                          </h3>
-                          <p className="text-sm font-bold text-slate-400 mt-2">
-                            Biến ý tưởng thành kế hoạch hành động.
-                          </p>
-                          <div className="mt-auto pt-8 text-[#002D56] opacity-0 group-hover:opacity-100 transition-opacity">
-                            <Plus className="w-6 h-6 ml-auto" />
-                          </div>
-                        </motion.button>
-                      </div>
-
-                      {/* Lists Grid */}
-                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 pt-4">
-                        {/* 1. Upcoming Tasks */}
-                        <div className="bg-white rounded-3xl border border-slate-200 shadow-sm flex flex-col overflow-hidden">
-                          <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
-                            <div className="flex items-center gap-3">
-                              <div className="p-2 bg-[#002D56] rounded-lg text-white">
-                                <ListTodo className="w-4 h-4" />
-                              </div>
-                              <h3 className="font-bold text-xs text-[#002D56] uppercase tracking-wider">
-                                Nhiệm vụ trọng tâm
-                              </h3>
-                            </div>
-                            <button
-                              onClick={() => setActiveTab("tasks")}
-                              className="text-[10px] font-bold uppercase tracking-wider text-blue-600 hover:text-blue-800 transition-colors"
-                            >
-                              Tất cả
-                            </button>
-                          </div>
-                          <div className="divide-y divide-slate-100 flex-1 overflow-y-auto overscroll-contain max-h-[400px] custom-scrollbar">
-                            {allTasks
-                              .filter((t) => t.status !== "done")
-                              .sort(
-                                (a, b) =>
-                                  new Date(a.dueDate).getTime() -
-                                  new Date(b.dueDate).getTime(),
-                              )
-                              .slice(0, 6)
-                              .map((task) => (
-                                <button
-                                  key={task.id}
-                                  id={`task-${task.id}`}
-                                  onClick={() => {
-                                    setEditingTask(task);
-                                    setActiveModal("task-edit");
-                                  }}
-                                  className="task-card w-full text-left p-5 hover:bg-slate-50 transition-all flex items-center justify-between group border-l-4 border-transparent hover:border-[#002D56]"
-                                >
-                                  <div className="flex-1 min-w-0 mr-4">
-                                    <h4 className="font-bold text-sm text-[#002D56] line-clamp-1 mb-2 group-hover:translate-x-1 transition-transform">
-                                      {task.title}
-                                    </h4>
-                                    <div className="flex items-center gap-3">
-                                      <span className="text-xs font-medium text-slate-500 flex items-center gap-1.5">
-                                        <Calendar className="w-3 h-3" />
-                                        {task.dueDate
-                                          ? new Date(
-                                              task.dueDate,
-                                            ).toLocaleDateString("vi-VN")
-                                          : "CHƯA CÓ HẠN"}
-                                      </span>
-                                      <span
-                                        className={cn(
-                                          "text-[9px] font-bold tracking-wider px-2 py-0.5 rounded-full ",
-                                          task.priority === "urgent"
-                                            ? "bg-red-100 text-red-600"
-                                            : task.priority === "high"
-                                              ? "bg-orange-100 text-orange-600"
-                                              : "bg-slate-100 text-slate-500",
-                                        )}
-                                      >
-                                        {task.priority === "urgent"
-                                          ? "KHẨN CẤP"
-                                          : task.priority === "high"
-                                            ? "ƯU TIÊN"
-                                            : "THƯỜNG"}
-                                      </span>
-                                    </div>
-                                  </div>
-                                  <div className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                                    <ChevronRight className="w-5 h-5 text-blue-600" />
-                                  </div>
-                                </button>
-                              ))}
-                            {allTasks.filter((t) => t.status !== "done")
-                              .length === 0 && (
-                              <div className="p-10 text-center flex flex-col items-center">
-                                <div className="w-12 h-12 bg-slate-50 rounded-full flex items-center justify-center mb-4">
-                                  <CheckCircle className="w-6 h-6 text-emerald-400" />
-                                </div>
-                                <p className="text-xs font-bold text-slate-400 uppercase tracking-wider italic">
-                                  Tuyệt vời! Không có việc tồn đọng.
-                                </p>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* 2. Recent Sessions / Documents - Mixed */}
-                        <div className="bg-white rounded-3xl border border-slate-200 shadow-sm flex flex-col overflow-hidden">
-                          <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
-                            <div className="flex items-center gap-3">
-                              <div className="p-2 bg-emerald-500 rounded-lg text-white">
-                                <Zap className="w-4 h-4" />
-                              </div>
-                              <h3 className="font-bold text-xs text-[#002D56] uppercase tracking-wider">
-                                Hoạt động vừa qua
-                              </h3>
-                            </div>
-                            <button
-                              onClick={() => setActiveTab("activity")}
-                              className="text-[10px] font-bold uppercase tracking-wider text-slate-500 hover:text-[#002D56] transition-colors"
-                            >
-                              Toàn bộ
-                            </button>
-                          </div>
-                          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-slate-100 overflow-y-auto overscroll-contain max-h-[400px] custom-scrollbar">
-                            {recentLogs.slice(0, 6).map((log) => (
-                              <div
-                                key={log.id}
-                                className="p-5 flex items-start gap-4 hover:bg-slate-50 transition-all border-b border-slate-50"
-                              >
-                                <div
-                                  className={cn(
-                                    "p-2.5 rounded-xl shrink-0 mt-0.5",
-                                    log.module === "documents"
-                                      ? "bg-blue-50 text-blue-600"
-                                      : log.module === "tasks"
-                                        ? "bg-emerald-50 text-emerald-600"
-                                        : "bg-slate-100 text-slate-500",
-                                  )}
-                                >
-                                  {log.module === "documents" ? (
-                                    <Database className="w-4 h-4" />
-                                  ) : log.module === "tasks" ? (
-                                    <ListTodo className="w-4 h-4" />
-                                  ) : (
-                                    <Settings className="w-4 h-4" />
-                                  )}
-                                </div>
-                                <div className="flex-1 min-w-0">
-                                  <p className="text-[11px] font-bold text-[#002D56] uppercase tracking-tight leading-tight line-clamp-2">
-                                    {log.actionType === "create"
-                                      ? "Tạo mới"
-                                      : log.actionType === "update"
-                                        ? "Cập nhật"
-                                        : "Xóa"}{" "}
-                                    {log.entityName || "Dữ liệu"}
-                                  </p>
-                                  <p className="text-[9px] font-bold text-slate-400 mt-1 uppercase tracking-tight">
-                                    {new Date(log.createdAt).toLocaleString(
-                                      "vi-VN",
-                                    )}
-                                  </p>
-                                </div>
-                              </div>
-                            ))}
-                            {recentLogs.length === 0 && (
-                              <div className="col-span-full p-10 text-center text-slate-400 text-xs font-bold  tracking-wider">
-                                Chưa có hoạt động nào ghi nhận.
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
+                    <HomeWorkspace
+                      user={user}
+                      profile={profile}
+                      health={health}
+                      isAiCoreActive={isAiCoreActive}
+                      getGreeting={getGreeting}
+                      getUserDisplayName={getUserDisplayName}
+                      documents={documents}
+                      allTasks={allTasks}
+                      createNewSession={createNewSession}
+                      setActiveTab={setActiveTab}
+                      openCreateTask={() => {
+                        setEditingTask({} as any);
+                        setActiveModal("task-edit");
+                      }}
+                      openAiTaskBuilder={() => {
+                        setIsChatOpen(true);
+                        setChatInput("Tôi muốn lập kế hoạch công việc cho...");
+                      }}
+                      setEditingTask={setEditingTask}
+                      setActiveModal={setActiveModal}
+                    />
                   ) : activeTab === "tasks" ? (
-                    <div className="space-y-6">
-                      {/* Dashboard Summary */}
-                      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
-                        {[
-                          {
-                            label: "Tổng việc",
-                            value: taskStats.total,
-                            icon: ListTodo,
-                            color: "text-slate-700",
-                            bg: "bg-slate-100",
-                            onClick: () =>
-                              setTaskFilters({
-                                status: "all",
-                                priority: "all",
-                                category: "all",
-                                search: "",
-                              }),
-                          },
-                          {
-                            label: "Quá hạn",
-                            value: taskStats.overdue,
-                            icon: AlertCircle,
-                            color: "text-red-700",
-                            bg: "bg-red-50",
-                            onClick: () =>
-                              setTaskFilters({
-                                status: "overdue",
-                                priority: "all",
-                                category: "all",
-                                search: "",
-                              }),
-                          },
-                          {
-                            label: "Cần làm",
-                            value: taskStats.upcoming,
-                            icon: Clock,
-                            color: "text-orange-700",
-                            bg: "bg-orange-50",
-                            onClick: () =>
-                              setTaskFilters({
-                                status: "upcoming",
-                                priority: "all",
-                                category: "all",
-                                search: "",
-                              }),
-                          },
-                          {
-                            label: "Đang làm",
-                            value: taskStats.doing,
-                            icon: Target,
-                            color: "text-blue-700",
-                            bg: "bg-blue-50",
-                            onClick: () =>
-                              setTaskFilters({
-                                status: "doing",
-                                priority: "all",
-                                category: "all",
-                                search: "",
-                              }),
-                          },
-                          {
-                            label: "Hoàn thành",
-                            value: taskStats.done,
-                            icon: CheckCircle,
-                            color: "text-emerald-700",
-                            bg: "bg-emerald-50",
-                            onClick: () =>
-                              setTaskFilters({
-                                status: "done",
-                                priority: "all",
-                                category: "all",
-                                search: "",
-                              }),
-                          },
-                        ].map((stat, i) => (
-                          <button
-                            key={i}
-                            onClick={stat.onClick}
-                            className="group rounded-lg border border-slate-200 bg-white p-4 text-left shadow-sm transition-colors hover:border-blue-300 min-w-0"
-                          >
-                            <div
-                              className={cn(
-                                "mb-3 flex h-9 w-9 items-center justify-center rounded-md shrink-0",
-                                stat.bg,
-                                stat.color,
-                              )}
-                            >
-                              <stat.icon className="h-4 w-4" />
-                            </div>
-                            <div className="min-w-0">
-                              <p className="text-[11px] font-semibold tracking-normal text-slate-500 truncate">
-                                {stat.label}
-                              </p>
-                              <p className="mt-1 text-2xl font-bold text-slate-900">
-                                {stat.value}
-                              </p>
-                            </div>
-                          </button>
-                        ))}
-                      </div>
-
-                      {/* Task List Header */}
-                      <div className="flex flex-col gap-4 bg-white p-4 sm:p-6 rounded-md lg:rounded-lg border border-slate-200">
-                        <div className="flex flex-row items-center justify-between gap-4">
-                          <div className="flex items-center gap-3 px-1 min-w-0">
-                            <LayoutDashboard className="w-5 h-5 text-[#002D56] shrink-0" />
-                            <h2 className="text-xs sm:text-sm font-semibold uppercase text-slate-800 tracking-wide leading-tight py-1">
-                              Bảng công việc
-                            </h2>
-                          </div>
-                          <button
-                            onClick={() => {
-                              closeMobileDrawer();
-                              setEditingTask({
-                                id: "",
-                                title: "",
-                                assignee: "",
-                                dueDate: new Date().toISOString().split("T")[0],
-                                categoryCode: "LV_DH",
-                                isDeputy: false,
-                                assignmentCode: "",
-                                assignmentName: "",
-                                description: "",
-                                status: "todo",
-                                priority: "medium",
-                                source: "manual",
-                                createdAt: Date.now(),
-                                updatedAt: Date.now(),
-                              });
-                              setActiveModal("task-edit");
-                            }}
-                            className="flex items-center gap-2 bg-[#002D56] text-white px-4 py-2 rounded-md text-[10px] font-semibold shadow-sm hover:shadow-[#002D56]/20 transition-all active:scale-[0.98] shrink-0"
-                          >
-                            <Plus className="w-3.5 h-3.5" /> MỚI
-                          </button>
-                        </div>
-
-                        <div className="flex flex-col gap-3">
-                          <div className="relative w-full">
-                            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-                            <input
-                              type="text"
-                              placeholder="Tìm kiếm..."
-                              value={taskFilters.search}
-                              onChange={(e) =>
-                                setTaskFilters((prev) => ({
-                                  ...prev,
-                                  search: e.target.value,
-                                }))
-                              }
-                              className="pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-md text-xs font-bold w-full focus:outline-none focus:ring-2 ring-[#002D56]/10"
-                            />
-                          </div>
-
-                          <div className="flex items-center gap-2 overflow-x-auto pb-2 custom-scrollbar -mx-1 px-1">
-                            <select
-                              value={taskFilters.status}
-                              onChange={(e) =>
-                                setTaskFilters((prev) => ({
-                                  ...prev,
-                                  status: e.target.value,
-                                }))
-                              }
-                              className="px-3 py-2 bg-white border border-slate-200 rounded-md text-[10px] font-semibold tracking-tight shrink-0 focus:border-[#002D56] outline-none"
-                            >
-                              <option value="all">Trạng thái</option>
-                              <option value="todo">Cần làm</option>
-                              <option value="doing">Đang làm</option>
-                              <option value="review">Duyệt</option>
-                              <option value="done">Xong</option>
-                              <option value="overdue">Quá hạn</option>
-                              <option value="upcoming">Gần hạn</option>
-                            </select>
-
-                            <select
-                              value={taskFilters.priority}
-                              onChange={(e) =>
-                                setTaskFilters((prev) => ({
-                                  ...prev,
-                                  priority: e.target.value,
-                                }))
-                              }
-                              className="px-3 py-2 bg-white border border-slate-200 rounded-md text-[10px] font-semibold tracking-tight shrink-0 focus:border-[#002D56] outline-none"
-                            >
-                              <option value="all">Ưu tiên</option>
-                              <option value={HIGH_PRIORITY_FILTER}>
-                                Cao/khẩn
-                              </option>
-                              <option value="urgent">Khẩn</option>
-                              <option value="high">Cao</option>
-                              <option value="medium">Vừa</option>
-                              <option value="low">Thấp</option>
-                            </select>
-
-                            <select
-                              value={taskFilters.category}
-                              onChange={(e) =>
-                                setTaskFilters((prev) => ({
-                                  ...prev,
-                                  category: e.target.value,
-                                }))
-                              }
-                              className="px-3 py-2 bg-white border border-slate-200 rounded-md text-[10px] font-semibold tracking-tight shrink-0 focus:border-[#002D56] outline-none"
-                            >
-                              <option value="all">Lĩnh vực</option>
-                              {TASK_CATEGORIES.map((c) => (
-                                <option key={c.code} value={c.code}>
-                                  {c.name}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Tasks Table/List */}
-                      <div className="bg-white rounded-md lg:rounded-lg shadow-sm border border-slate-200 overflow-hidden">
-                        {/* Desktop View */}
-                        <div className="hidden lg:block overflow-x-auto">
-                          <table className="w-full text-left border-collapse">
-                            <thead>
-                              <tr className="bg-slate-50/50 border-b border-slate-100">
-                                <th className="px-5 py-3 text-[10px] font-semibold text-slate-400 tracking-wide">
-                                  CÔNG VIỆC
-                                </th>
-                                <th className="px-5 py-3 text-[10px] font-semibold text-slate-400 tracking-wide">
-                                  LĨNH VỰC
-                                </th>
-                                <th className="px-5 py-3 text-[10px] font-semibold text-slate-400 tracking-wide">
-                                  NGƯỜI XỬ LÝ
-                                </th>
-                                <th className="px-5 py-3 text-[10px] font-semibold text-slate-400 tracking-wide">
-                                  THỜI HẠN
-                                </th>
-                                <th className="px-5 py-3 text-[10px] font-semibold text-slate-400 tracking-wide">
-                                  ƯU TIÊN
-                                </th>
-                                <th className="px-5 py-3 text-[10px] font-semibold text-slate-400 tracking-wide text-center">
-                                  TRẠNG THÁI
-                                </th>
-                                <th className="px-5 py-3 text-[10px] font-semibold text-slate-400 tracking-wide"></th>
-                              </tr>
-                            </thead>
-                            <tbody className="divide-y divide-slate-50">
-                              {filteredTasks.length === 0 ? (
-                                <tr>
-                                  <td
-                                    colSpan={7}
-                                    className="px-6 py-20 text-center"
-                                  >
-                                    <NoTasksMessage
-                                      setTaskFilters={setTaskFilters}
-                                    />
-                                  </td>
-                                </tr>
-                              ) : (
-                                filteredTasks.map((t) => (
-                                  <tr
-                                    key={t.id}
-                                    id={`task-${t.id}`}
-                                    className="task-card hover:bg-slate-50/50 transition-colors group"
-                                  >
-                                    <td
-                                      className="px-6 py-5 cursor-pointer"
-                                      onClick={() => {
-                                        closeMobileDrawer();
-                                        setEditingTask(t);
-                                        setActiveModal("task-edit");
-                                      }}
-                                    >
-                                      <TaskTitleCell
-                                        task={t}
-                                        documents={documents}
-                                      />
-                                    </td>
-                                    <td className="px-6 py-5">
-                                      <span className="px-3 py-1 bg-slate-100 text-[#002D56] rounded-lg text-[10px] font-semibold tracking-tight">
-                                        {TASK_CATEGORIES.find(
-                                          (c) => c.code === t.categoryCode,
-                                        )?.name || t.categoryCode}
-                                      </span>
-                                    </td>
-                                    <td className="px-6 py-5">
-                                      <TaskAssigneeCell task={t} />
-                                    </td>
-                                    <td className="px-6 py-5">
-                                      <div className="flex items-center gap-2 text-xs font-bold text-slate-600">
-                                        <Calendar className="w-3.5 h-3.5 text-slate-300" />
-                                        {t.dueDate
-                                          ? new Date(
-                                              t.dueDate,
-                                            ).toLocaleDateString("vi-VN")
-                                          : "---"}
-                                      </div>
-                                    </td>
-                                    <td className="px-6 py-5">
-                                      <TaskPriorityCell task={t} />
-                                    </td>
-                                    <td className="px-6 py-5">
-                                      <TaskStatusCell
-                                        task={t}
-                                        updateTaskStatus={updateTaskStatus}
-                                      />
-                                    </td>
-                                    <td className="px-6 py-5 text-right">
-                                      <TaskActionsCell
-                                        task={t}
-                                        onDelete={handleDeleteTask}
-                                      />
-                                    </td>
-                                  </tr>
-                                ))
-                              )}
-                            </tbody>
-                          </table>
-                        </div>
-
-                        {/* Tablet / Mobile View (Card List) */}
-                        <div className="lg:hidden p-3 sm:p-6 space-y-3 sm:space-y-4 bg-slate-50/50">
-                          {filteredTasks.length === 0 ? (
-                            <NoTasksMessage setTaskFilters={setTaskFilters} />
-                          ) : (
-                            filteredTasks.map((t) => (
-                              <div
-                                key={t.id}
-                                id={`task-${t.id}`}
-                                className="task-card bg-white border border-slate-200 rounded-lg p-5 space-y-4 shadow-sm active:scale-[0.98] transition-all"
-                              >
-                                <div className="flex items-start justify-between gap-4">
-                                  <div
-                                    className="flex-1 min-w-0"
-                                    onClick={() => {
-                                      closeMobileDrawer();
-                                      setEditingTask(t);
-                                      setActiveModal("task-edit");
-                                    }}
-                                  >
-                                    <h3 className="text-sm font-semibold text-[#002D56] leading-tight mb-2 line-clamp-2 tracking-tight">
-                                      {t.title}
-                                    </h3>
-                                    <div className="flex flex-wrap items-center gap-2">
-                                      <span className="text-[8px] font-semibold uppercase text-white bg-[#002D56] px-2 py-0.5 rounded-lg tracking-wider">
-                                        {TASK_CATEGORIES.find(
-                                          (c) => c.code === t.categoryCode,
-                                        )?.name || t.categoryCode}
-                                      </span>
-                                      {t.isDeputy && (
-                                        <span className="text-[8px] font-semibold uppercase text-amber-600 bg-amber-50 px-2 py-0.5 rounded-lg border border-amber-100">
-                                          Kiêm nhiệm
-                                        </span>
-                                      )}
-                                      {t.linkedDocumentIds &&
-                                        t.linkedDocumentIds.length > 0 && (
-                                          <span className="text-[8px] font-semibold uppercase text-blue-600 bg-blue-50 px-2 py-0.5 rounded-lg border border-blue-100 italic flex items-center gap-1">
-                                            <FileText className="w-2.5 h-2.5" />{" "}
-                                            {t.linkedDocumentIds.length} tệp
-                                          </span>
-                                        )}
-                                    </div>
-                                  </div>
-                                  <TaskActionsCell
-                                    task={t}
-                                    onDelete={handleDeleteTask}
-                                  />
-                                </div>
-
-                                <div className="grid grid-cols-2 gap-4 py-3 border-y border-slate-50">
-                                  <div>
-                                    <p className="text-[8px] font-semibold text-slate-400 tracking-normal mb-1">
-                                      Thời hạn
-                                    </p>
-                                    <div className="flex items-center gap-2 text-[10px] font-bold text-slate-700">
-                                      <Calendar className="w-3.5 h-3.5 text-slate-300" />
-                                      {t.dueDate
-                                        ? new Date(
-                                            t.dueDate,
-                                          ).toLocaleDateString("vi-VN")
-                                        : "---"}
-                                    </div>
-                                  </div>
-                                  <div>
-                                    <p className="text-[8px] font-semibold text-slate-400 tracking-normal mb-1">
-                                      Ưu tiên
-                                    </p>
-                                    <TaskPriorityCell task={t} />
-                                  </div>
-                                </div>
-
-                                <div className="flex items-center justify-between pt-1">
-                                  <div className="flex items-center gap-2">
-                                    <div className="w-6 h-6 rounded-lg bg-slate-100 border border-slate-200 flex items-center justify-center text-[10px] font-semibold text-slate-400">
-                                      {t.assignee?.slice(0, 2).toUpperCase() ||
-                                        "??"}
-                                    </div>
-                                    <p className="text-[10px] font-semibold text-slate-600 tracking-tight truncate max-w-[100px]">
-                                      {t.assignee || "Chưa gán"}
-                                    </p>
-                                  </div>
-                                  <TaskStatusCell
-                                    task={t}
-                                    updateTaskStatus={updateTaskStatus}
-                                  />
-                                </div>
-                              </div>
-                            ))
-                          )}
-                        </div>
-                      </div>
-                    </div>
+                    <TasksTabWorkspace 
+                      taskStats={taskStats}
+                      filteredTasks={filteredTasks}
+                      taskFilters={taskFilters}
+                      setTaskFilters={setTaskFilters}
+                      openTaskEditor={openTaskEditor}
+                      handleDeleteTask={handleDeleteTask}
+                      updateTaskStatus={updateTaskStatus}
+                      documents={documents}
+                      proposals={FEATURE_FLAGS.PROPOSAL_MODULE ? proposals : []}
+                      user={user}
+                      setIsAiCreateModalOpen={setIsAiCreateModalOpen}
+                    />
                   ) : activeTab === "editor" ? (
-                    taskType === "SLIDE_OUTLINE" ? (
-                      <div className="w-full flex-col flex h-full min-h-0">
-                        <div className="mb-4">
-                          <button
-                            onClick={() => setTaskType("WRITE_NEW")}
-                            className="px-4 py-2 border border-slate-200 bg-white shadow-sm rounded-md text-[11px] tracking-normal font-bold text-[#002D56] hover:bg-slate-50 flex items-center gap-2"
-                          >
-                            ← Trở lại các công cụ khác
-                          </button>
-                        </div>
-                        <SlideOutlineGenerator
-                          user={user}
-                          selectedSourceDocIds={selectedSourceDocIds}
-                          documents={documents}
-                          onOpenLibrary={() => setIsPickingFromLibrary(true)}
-                          onSaveResult={handleSaveSlideOutline}
-                          onCreateTask={handleCreateTaskFromSlideOutline}
-                          loadedResult={safeParseSlideOutline(output)}
-                        />
-                      </div>
+                    <EditorWorkspace 
+                      selectedEditorialToolId={selectedEditorialToolId}
+                      handleToolChange={handleToolChange}
+                      setTaskType={setTaskType}
+                      user={user}
+                      selectedSourceDocIds={selectedSourceDocIds}
+                      documents={documents}
+                      setIsPickingFromLibrary={setIsPickingFromLibrary}
+                      handleSaveSlideOutline={handleSaveSlideOutline}
+                      handleCreateTaskFromSlideOutline={handleCreateTaskFromSlideOutline}
+                      safeParseSlideOutline={safeParseSlideOutline}
+                      output={output}
+                      taskType={taskType}
+                      outputFormat={outputFormat}
+                      setOutputFormat={setOutputFormat}
+                      setSourceActiveTab={setSourceActiveTab}
+                      sourceActiveTab={sourceActiveTab}
+                      searchQuery={searchQuery}
+                      setSearchQuery={setSearchQuery}
+                      handleWebSearch={handleWebSearch}
+                      isLoading={isLoading}
+                      searchResults={searchResults}
+                      getHostname={getHostname}
+                      addSearchResultAsSource={addSearchResultAsSource}
+                      newTextName={newTextName}
+                      setNewTextName={setNewTextName}
+                      newTextContent={newTextContent}
+                      setNewTextContent={setNewTextContent}
+                      saveToLibrary={saveToLibrary}
+                      setSaveToLibrary={setSaveToLibrary}
+                      handleAddText={handleAddText}
+                      newLinkUrl={newLinkUrl}
+                      setNewLinkUrl={setNewLinkUrl}
+                      handleAddLink={handleAddLink}
+                      isParsing={isParsing}
+                      fileInputRef={fileInputRef}
+                      getDocTypeLabel={getDocTypeLabel}
+                      getSourceTypeLabel={getSourceTypeLabel}
+                      toggleDocSelection={toggleDocSelection}
+                      input={input}
+                      setInput={setInput}
+                      setOutput={setOutput}
+                      setError={setError}
+                      aiCooldownUntil={aiCooldownUntil}
+                      editorialKind={editorialKind}
+                      setEditorialKind={setEditorialKind}
+                      isBuildingTasks={isBuildingTasks}
+                      handleBuildTasks={handleBuildTasks}
+                      handleProcess={handleProcess}
+                      builtTasks={builtTasks}
+                      setBuiltTasks={setBuiltTasks}
+                      saveBuiltTasks={saveBuiltTasks}
+                      persistTask={persistTask}
+                      toast={toast}
+                      error={error}
+                      outputRef={outputRef}
+                      setIsEditing={setIsEditing}
+                      isEditing={isEditing}
+                      currentSessionId={currentSessionId}
+                      sessions={sessions}
+                      handleCopy={handleCopy}
+                      copySuccess={copySuccess}
+                      saveCurrentToSession={saveCurrentToSession}
+                      handleLocalIllustrationScan={handleLocalIllustrationScan}
+                      isPlanningImages={isPlanningImages}
+                      handleAIIllustrationSuggestions={handleAIIllustrationSuggestions}
+                      setSelectingParagraphForImage={setSelectingParagraphForImage}
+                      auditEditorialPublish={auditEditorialPublish}
+                      illustrations={illustrations}
+                      requestConfirmAsync={requestConfirmAsync}
+                      logActivity={logActivity}
+                      stripResolvedPlaceholders={stripResolvedPlaceholders}
+                      removeBrokenMarkdownImages={removeBrokenMarkdownImages}
+                      imagePlans={imagePlans}
+                      approveAllValidIllustrations={approveAllValidIllustrations}
+                      clearErrorImages={clearErrorImages}
+                      handleManualUpload={handleManualUpload}
+                      approveIllustration={approveIllustration}
+                      rejectIllustration={rejectIllustration}
+                      setIllustrations={setIllustrations}
+                      contentReview={contentReview}
+                      isPublishableIllustration={isPublishableIllustration}
+                      updateImageLoadStatus={updateImageLoadStatus}
+                      insertApprovedIllustrationsForPlainExport={insertApprovedIllustrationsForPlainExport}
+                    />
+                  ) : activeTab === "proposals" ? (
+                    selectedProposalId ? (
+                      <ProposalDetailView 
+                        userId={user?.uid || ""}
+                        proposalId={selectedProposalId}
+                        onBack={() => {
+                          setSelectedProposalId(null);
+                          setProposalChatContext(null);
+                        }}
+                        documents={documents}
+                        onContextUpdate={setProposalChatContext}
+                        requestConfirmAsync={requestConfirmAsync}
+                      />
                     ) : (
-                      <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] xl:grid-cols-[300px_1fr] gap-6 h-full">
-                        {/* Sidebar: Controls & Sources */}
-                        <aside className="space-y-4 sm:space-y-6 lg:sticky lg:top-0 lg:max-h-[calc(100vh-120px)] lg:overflow-y-auto overscroll-contain custom-scrollbar pr-1">
-                          {/* Task Types */}
-                          <section className="bg-white rounded-lg p-5 shadow-sm border border-slate-200">
-                            <div className="flex items-center gap-2 mb-4 px-1">
-                              <Target className="w-4 h-4 text-[#002D56]" />
-                              <h2 className="text-xs font-semibold text-slate-800 tracking-normal">
-                                Nhiệm vụ AI
-                              </h2>
-                            </div>
-                            <div className="space-y-4">
-                              {TASK_GROUPS.map((group, gIdx) => (
-                                <div key={gIdx}>
-                                  <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2 px-1">
-                                    {group.title}
-                                  </h3>
-                                  <div className="grid grid-cols-2 gap-2">
-                                    {group.options.map((opt) => (
-                                      <button
-                                        key={opt.id}
-                                        onClick={() =>
-                                          setTaskType(opt.id as TaskType)
-                                        }
-                                        className={cn(
-                                          "w-full flex flex-col items-start gap-2 p-3 rounded-md transition-all group text-left",
-                                          taskType === opt.id
-                                            ? "bg-[#002D56] text-white shadow-sm ring-1 ring-[#002D56]"
-                                            : "bg-slate-50 hover:bg-slate-100 text-slate-600 border border-slate-100",
-                                        )}
-                                      >
-                                        <div
-                                          className={cn(
-                                            "p-1.5 rounded-md",
-                                            taskType === opt.id
-                                              ? "bg-white/20 text-white"
-                                              : "bg-white text-slate-500 shadow-sm group-hover:bg-white group-hover:text-[#002D56]",
-                                          )}
-                                        >
-                                          <opt.icon className="w-3.5 h-3.5" />
-                                        </div>
-                                        <div>
-                                          <p className="font-bold text-[11px] leading-tight mb-0.5">
-                                            {opt.label}
-                                          </p>
-                                          <p
-                                            className={cn(
-                                              "text-[8px] line-clamp-2 leading-tight font-medium opacity-80",
-                                              taskType === opt.id
-                                                ? "text-white"
-                                                : "text-slate-400 group-hover:text-slate-500",
-                                            )}
-                                          >
-                                            {opt.desc}
-                                          </p>
-                                        </div>
-                                      </button>
-                                    ))}
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          </section>
-
-                          {/* Output Format Selector */}
-                          <section className="bg-white rounded-lg p-5 shadow-sm border border-slate-200">
-                            <div className="flex items-center gap-2 mb-4 px-1">
-                              <Type className="w-4 h-4 text-[#002D56]" />
-                              <h2 className="text-xs font-semibold text-slate-800 tracking-normal">
-                                Loại kết quả
-                              </h2>
-                            </div>
-                            <div className="relative">
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  const menu =
-                                    e.currentTarget.nextElementSibling;
-                                  if (menu) {
-                                    menu.classList.toggle("invisible");
-                                    menu.classList.toggle("opacity-0");
-                                  }
-                                }}
-                                className="w-full bg-slate-50 border border-slate-200 rounded-md px-4 py-3 text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-[#002D56] text-left flex items-center justify-between transition-all hover:bg-slate-100"
-                              >
-                                <span>
-                                  {formatOptions.find(
-                                    (o) => o.id === outputFormat,
-                                  )?.label || "Chọn định dạng"}
-                                </span>
-                                <ChevronDown className="w-4 h-4 text-slate-400" />
-                              </button>
-                              <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-md shadow-xl max-h-60 overflow-y-auto overscroll-contain custom-scrollbar z-[100] opacity-0 invisible transition-all">
-                                {formatOptions.map((opt) => (
-                                  <button
-                                    key={opt.id}
-                                    onClick={(e) => {
-                                      setOutputFormat(opt.id as OutputFormat);
-                                      const menu =
-                                        e.currentTarget.parentElement;
-                                      if (menu) {
-                                        menu.classList.add("invisible");
-                                        menu.classList.add("opacity-0");
-                                      }
-                                    }}
-                                    className={cn(
-                                      "w-full text-left px-4 py-2 text-xs font-semibold transition-colors",
-                                      outputFormat === opt.id
-                                        ? "bg-blue-50 text-[#002D56]"
-                                        : "text-slate-600 hover:bg-slate-50",
-                                    )}
-                                  >
-                                    {opt.label}
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-                          </section>
-
-                          {/* Project Specific Sources */}
-                          <section className="bg-white rounded-lg p-5 shadow-sm border border-slate-200">
-                            <div className="flex items-center gap-2 mb-4 px-1">
-                              <Files className="w-5 h-5 text-[#002D56]" />
-                              <h2 className="text-[14px] font-semibold text-slate-800">
-                                Nguồn dữ liệu bài viết
-                              </h2>
-                            </div>
-
-                            {/* Tab Controls */}
-                            <div className="flex items-center gap-1 bg-slate-50 p-1 rounded-lg mb-4 overflow-x-auto custom-scrollbar">
-                              {[
-                                { id: "library", label: "Từ kho", icon: Plus },
-                                { id: "web", label: "Web", icon: Globe },
-                                { id: "text", label: "Văn bản", icon: Type },
-                                { id: "link", label: "Link", icon: LinkIcon },
-                                {
-                                  id: "upload",
-                                  label: "Tải lên",
-                                  icon: FileUp,
-                                },
-                              ].map((tab) => (
-                                <button
-                                  key={tab.id}
-                                  onClick={() =>
-                                    setSourceActiveTab(
-                                      sourceActiveTab === tab.id
-                                        ? null
-                                        : (tab.id as any),
-                                    )
-                                  }
-                                  className={cn(
-                                    "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-bold transition-all whitespace-nowrap",
-                                    sourceActiveTab === tab.id
-                                      ? "bg-white text-[#002D56] shadow-sm"
-                                      : "text-slate-500 hover:text-slate-700 hover:bg-white/50",
-                                  )}
-                                >
-                                  <tab.icon className="w-3.5 h-3.5" />
-                                  {tab.label}
-                                </button>
-                              ))}
-                            </div>
-
-                            {/* Tab Forms */}
-                            <AnimatePresence mode="wait">
-                              {sourceActiveTab && (
-                                <motion.div
-                                  key={sourceActiveTab}
-                                  initial={{ opacity: 0, height: 0 }}
-                                  animate={{ opacity: 1, height: "auto" }}
-                                  exit={{ opacity: 0, height: 0 }}
-                                  className="overflow-hidden mb-4"
-                                >
-                                  <div className="p-4 bg-slate-50/50 rounded-lg border border-slate-100">
-                                    {sourceActiveTab === "library" && (
-                                      <div className="space-y-3">
-                                        <p className="text-[10px] font-bold text-slate-400 uppercase">
-                                          Thư viện cá nhân
-                                        </p>
-                                        <button
-                                          onClick={() => {
-                                            setIsPickingFromLibrary(true);
-                                            setSourceActiveTab(null);
-                                          }}
-                                          className="w-full py-3 bg-white border border-blue-200 text-blue-600 rounded-lg text-xs font-bold hover:bg-blue-50 transition-colors flex items-center justify-center gap-2"
-                                        >
-                                          <Plus className="w-4 h-4" /> Mở Kho tư
-                                          liệu
-                                        </button>
-                                      </div>
-                                    )}
-
-                                    {sourceActiveTab === "web" && (
-                                      <div className="space-y-3">
-                                        <p className="text-[10px] font-bold text-slate-400 uppercase">
-                                          Nghiên cứu Web AI
-                                        </p>
-                                        <div className="flex gap-2">
-                                          <input
-                                            autoFocus
-                                            type="text"
-                                            placeholder="VD: Quy định mớn nước luồng Lạch Huyện..."
-                                            value={searchQuery}
-                                            onChange={(e) =>
-                                              setSearchQuery(e.target.value)
-                                            }
-                                            className="flex-1 bg-white border border-slate-200 rounded-md px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-[#002D56] font-medium"
-                                            onKeyDown={(e) =>
-                                              e.key === "Enter" &&
-                                              handleWebSearch()
-                                            }
-                                          />
-                                          <button
-                                            onClick={handleWebSearch}
-                                            disabled={isLoading}
-                                            className="bg-[#002D56] text-white p-2 rounded-md hover:bg-slate-900 disabled:opacity-50"
-                                          >
-                                            {isLoading ? (
-                                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                            ) : (
-                                              <Search className="w-3.5 h-3.5" />
-                                            )}
-                                          </button>
-                                        </div>
-
-                                        {searchResults && (
-                                          <div className="mt-4 space-y-3 max-h-[250px] overflow-y-auto overscroll-contain pr-1 custom-scrollbar">
-                                            <p className="text-[11px] text-slate-600 font-medium leading-relaxed bg-blue-50 p-3 rounded-md border border-blue-100 italic">
-                                              {searchResults.text.substring(
-                                                0,
-                                                200,
-                                              )}
-                                              ...
-                                            </p>
-                                            <div className="space-y-2">
-                                              {searchResults.groundingMetadata?.groundingChunks?.map(
-                                                (chunk: any, idx: number) => {
-                                                  const title =
-                                                    chunk.web?.title ||
-                                                    `Nguồn ${idx + 1}`;
-                                                  const uri = chunk.web?.uri;
-                                                  return (
-                                                    <div
-                                                      key={`web-chunk-${idx}`}
-                                                      className="group/res bg-white p-3 rounded-md border border-slate-100 hover:border-[#002D56] transition-all"
-                                                    >
-                                                      <div className="flex items-center gap-1.5 mb-1 opacity-60">
-                                                        <Globe className="w-2.5 h-2.5" />
-                                                        <span className="text-[8px] font-bold truncate">
-                                                          {uri
-                                                            ? getHostname(uri)
-                                                            : "Nguồn Web"}
-                                                        </span>
-                                                      </div>
-                                                      <h4 className="text-[11px] font-bold text-slate-800 line-clamp-1 group-hover/res:text-[#002D56]">
-                                                        {title}
-                                                      </h4>
-                                                      <button
-                                                        onClick={() =>
-                                                          addSearchResultAsSource(
-                                                            title,
-                                                            `Nội dung từ tìm kiếm AI: ${title}`,
-                                                            uri,
-                                                          )
-                                                        }
-                                                        className="mt-2 text-[9px] font-semibold text-emerald-600 hover:text-emerald-700 flex items-center gap-1"
-                                                      >
-                                                        <Plus className="w-3 h-3" />{" "}
-                                                        Trích xuất làm tư liệu
-                                                      </button>
-                                                    </div>
-                                                  );
-                                                },
-                                              )}
-                                            </div>
-                                          </div>
-                                        )}
-                                      </div>
-                                    )}
-
-                                    {sourceActiveTab === "text" && (
-                                      <div className="space-y-3">
-                                        <p className="text-[10px] font-bold text-slate-400 uppercase">
-                                          Nhập văn bản nguồn
-                                        </p>
-                                        <input
-                                          type="text"
-                                          placeholder="Tên nguồn (tùy chọn)..."
-                                          value={newTextName}
-                                          onChange={(e) =>
-                                            setNewTextName(e.target.value)
-                                          }
-                                          className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-[#002D56] font-medium"
-                                        />
-                                        <textarea
-                                          placeholder="Dán nội dung vào đây..."
-                                          value={newTextContent}
-                                          onChange={(e) =>
-                                            setNewTextContent(e.target.value)
-                                          }
-                                          className="w-full h-32 bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-[#002D56] font-medium resize-none shadow-inner"
-                                        />
-
-                                        <label className="flex items-center gap-2 cursor-pointer group">
-                                          <input
-                                            type="checkbox"
-                                            checked={saveToLibrary}
-                                            onChange={(e) =>
-                                              setSaveToLibrary(e.target.checked)
-                                            }
-                                            className="w-4 h-4 rounded border-slate-300 text-[#002D56] focus:ring-[#002D56]"
-                                          />
-                                          <div className="flex flex-col">
-                                            <span className="text-[11px] font-bold text-slate-700 group-hover:text-[#002D56] transition-colors">
-                                              Lưu vào Kho tư liệu
-                                            </span>
-                                            <span className="text-[9px] text-slate-400 font-medium">
-                                              Nếu không chọn, tài liệu sẽ mất
-                                              khi tải lại trang.
-                                            </span>
-                                          </div>
-                                        </label>
-
-                                        <div className="flex gap-2">
-                                          <button
-                                            onClick={handleAddText}
-                                            className="flex-1 bg-[#002D56] text-white py-2.5 rounded-lg text-xs font-bold hover:bg-slate-900 transition-all shadow-md"
-                                          >
-                                            Thêm nguồn
-                                          </button>
-                                        </div>
-                                      </div>
-                                    )}
-
-                                    {sourceActiveTab === "link" && (
-                                      <div className="space-y-3">
-                                        <p className="text-[10px] font-bold text-slate-400 uppercase">
-                                          Dán liên kết
-                                        </p>
-                                        <input
-                                          autoFocus
-                                          type="text"
-                                          placeholder="https://..."
-                                          value={newLinkUrl}
-                                          onChange={(e) =>
-                                            setNewLinkUrl(e.target.value)
-                                          }
-                                          className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-[#002D56] font-medium"
-                                          onKeyDown={(e) =>
-                                            e.key === "Enter" && handleAddLink()
-                                          }
-                                        />
-
-                                        <label className="flex items-center gap-2 cursor-pointer group">
-                                          <input
-                                            type="checkbox"
-                                            checked={saveToLibrary}
-                                            onChange={(e) =>
-                                              setSaveToLibrary(e.target.checked)
-                                            }
-                                            className="w-4 h-4 rounded border-slate-300 text-[#002D56] focus:ring-[#002D56]"
-                                          />
-                                          <div className="flex flex-col">
-                                            <span className="text-[11px] font-bold text-slate-700 group-hover:text-[#002D56] transition-colors">
-                                              Lưu vào Kho tư liệu
-                                            </span>
-                                            <span className="text-[9px] text-slate-400 font-medium">
-                                              Lưu link và nội dung tóm tắt vào
-                                              thư viện.
-                                            </span>
-                                          </div>
-                                        </label>
-
-                                        <button
-                                          onClick={handleAddLink}
-                                          disabled={isParsing}
-                                          className="w-full bg-[#002D56] text-white py-2.5 rounded-lg text-xs font-bold hover:bg-slate-900 transition-all flex items-center justify-center gap-2"
-                                        >
-                                          {isParsing && (
-                                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                          )}
-                                          Kết nối & Trích xuất
-                                        </button>
-                                      </div>
-                                    )}
-
-                                    {sourceActiveTab === "upload" && (
-                                      <div className="space-y-3">
-                                        <p className="text-[10px] font-bold text-slate-400 uppercase">
-                                          Tải lên tệp
-                                        </p>
-                                        <div
-                                          onClick={() =>
-                                            fileInputRef.current?.click()
-                                          }
-                                          className="w-full py-8 border-2 border-dashed border-slate-200 rounded-lg bg-white hover:border-[#002D56] hover:bg-blue-50 transition-all flex flex-col items-center justify-center gap-2 cursor-pointer"
-                                        >
-                                          <div className="p-3 bg-slate-50 rounded-full">
-                                            <FileUp className="w-6 h-6 text-slate-400" />
-                                          </div>
-                                          <div className="text-center">
-                                            <p className="text-xs font-bold text-slate-700">
-                                              Click để chọn tệp
-                                            </p>
-                                            <p className="text-[10px] text-slate-400 font-medium mt-1">
-                                              Hỗ trợ PDF, Word, Ảnh (OCR)
-                                            </p>
-                                          </div>
-                                        </div>
-
-                                        <label className="flex items-center gap-2 cursor-pointer group">
-                                          <input
-                                            type="checkbox"
-                                            checked={saveToLibrary}
-                                            onChange={(e) =>
-                                              setSaveToLibrary(e.target.checked)
-                                            }
-                                            className="w-4 h-4 rounded border-slate-300 text-[#002D56] focus:ring-[#002D56]"
-                                          />
-                                          <div className="flex flex-col">
-                                            <span className="text-[11px] font-bold text-slate-700 group-hover:text-[#002D56] transition-colors">
-                                              Lưu vào Kho tư liệu
-                                            </span>
-                                            <span className="text-[9px] text-slate-400 font-medium">
-                                              Tệp sẽ được lưu vĩnh viễn trên hệ
-                                              thống.
-                                            </span>
-                                          </div>
-                                        </label>
-                                      </div>
-                                    )}
-                                  </div>
-                                </motion.div>
-                              )}
-                            </AnimatePresence>
-
-                            {/* Active Sources List */}
-                            <div className="space-y-2 max-h-[300px] overflow-y-auto overscroll-contain pr-1 custom-scrollbar">
-                              {selectedSourceDocIds.length === 0 ? (
-                                <div className="py-8 text-center bg-slate-50 rounded-md border border-dashed border-slate-200 px-4">
-                                  <Database className="w-10 h-10 text-slate-100 mx-auto mb-4" />
-                                  <p className="text-[11px] text-slate-400 font-bold tracking-normal leading-relaxed">
-                                    Chưa chọn tài liệu nguồn cho AI. <br /> Hãy
-                                    chọn từ thư viện, dán link hoặc nhập văn
-                                    bản.
-                                  </p>
-                                </div>
-                              ) : (
-                                documents
-                                  .filter((d) =>
-                                    selectedSourceDocIds.includes(d.id),
-                                  )
-                                  .map((doc) => (
-                                    <div
-                                      key={doc.id}
-                                      className={cn(
-                                        "flex items-center gap-3 p-3 rounded-md border transition-all shadow-sm",
-                                        doc.temporary
-                                          ? "bg-amber-50/30 border-amber-100"
-                                          : "bg-white border-blue-100",
-                                      )}
-                                    >
-                                      <div
-                                        className={cn(
-                                          "p-2 rounded-md shrink-0",
-                                          doc.temporary
-                                            ? "bg-amber-50 text-amber-600"
-                                            : doc.type === "drive"
-                                              ? "bg-slate-50 text-[#002D56]"
-                                              : "bg-blue-50 text-blue-600",
-                                        )}
-                                      >
-                                        {doc.driveIconUrl ? (
-                                          <img
-                                            src={doc.driveIconUrl}
-                                            alt="icon"
-                                            className="w-4 h-4 opacity-70"
-                                            referrerPolicy="no-referrer"
-                                          />
-                                        ) : (
-                                          <FileText className="w-4 h-4" />
-                                        )}
-                                      </div>
-                                      <div className="flex-1 min-w-0">
-                                        <div className="flex items-center gap-1.5 overflow-hidden">
-                                          <p className="text-[11px] font-semibold text-slate-700 truncate tracking-tight">
-                                            {doc.name}
-                                          </p>
-                                          {doc.temporary && (
-                                            <span className="shrink-0 text-[8px] bg-amber-100 text-amber-700 px-1 rounded font-bold uppercase">
-                                              Tạm
-                                            </span>
-                                          )}
-                                        </div>
-                                        <p className="text-[9px] text-slate-400 font-bold tracking-normal truncate">
-                                          {getDocTypeLabel(doc.type)} •{" "}
-                                          {getSourceTypeLabel(doc.sourceType)}
-                                        </p>
-                                      </div>
-                                      <button
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          toggleDocSelection(doc.id);
-                                        }}
-                                        className="p-1 text-slate-300 hover:text-red-500 rounded-md transition-colors"
-                                      >
-                                        <X className="w-3.5 h-3.5" />
-                                      </button>
-                                    </div>
-                                  ))
-                              )}
-                            </div>
-                          </section>
-                        </aside>
-
-                        {/* Main Editor Area */}
-                        <div className="space-y-6 min-w-0">
-                          {/* Input Area */}
-                          <section className="bg-white rounded-md shadow-sm border border-slate-200 overflow-hidden flex flex-col min-h-[400px]">
-                            <div className="px-5 sm:px-6 py-4 sm:py-5 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
-                              <div className="flex items-center gap-3">
-                                <div className="p-2 sm:p-2.5 bg-[#002D56] rounded-md shadow-sm shadow-[#002D56]/10">
-                                  <Edit3 className="w-4 h-4 sm:w-5 sm:h-5 text-white" />
-                                </div>
-                                <div>
-                                  <span className="text-xs sm:text-sm font-semibold text-[#002D56] tracking-normal">
-                                    Yêu cầu biên soạn
-                                  </span>
-                                  {selectedSourceDocIds.length > 0 && (
-                                    <p className="text-[8px] sm:text-[10px] text-emerald-600 font-semibold flex items-center gap-1.5 mt-0.5 uppercase">
-                                      <Database className="w-2.5 h-2.5 sm:w-3.5 sm:h-3.5" />{" "}
-                                      {selectedSourceDocIds.length} tệp nguồn đã
-                                      chọn
-                                    </p>
-                                  )}
-                                </div>
-                              </div>
-                              <div className="flex items-center gap-2 sm:gap-3">
-                                {isParsing && (
-                                  <span className="text-[9px] font-semibold text-amber-600 animate-pulse flex items-center gap-1.5 bg-amber-50 px-3 py-1.5 rounded-md border border-amber-200 tracking-normal">
-                                    <Loader2 className="w-3 h-3 animate-spin" />
-                                    Parsing...
-                                  </span>
-                                )}
-                                <button
-                                  onClick={() => {
-                                    setInput("");
-                                    setOutput("");
-                                    setError(null);
-                                  }}
-                                  className="text-slate-300 hover:text-red-500 p-2 sm:p-2.5 rounded-md transition-all hover:bg-red-50"
-                                  title="Làm mới vùng biên tập"
-                                >
-                                  <Trash2 className="w-4 h-4 sm:w-5 sm:h-5" />
-                                </button>
-                              </div>
-                            </div>
-                            <div className="relative flex-1 flex flex-col min-h-[300px] bg-slate-50/50">
-                              {taskType === "WRITE_NEW" ? (
-                                <div className="p-6 sm:p-6 flex-1 w-full space-y-6">
-                                  <EditorialKindSelector
-                                    value={editorialKind}
-                                    onChange={setEditorialKind}
-                                  />
-                                  <EditorialInputForm
-                                    kind={editorialKind}
-                                    initialValue={input}
-                                    onChange={setInput}
-                                  />
-                                </div>
-                              ) : (
-                                <textarea
-                                  value={input}
-                                  onChange={(e) => setInput(e.target.value)}
-                                  placeholder="Viết yêu cầu chi tiết của bạn tại đây để AI xử lý..."
-                                  className="flex-1 w-full p-6 sm:p-6 pb-32 focus:outline-none resize-none text-slate-800 text-base sm:text-lg leading-relaxed placeholder:text-slate-400 placeholder:font-medium bg-transparent"
-                                />
-                              )}
-
-                              <div className="absolute flex flex-col sm:flex-row items-end sm:items-center justify-end gap-3 bottom-0 right-0 w-full p-4 sm:p-6 pointer-events-none">
-                                {!input.trim() &&
-                                  selectedSourceDocIds.length === 0 && (
-                                    <span className="text-[12px] font-bold text-amber-600 bg-amber-50 px-3 py-1.5 rounded-lg border border-amber-100 italic tracking-tight hidden sm:block">
-                                      Nhập yêu cầu để bắt đầu
-                                    </span>
-                                  )}
-                                <button
-                                  disabled={
-                                    (!input.trim() &&
-                                      selectedSourceDocIds.length === 0) ||
-                                    isLoading ||
-                                    isParsing ||
-                                    isBuildingTasks
-                                  }
-                                  onClick={
-                                    taskType === "TASK_BUILDER"
-                                      ? handleBuildTasks
-                                      : handleProcess
-                                  }
-                                  className={cn(
-                                    "w-full sm:w-auto flex items-center justify-center gap-2 px-8 py-3.5 rounded-md font-semibold text-[13px] tracking-normal transition-all duration-300 shadow-md active:scale-[0.98] pointer-events-auto shrink-0",
-                                    (!input.trim() &&
-                                      selectedSourceDocIds.length === 0) ||
-                                      isLoading ||
-                                      isParsing ||
-                                      isBuildingTasks
-                                      ? "bg-slate-200 text-slate-500 cursor-not-allowed shadow-none"
-                                      : "bg-[#002D56] text-white hover:bg-slate-900 shadow-[#002D56]/30 hover:shadow-sm",
-                                  )}
-                                >
-                                  {isLoading || isBuildingTasks ? (
-                                    <>
-                                      <Loader2 className="w-4 h-4 animate-spin" />
-                                      Đang xử lý...
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Zap className="w-4 h-4 fill-current" />
-                                      {!input.trim() &&
-                                      selectedSourceDocIds.length === 0
-                                        ? "Nhập yêu cầu để bắt đầu"
-                                        : "Bắt đầu xử lý"}
-                                    </>
-                                  )}
-                                </button>
-                              </div>
-                            </div>
-
-                            <div className="px-5 sm:px-8 py-4 bg-slate-50 border-t border-slate-100 flex items-center justify-between gap-5">
-                              <div className="flex items-start gap-3 w-full">
-                                <div className="p-1.5 bg-blue-100 rounded-lg shrink-0 mt-0.5">
-                                  <ShieldCheck className="w-3.5 h-3.5 text-[#002D56]" />
-                                </div>
-                                <p className="text-[11px] text-slate-500 font-medium leading-relaxed">
-                                  Hệ thống sẽ đồng nhất thuật ngữ và cấu trúc
-                                  bài viết theo quy chuẩn Hoa Tiêu Miền Bắc.
-                                </p>
-                              </div>
-                            </div>
-                          </section>
-
-                          {/* Task Builder Results */}
-                          <AnimatePresence>
-                            {builtTasks.length > 0 && (
-                              <motion.section
-                                initial={{ opacity: 0, y: 30 }}
-                                animate={{ opacity: 1, y: 0 }}
-                                exit={{ opacity: 0, y: 30 }}
-                                className="bg-white rounded-md shadow-sm border border-slate-200 overflow-hidden"
-                              >
-                                <div className="px-6 sm:px-8 py-6 bg-slate-50 border-b border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-6">
-                                  <div className="flex items-center gap-4 w-full sm:w-auto">
-                                    <div className="bg-[#002D56] p-3 rounded-md shadow-sm shrink-0">
-                                      <Target className="text-white w-6 h-6" />
-                                    </div>
-                                    <div>
-                                      <h2 className="text-lg sm:text-xl font-semibold text-slate-800 tracking-tight">
-                                        Kế hoạch công việc trích xuất
-                                      </h2>
-                                      <p className="text-xs sm:text-sm text-slate-500 font-medium">
-                                        Rà soát và lưu danh sách công việc đã
-                                        được AI lập kế hoạch.
-                                      </p>
-                                    </div>
-                                  </div>
-                                  <div className="flex items-center gap-2 w-full sm:w-auto overflow-x-auto pb-2 sm:pb-0 scrollbar-hide">
-                                    <button
-                                      onClick={() => {
-                                        const allSelected = (
-                                          builtTasks as any[]
-                                        ).every((t) => t.selected);
-                                        setBuiltTasks((prev) =>
-                                          prev.map((t) => ({
-                                            ...t,
-                                            selected: !allSelected,
-                                          })),
-                                        );
-                                      }}
-                                      className="bg-slate-100 text-slate-600 px-4 py-3 rounded-md font-bold text-[10px] sm:text-xs tracking-normal hover:bg-slate-200 transition-all whitespace-nowrap"
-                                    >
-                                      {(builtTasks as any[]).every(
-                                        (t) => t.selected,
-                                      )
-                                        ? "Bỏ chọn hết"
-                                        : "Chọn tất cả"}
-                                    </button>
-                                    <button
-                                      onClick={() => setBuiltTasks([])}
-                                      className="bg-red-50 text-red-500 p-3 rounded-md hover:bg-red-100 transition-all shrink-0"
-                                    >
-                                      <Trash2 className="w-5 h-5" />
-                                    </button>
-                                    <button
-                                      onClick={saveBuiltTasks}
-                                      disabled={isBuildingTasks}
-                                      className="bg-emerald-500 text-white px-6 py-3 rounded-md font-semibold text-[10px] sm:text-xs tracking-normal hover:bg-emerald-600 transition-all flex items-center justify-center gap-2 shrink-0 flex-1 sm:flex-initial"
-                                    >
-                                      <Save className="w-4 h-4" /> Lưu đã chọn
-                                    </button>
-                                  </div>
-                                </div>
-
-                                <div className="p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 bg-slate-50/50">
-                                  {(builtTasks as any[]).map((task, idx) => (
-                                    <div
-                                      key={task.id}
-                                      className={`bg-white p-6 rounded-md shadow-sm border transition-all relative ${task.selected ? "border-[#002D56] shadow-md ring-4 ring-[#002D56]/5" : "border-slate-200 shadow-slate-200/50"}`}
-                                    >
-                                      <div className="absolute top-6 left-6 z-10 flex items-center gap-3">
-                                        <input
-                                          type="checkbox"
-                                          checked={task.selected}
-                                          onChange={() =>
-                                            setBuiltTasks((prev) =>
-                                              prev.map((t) =>
-                                                t.id === task.id
-                                                  ? {
-                                                      ...t,
-                                                      selected: !t.selected,
-                                                    }
-                                                  : t,
-                                              ),
-                                            )
-                                          }
-                                          className="w-5 h-5 rounded-lg text-[#002D56] focus:ring-[#002D56] border-slate-300 cursor-pointer"
-                                        />
-                                      </div>
-
-                                      <div className="flex items-start justify-between mb-5 pl-10">
-                                        <div className="flex flex-col gap-1 w-full min-w-0">
-                                          <div className="flex flex-wrap items-center gap-2 mb-2">
-                                            <select
-                                              value={task.categoryCode}
-                                              onChange={(e) =>
-                                                setBuiltTasks((prev) =>
-                                                  prev.map((t) =>
-                                                    t.id === task.id
-                                                      ? {
-                                                          ...t,
-                                                          categoryCode:
-                                                            e.target.value,
-                                                        }
-                                                      : t,
-                                                  ),
-                                                )
-                                              }
-                                              className="bg-blue-50 text-[#002D56] text-[9px] font-semibold tracking-normal px-3 py-1 rounded-md border-none focus:ring-1 focus:ring-blue-300 outline-none cursor-pointer"
-                                            >
-                                              {TASK_CATEGORIES.map((c) => (
-                                                <option
-                                                  key={c.code}
-                                                  value={c.code}
-                                                >
-                                                  {c.name}
-                                                </option>
-                                              ))}
-                                            </select>
-                                            <select
-                                              value={task.priority}
-                                              onChange={(e) =>
-                                                setBuiltTasks((prev) =>
-                                                  prev.map((t) =>
-                                                    t.id === task.id
-                                                      ? {
-                                                          ...t,
-                                                          priority: e.target
-                                                            .value as any,
-                                                        }
-                                                      : t,
-                                                  ),
-                                                )
-                                              }
-                                              className={cn(
-                                                "text-[9px] font-semibold tracking-normal px-3 py-1 rounded-md border-none outline-none cursor-pointer",
-                                                task.priority === "urgent"
-                                                  ? "bg-red-50 text-red-600"
-                                                  : task.priority === "high"
-                                                    ? "bg-orange-50 text-orange-600"
-                                                    : "bg-slate-100 text-slate-500",
-                                              )}
-                                            >
-                                              <option value="low">
-                                                Ưu tiên: Thấp
-                                              </option>
-                                              <option value="medium">
-                                                Ưu tiên: Vừa
-                                              </option>
-                                              <option value="high">
-                                                Ưu tiên: Cao
-                                              </option>
-                                              <option value="urgent">
-                                                Cấp bách
-                                              </option>
-                                            </select>
-                                          </div>
-                                          <input
-                                            value={task.title}
-                                            onChange={(e) =>
-                                              setBuiltTasks((prev) =>
-                                                prev.map((t) =>
-                                                  t.id === task.id
-                                                    ? {
-                                                        ...t,
-                                                        title: e.target.value,
-                                                      }
-                                                    : t,
-                                                ),
-                                              )
-                                            }
-                                            className="text-base sm:text-lg font-semibold text-[#002D56] bg-transparent border-b-2 border-transparent hover:border-slate-100 focus:border-[#002D56] focus:outline-none w-full tracking-tight"
-                                            placeholder="Tên nhiệm vụ..."
-                                          />
-                                        </div>
-                                        <div className="flex items-center gap-1 shrink-0">
-                                          <button
-                                            onClick={async () => {
-                                              const docId =
-                                                await persistTask(task);
-                                              if (docId) {
-                                                toast.success(
-                                                  "Đã lưu công việc",
-                                                );
-                                                setBuiltTasks((prev) =>
-                                                  prev.filter(
-                                                    (t) => t.id !== task.id,
-                                                  ),
-                                                );
-                                              }
-                                            }}
-                                            className="text-emerald-500 hover:bg-emerald-50 p-2 rounded-md transition-all shadow-sm active:scale-[0.98]"
-                                            title="Lưu riêng nhiệm vụ này"
-                                          >
-                                            <Check className="w-5 h-5" />
-                                          </button>
-                                          <button
-                                            onClick={() =>
-                                              setBuiltTasks((prev) =>
-                                                prev.filter(
-                                                  (t) => t.id !== task.id,
-                                                ),
-                                              )
-                                            }
-                                            className="text-slate-300 hover:text-red-500 transition-all p-2 rounded-md active:scale-[0.98]"
-                                          >
-                                            <Trash2 className="w-4 h-4" />
-                                          </button>
-                                        </div>
-                                      </div>
-
-                                      <div className="space-y-4">
-                                        <div className="grid grid-cols-2 gap-4">
-                                          <div className="space-y-1.5 p-3 bg-slate-50 rounded-md border border-slate-100">
-                                            <label className="text-[9px] font-semibold text-slate-400 tracking-normal flex items-center gap-1.5">
-                                              <User className="w-3 h-3" /> Phụ
-                                              trách
-                                            </label>
-                                            <input
-                                              value={task.assignee}
-                                              onChange={(e) =>
-                                                setBuiltTasks((prev) =>
-                                                  prev.map((t) =>
-                                                    t.id === task.id
-                                                      ? {
-                                                          ...t,
-                                                          assignee:
-                                                            e.target.value,
-                                                        }
-                                                      : t,
-                                                  ),
-                                                )
-                                              }
-                                              placeholder="Gán tên..."
-                                              className="w-full bg-transparent border-none p-0 text-xs font-semibold text-[#002D56] tracking-tight focus:ring-0 focus:outline-none placeholder:text-slate-300"
-                                            />
-                                          </div>
-                                          <div className="space-y-1.5 p-3 bg-slate-50 rounded-md border border-slate-100">
-                                            <label className="text-[9px] font-semibold text-slate-400 tracking-normal flex items-center gap-1.5">
-                                              <Calendar className="w-3 h-3" />{" "}
-                                              Hạn xử lý
-                                            </label>
-                                            <input
-                                              type="date"
-                                              value={task.dueDate || ""}
-                                              onChange={(e) =>
-                                                setBuiltTasks((prev) =>
-                                                  prev.map((t) =>
-                                                    t.id === task.id
-                                                      ? {
-                                                          ...t,
-                                                          dueDate:
-                                                            e.target.value,
-                                                        }
-                                                      : t,
-                                                  ),
-                                                )
-                                              }
-                                              className="w-full bg-transparent border-none p-0 text-xs font-semibold text-[#002D56] focus:ring-0 focus:outline-none cursor-pointer"
-                                            />
-                                          </div>
-                                        </div>
-                                        <div className="p-4 bg-slate-50 rounded-md border border-slate-100">
-                                          <label className="text-[9px] font-semibold text-slate-400 tracking-normal mb-1.5 block">
-                                            Chi tiết nghiệp vụ
-                                          </label>
-                                          <textarea
-                                            value={task.description}
-                                            onChange={(e) =>
-                                              setBuiltTasks((prev) =>
-                                                prev.map((t) =>
-                                                  t.id === task.id
-                                                    ? {
-                                                        ...t,
-                                                        description:
-                                                          e.target.value,
-                                                      }
-                                                    : t,
-                                                ),
-                                              )
-                                            }
-                                            rows={2}
-                                            placeholder="Mô tả các bước thực hiện..."
-                                            className="w-full bg-transparent text-[11px] text-slate-600 font-bold leading-relaxed resize-none focus:outline-none placeholder:text-slate-300 border-none p-0 focus:ring-0"
-                                          />
-                                        </div>
-                                        {(task.sourceText ||
-                                          task.assigneeText) && (
-                                          <div className="grid grid-cols-2 gap-4 mt-2">
-                                            {task.assigneeText && (
-                                              <div className="p-3 bg-purple-50 rounded-md border border-purple-100">
-                                                <label className="text-[9px] font-semibold text-purple-400 tracking-normal mb-1 block">
-                                                  Tên phụ trách (Raw)
-                                                </label>
-                                                <p className="text-[11px] text-purple-700 font-medium">
-                                                  Lưu ý tên trích xuất:{" "}
-                                                  {task.assigneeText}
-                                                </p>
-                                              </div>
-                                            )}
-                                            {task.sourceText && (
-                                              <div className="p-3 bg-blue-50 rounded-md border border-blue-100">
-                                                <label className="text-[9px] font-semibold text-blue-400 tracking-normal mb-1 block">
-                                                  Tài liệu Nguồn
-                                                </label>
-                                                <p className="text-[10px] text-blue-700 font-medium italic line-clamp-2">
-                                                  "{task.sourceText}"
-                                                </p>
-                                              </div>
-                                            )}
-                                          </div>
-                                        )}
-                                        {task.nextActions &&
-                                          task.nextActions.length > 0 && (
-                                            <div className="p-3 bg-slate-100 rounded-md">
-                                              <label className="text-[9px] font-semibold text-slate-500 tracking-normal mb-2 block">
-                                                Hành động tiếp theo
-                                              </label>
-                                              <ul className="list-disc pl-4 space-y-1">
-                                                {task.nextActions.map(
-                                                  (action, actionIdx) => (
-                                                    <li
-                                                      key={actionIdx}
-                                                      className="text-[10px] text-slate-600 font-medium"
-                                                    >
-                                                      {action}
-                                                    </li>
-                                                  ),
-                                                )}
-                                              </ul>
-                                            </div>
-                                          )}
-                                        <div className="flex items-center gap-2">
-                                          <input
-                                            type="checkbox"
-                                            id={`deputy-${task.id}`}
-                                            checked={task.isDeputy}
-                                            onChange={(e) =>
-                                              setBuiltTasks((prev) =>
-                                                prev.map((t) =>
-                                                  t.id === task.id
-                                                    ? {
-                                                        ...t,
-                                                        isDeputy:
-                                                          e.target.checked,
-                                                      }
-                                                    : t,
-                                                ),
-                                              )
-                                            }
-                                            className="w-4 h-4 rounded text-amber-500 focus:ring-amber-400 border-slate-300 cursor-pointer"
-                                          />
-                                          <label
-                                            htmlFor={`deputy-${task.id}`}
-                                            className="text-[10px] font-semibold uppercase text-amber-600 tracking-wide cursor-pointer select-none"
-                                          >
-                                            P. Trưởng phòng / Kiêm nhiệm
-                                          </label>
-                                        </div>
-                                      </div>
-                                    </div>
-                                  ))}
-                                </div>
-                              </motion.section>
-                            )}
-                          </AnimatePresence>
-
-                          {/* Error Message */}
-                          <AnimatePresence>
-                            {error && (
-                              <motion.div
-                                key="error-alert"
-                                initial={{ opacity: 0, scale: 0.95 }}
-                                animate={{ opacity: 1, scale: 1 }}
-                                exit={{ opacity: 0, scale: 0.95 }}
-                                className="bg-red-50 border border-red-200 text-red-600 p-5 rounded-md flex items-start gap-4 shadow-sm"
-                              >
-                                <AlertCircle className="w-6 h-6 flex-shrink-0" />
-                                <div className="flex-1">
-                                  <h4 className="font-semibold text-sm tracking-tight mb-1">
-                                    Cảnh báo hệ thống
-                                  </h4>
-                                  <p className="text-sm font-medium opacity-80">
-                                    {error}
-                                  </p>
-                                </div>
-                              </motion.div>
-                            )}
-                          </AnimatePresence>
-
-                          {/* Output / Results */}
-                          <AnimatePresence>
-                            {output && output.trim() && (
-                              <motion.section
-                                key="output-panel"
-                                ref={outputRef}
-                                initial={{ opacity: 0, y: 30 }}
-                                animate={{ opacity: 1, y: 0 }}
-                                className="bg-white rounded-md shadow-sm border border-slate-200 overflow-hidden"
-                              >
-                                <div className="px-5 sm:px-8 py-5 border-b border-slate-100 flex flex-col gap-4 bg-slate-50/30">
-                                  <div className="flex items-center justify-between">
-                                    <div className="flex items-center gap-3">
-                                      <div className="w-2.5 h-2.5 bg-emerald-500 rounded-full animate-pulse shrink-0"></div>
-                                      <div className="flex flex-col">
-                                        <span className="text-[10px] font-semibold text-slate-400 tracking-normal mb-0.5">
-                                          Sản phẩm truyền thông
-                                        </span>
-                                        <div className="flex items-center gap-2">
-                                          <button
-                                            onClick={() =>
-                                              setIsEditing(!isEditing)
-                                            }
-                                            className={cn(
-                                              "text-[10px] font-semibold px-3 py-1.5 rounded-md transition-all flex items-center gap-2 tracking-tight",
-                                              isEditing
-                                                ? "bg-[#002D56] text-white shadow-sm"
-                                                : "bg-white border border-slate-200 text-[#002D56] hover:bg-slate-50",
-                                            )}
-                                          >
-                                            {isEditing ? (
-                                              <Save className="w-3.5 h-3.5" />
-                                            ) : (
-                                              <Edit3 className="w-3.5 h-3.5" />
-                                            )}
-                                            {isEditing
-                                              ? "Đang sửa"
-                                              : "Sửa thủ công"}
-                                          </button>
-                                          {currentSessionId &&
-                                            sessions.find(
-                                              (s) => s.id === currentSessionId,
-                                            )?.versions.length! > 1 && (
-                                              <div className="flex items-center gap-1.5 text-[9px] font-semibold text-slate-400 tracking-wide bg-white px-2 py-1 rounded-lg border border-slate-100">
-                                                <History className="w-3 h-3" />
-                                                {
-                                                  sessions.find(
-                                                    (s) =>
-                                                      s.id === currentSessionId,
-                                                  )?.versions.length
-                                                }{" "}
-                                                hồ sơ
-                                              </div>
-                                            )}
-                                        </div>
-                                      </div>
-                                    </div>
-                                    <div className="flex items-center gap-1.5">
-                                      <button
-                                        onClick={handleCopy}
-                                        className={cn(
-                                          "p-2.5 rounded-md transition-all shadow-sm active:scale-90 border",
-                                          copySuccess
-                                            ? "bg-emerald-600 text-white border-emerald-500"
-                                            : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50",
-                                        )}
-                                        title="Sao chép"
-                                      >
-                                        {copySuccess ? (
-                                          <Check className="w-4 h-4" />
-                                        ) : (
-                                          <Copy className="w-4 h-4" />
-                                        )}
-                                      </button>
-                                      {isEditing && (
-                                        <button
-                                          onClick={() => {
-                                            saveCurrentToSession();
-                                            setIsEditing(false);
-                                          }}
-                                          className="p-2.5 rounded-md bg-emerald-600 text-white shadow-sm shadow-emerald-200 active:scale-90 border border-emerald-500"
-                                          title="Lưu phiên bản"
-                                        >
-                                          <Save className="w-4 h-4" />
-                                        </button>
-                                      )}
-                                    </div>
-                                  </div>
-
-                                  {taskType === "WRITE_NEW" && (
-                                    <EditorialPreflightPanel
-                                      kind={editorialKind}
-                                      markdownContent={output}
-                                    />
-                                  )}
-
-                                  <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-hide -mx-1 px-1">
-                                    <button
-                                      onClick={handleLocalIllustrationScan}
-                                      disabled={
-                                        isLoading || isPlanningImages || !output
-                                      }
-                                      className="flex items-center gap-2 px-4 py-2.5 rounded-md text-[10px] font-semibold border border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100 transition-all active:scale-[0.98] disabled:opacity-50 tracking-normal shrink-0"
-                                    >
-                                      <Search className="w-3.5 h-3.5 text-amber-600" />
-                                      QUÉT VỊ TRÍ HÌNH
-                                    </button>
-
-                                    <button
-                                      onClick={handleAIIllustrationSuggestions}
-                                      disabled={
-                                        isLoading || isPlanningImages || !output
-                                      }
-                                      className="flex items-center gap-2 px-4 py-2.5 rounded-md text-[10px] font-semibold border border-blue-200 text-[#002D56] hover:bg-[#002D56]/5 transition-all active:scale-[0.98] disabled:opacity-50 tracking-normal shrink-0 bg-white"
-                                    >
-                                      <Sparkles className="w-3.5 h-3.5 text-blue-500" />
-                                      GỢI Ý BẰNG AI
-                                    </button>
-
-                                    <button
-                                      onClick={() => {
-                                        if (!output) return;
-                                        const input =
-                                          document.createElement("input");
-                                        input.type = "file";
-                                        input.accept = "image/*";
-                                        input.onchange = (e) => {
-                                          const file = (
-                                            e.target as HTMLInputElement
-                                          ).files?.[0];
-                                          if (file)
-                                            setSelectingParagraphForImage({
-                                              file,
-                                            });
-                                        };
-                                        input.click();
-                                      }}
-                                      disabled={isLoading || !output}
-                                      className="flex items-center gap-2 px-4 py-2.5 rounded-md text-[10px] font-semibold bg-[#002D56] text-white hover:bg-slate-900 transition-all active:scale-[0.98] disabled:opacity-50 shadow-md tracking-normal shrink-0"
-                                    >
-                                      <FileUp className="w-4 h-4" />
-                                      TẢI ẢNH TỰ DO
-                                    </button>
-
-                                    <button
-                                      onClick={() => {
-                                        setInput(output);
-                                        setTaskType("TASK_BUILDER");
-                                        if (window.innerWidth >= 1024)
-                                          window.scrollTo({
-                                            top: 0,
-                                            behavior: "smooth",
-                                          });
-                                      }}
-                                      disabled={isLoading || !output}
-                                      className="flex items-center gap-2 px-4 py-2.5 rounded-md text-[10px] font-semibold bg-indigo-50 text-indigo-600 border border-indigo-200 hover:bg-indigo-100 transition-all active:scale-[0.98] disabled:opacity-50 tracking-normal shrink-0"
-                                    >
-                                      <CheckCircle2 className="w-4 h-4" />
-                                      TẠO TASK
-                                    </button>
-
-                                    <div className="w-px h-6 bg-slate-200 mx-1 shrink-0" />
-
-                                    <button
-                                      onClick={async () => {
-                                        const audit =
-                                          auditEditorialPublish(illustrations);
-                                        if (audit.suggestedCount > 0) {
-                                          const confirmed =
-                                            await requestConfirmAsync(
-                                              `Còn ${audit.suggestedCount} hình ảnh chưa được duyệt. Bạn có muốn tiếp tục xuất bản PDF mà không có các hình này?`,
-                                            );
-                                          if (!confirmed) return;
-                                        }
-                                        try {
-                                          toast(
-                                            "Tính năng xuất PDF dạng văn bản (text searchable) đang được nâng cấp ở server. Hệ thống sẽ tạm xuất file dạng hình ảnh (Visual Snapshot).",
-                                            { icon: "ℹ️", duration: 5000 },
-                                          );
-                                          const { exportVisualSnapshotPDF } =
-                                            await import("./lib/exportUtils");
-                                          await exportVisualSnapshotPDF(
-                                            "printable-article",
-                                            `Bai_viet_HTMB_${Date.now()}`,
-                                          );
-
-                                          if (currentSessionId) {
-                                            await logActivity({
-                                              module: "editorial",
-                                              action: "exported",
-                                              entityType: "editorial_session",
-                                              entityId: currentSessionId,
-                                              entityTitle:
-                                                sessions.find(
-                                                  (s) =>
-                                                    s.id === currentSessionId,
-                                                )?.title || "Bài viết",
-                                              title: "Xuất PDF",
-                                              summary:
-                                                "Đã xuất bài viết ra định dạng PDF (Visual Snapshot).",
-                                              metadata: {
-                                                exportFormat: "pdf",
-                                                source: "client",
-                                              },
-                                            });
-                                          }
-                                        } catch (err: any) {
-                                          setError(err.message);
-                                        }
-                                      }}
-                                      className="flex items-center gap-2 p-2.5 rounded-md bg-white text-red-600 border border-red-100 hover:bg-red-50 transition-all shrink-0 active:scale-[0.98]"
-                                      title="Xuất PDF"
-                                    >
-                                      <FileDown className="w-4 h-4" />
-                                      <span className="text-[10px] font-semibold uppercase">
-                                        PDF
-                                      </span>
-                                    </button>
-
-                                    <button
-                                      onClick={async () => {
-                                        const audit =
-                                          auditEditorialPublish(illustrations);
-                                        if (audit.suggestedCount > 0) {
-                                          const confirmed =
-                                            await requestConfirmAsync(
-                                              `Còn ${audit.suggestedCount} hình ảnh chưa được duyệt. Bạn có muốn tiếp tục xuất bản Word mà không có các hình này?`,
-                                            );
-                                          if (!confirmed) return;
-                                        }
-                                        try {
-                                          let cleanContent =
-                                            stripResolvedPlaceholders(
-                                              removeBrokenMarkdownImages(
-                                                output,
-                                              ),
-                                              illustrations,
-                                              true,
-                                            );
-                                          const {
-                                            extractExportTitle,
-                                            exportToWord,
-                                          } = await import("./lib/exportUtils");
-                                          const extracted = extractExportTitle(
-                                            input,
-                                            cleanContent,
-                                          );
-                                          await exportToWord(
-                                            extracted.title,
-                                            extracted.body,
-                                            `Bai_viet_HTMB_${Date.now()}`,
-                                            illustrations,
-                                            editorialKind,
-                                          );
-
-                                          if (currentSessionId) {
-                                            await logActivity({
-                                              module: "editorial",
-                                              action: "exported",
-                                              entityType: "editorial_session",
-                                              entityId: currentSessionId,
-                                              entityTitle:
-                                                sessions.find(
-                                                  (s) =>
-                                                    s.id === currentSessionId,
-                                                )?.title || "Bài viết",
-                                              title: "Xuất Word",
-                                              summary:
-                                                "Đã xuất bài viết ra định dạng Word (DOCX).",
-                                              metadata: {
-                                                exportFormat: "docx",
-                                                source: "client",
-                                              },
-                                            });
-                                          }
-                                        } catch (err: any) {
-                                          setError(err.message);
-                                        }
-                                      }}
-                                      className="flex items-center gap-2 p-2.5 rounded-md bg-white text-blue-600 border border-blue-100 hover:bg-blue-50 transition-all shrink-0 active:scale-[0.98]"
-                                      title="Xuất Word"
-                                    >
-                                      <FileText className="w-4 h-4" />
-                                      <span className="text-[10px] font-semibold uppercase">
-                                        Word
-                                      </span>
-                                    </button>
-                                  </div>
-                                </div>
-
-                                {/* Illustration Progress / Dashboard - MOVED OUT OF PRINTABLE AREA */}
-                                {(illustrations.length > 0 ||
-                                  imagePlans.length > 0) && (
-                                  <div className="mx-8 md:mx-12 mt-8 p-6 bg-slate-50 border border-slate-200 rounded-md">
-                                    <div className="flex flex-col sm:flex-row items-center justify-between gap-6 mb-8">
-                                      <div className="flex items-center gap-4 w-full sm:w-auto">
-                                        <div className="bg-[#002D56] p-3 rounded-md shadow-sm shrink-0">
-                                          <ImageIcon className="w-6 h-6 text-white" />
-                                        </div>
-                                        <div>
-                                          <h4 className="text-sm font-semibold tracking-normal text-[#002D56]">
-                                            Duyệt hình bài viết
-                                          </h4>
-                                          <p className="text-[10px] font-bold text-slate-400 uppercase mt-0.5">
-                                            Xác nhận ảnh tải lên để xuất bản văn
-                                            bản
-                                          </p>
-                                        </div>
-                                      </div>
-                                      <div className="flex flex-wrap items-center gap-3 w-full sm:w-auto overflow-x-auto pb-2 sm:pb-0 scrollbar-hide">
-                                        {illustrations.some(
-                                          (img) =>
-                                            img.reviewStatus === "suggested" &&
-                                            img.status === "ready",
-                                        ) && (
-                                          <button
-                                            onClick={
-                                              approveAllValidIllustrations
-                                            }
-                                            className="flex-1 sm:flex-initial bg-emerald-500/10 text-emerald-600 px-5 py-2.5 rounded-md font-semibold text-[10px] tracking-wide hover:bg-emerald-500 hover:text-white transition-all flex items-center justify-center gap-2"
-                                          >
-                                            <CheckCircle className="w-4 h-4 shrink-0" />{" "}
-                                            Duyệt tất cả
-                                          </button>
-                                        )}
-                                        {illustrations.some(
-                                          (img) =>
-                                            img.status === "error" ||
-                                            img.qualityStatus === "failed" ||
-                                            img.reviewStatus === "rejected",
-                                        ) && (
-                                          <button
-                                            onClick={clearErrorImages}
-                                            className="flex-1 sm:flex-initial bg-red-500/10 text-red-600 px-5 py-2.5 rounded-md font-semibold text-[10px] tracking-wide hover:bg-red-500 hover:text-white transition-all flex items-center justify-center gap-2"
-                                          >
-                                            <Trash2 className="w-4 h-4 shrink-0" />{" "}
-                                            Dọn ảnh loại
-                                          </button>
-                                        )}
-                                      </div>
-                                    </div>
-
-                                    <div className="space-y-10">
-                                      {/* 1. Vị trí cần ảnh (Plans without images) */}
-                                      <div className="space-y-4">
-                                        <div className="flex items-center gap-2 ml-2">
-                                          <Target className="w-4 h-4 text-amber-500" />
-                                          <h5 className="text-[11px] font-semibold tracking-normal text-slate-500">
-                                            Vị trí cần bổ sung ảnh
-                                          </h5>
-                                        </div>
-                                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 sm:gap-6">
-                                          {imagePlans.map((plan) => {
-                                            const hasImage = illustrations.some(
-                                              (img) => img.planId === plan.id,
-                                            );
-                                            if (hasImage) return null;
-                                            return (
-                                              <div
-                                                key={plan.id}
-                                                className="bg-white p-5 rounded-md border border-slate-200 shadow-sm hover:shadow-md transition-all group border-dashed"
-                                              >
-                                                <div className="flex items-start justify-between mb-4">
-                                                  <div className="w-10 h-10 rounded-md bg-amber-50 flex items-center justify-center font-semibold text-amber-600 text-xs">
-                                                    P{plan.paragraphIndex}
-                                                  </div>
-                                                  <button
-                                                    onClick={() => {
-                                                      const input =
-                                                        document.createElement(
-                                                          "input",
-                                                        );
-                                                      input.type = "file";
-                                                      input.accept = "image/*";
-                                                      input.onchange = (e) => {
-                                                        const file = (
-                                                          e.target as HTMLInputElement
-                                                        ).files?.[0];
-                                                        if (file)
-                                                          handleManualUpload(
-                                                            file,
-                                                            plan.paragraphIndex,
-                                                            plan.id,
-                                                          );
-                                                      };
-                                                      input.click();
-                                                    }}
-                                                    className="w-10 h-10 rounded-md bg-[#002D56] text-white flex items-center justify-center hover:bg-slate-900 transition-all shadow-md group-hover:scale-110 active:scale-[0.98]"
-                                                    title="Tải ảnh cho vị trí này"
-                                                  >
-                                                    <FileUp className="w-5 h-5" />
-                                                  </button>
-                                                </div>
-                                                <h6 className="text-[11px] font-semibold text-slate-800 tracking-tight mb-2 line-clamp-2">
-                                                  {plan.caption}
-                                                </h6>
-                                                <p className="text-[10px] font-medium text-slate-400 italic mb-4 leading-relaxed">
-                                                  {plan.reason}
-                                                </p>
-                                                <div className="flex items-center gap-2">
-                                                  <span className="text-[8px] font-semibold tracking-normal px-2 py-1 bg-slate-100 text-slate-400 rounded-lg">
-                                                    Chưa có ảnh
-                                                  </span>
-                                                </div>
-                                              </div>
-                                            );
-                                          })}
-                                          {imagePlans.every((plan) =>
-                                            illustrations.some(
-                                              (img) => img.planId === plan.id,
-                                            ),
-                                          ) &&
-                                            imagePlans.length > 0 && (
-                                              <div className="col-span-full py-8 text-center bg-white rounded-md border border-emerald-200 border-dashed">
-                                                <CheckCircle className="w-10 h-10 text-emerald-300 mx-auto mb-3" />
-                                                <p className="text-xs font-bold text-emerald-600 tracking-normal">
-                                                  Tất cả vị trí kế hoạch đã được
-                                                  đăng tải ảnh
-                                                </p>
-                                              </div>
-                                            )}
-                                          {imagePlans.length === 0 && (
-                                            <div className="col-span-full py-8 text-center bg-white/50 rounded-md border border-slate-200 border-dashed">
-                                              <p className="text-xs font-bold text-slate-300 tracking-normal italic">
-                                                Bấm "LẬP KẾ HOẠCH HÌNH" để AI đề
-                                                xuất các vị trí cần minh họa
-                                              </p>
-                                            </div>
-                                          )}
-                                        </div>
-                                      </div>
-
-                                      {/* 2. Ảnh chờ duyệt (Suggested) */}
-                                      <div className="space-y-4">
-                                        <div className="flex items-center gap-2 ml-2">
-                                          <Clock className="w-4 h-4 text-blue-500" />
-                                          <h5 className="text-[11px] font-semibold tracking-normal text-slate-500">
-                                            Ảnh chờ duyệt
-                                          </h5>
-                                        </div>
-                                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-                                          {illustrations
-                                            .filter(
-                                              (img) =>
-                                                img.reviewStatus ===
-                                                "suggested",
-                                            )
-                                            .map((img, idx) => (
-                                              <div
-                                                key={`${img.id}-${idx}`}
-                                                className="bg-white p-4 rounded-md border border-blue-100 shadow-sm relative group overflow-hidden"
-                                              >
-                                                <div className="aspect-video rounded-md overflow-hidden mb-4 relative">
-                                                  <img
-                                                    src={img.url}
-                                                    alt={img.caption}
-                                                    className="w-full h-full object-cover"
-                                                  />
-                                                  <div className="absolute inset-0 bg-blue-600/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-3">
-                                                    <button
-                                                      onClick={() =>
-                                                        approveIllustration(
-                                                          img.id,
-                                                        )
-                                                      }
-                                                      className="w-10 h-10 bg-emerald-500 text-white rounded-md shadow-md flex items-center justify-center hover:scale-110 active:scale-[0.98] transition-all"
-                                                      title="Duyệt ảnh"
-                                                    >
-                                                      <Check className="w-5 h-5" />
-                                                    </button>
-                                                    <button
-                                                      onClick={() =>
-                                                        rejectIllustration(
-                                                          img.id,
-                                                        )
-                                                      }
-                                                      className="w-10 h-10 bg-red-500 text-white rounded-md shadow-md flex items-center justify-center hover:scale-110 active:scale-[0.98] transition-all"
-                                                      title="Từ chối"
-                                                    >
-                                                      <X className="w-5 h-5" />
-                                                    </button>
-                                                  </div>
-                                                </div>
-                                                <h6 className="text-[10px] font-semibold text-slate-800 tracking-tight truncate px-1 mb-1">
-                                                  {img.caption}
-                                                </h6>
-                                                <div className="flex items-center justify-between px-1">
-                                                  <span className="text-[8px] font-semibold text-blue-500 uppercase">
-                                                    P{img.paragraphIndex} • CHỜ
-                                                    DUYỆT
-                                                  </span>
-                                                  <button
-                                                    onClick={() =>
-                                                      setIllustrations((prev) =>
-                                                        prev.filter(
-                                                          (i) =>
-                                                            i.id !== img.id,
-                                                        ),
-                                                      )
-                                                    }
-                                                    className="text-slate-300 hover:text-red-500 transition-colors"
-                                                  >
-                                                    <Trash2 className="w-3 h-3" />
-                                                  </button>
-                                                </div>
-                                              </div>
-                                            ))}
-                                          {illustrations.filter(
-                                            (img) =>
-                                              img.reviewStatus === "suggested",
-                                          ).length === 0 && (
-                                            <div className="col-span-full py-8 text-center text-slate-300 font-bold uppercase text-[10px] tracking-wide border border-slate-200 border-dashed rounded-md">
-                                              Không có ảnh chờ duyệt
-                                            </div>
-                                          )}
-                                        </div>
-                                      </div>
-
-                                      {/* 3. Ảnh đã duyệt (Approved) */}
-                                      <div className="space-y-4">
-                                        <div className="flex items-center gap-2 ml-2">
-                                          <ShieldCheck className="w-4 h-4 text-emerald-500" />
-                                          <h5 className="text-[11px] font-semibold tracking-normal text-slate-500">
-                                            Ảnh đã duyệt (Sẽ xuất PDF/Word)
-                                          </h5>
-                                        </div>
-                                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-                                          {illustrations
-                                            .filter(
-                                              (img) =>
-                                                img.reviewStatus === "approved",
-                                            )
-                                            .map((img, idx) => (
-                                              <div
-                                                key={`${img.id}-${idx}`}
-                                                className="bg-white p-4 rounded-md border border-emerald-200 shadow-sm relative group overflow-hidden"
-                                              >
-                                                <div className="aspect-video rounded-md overflow-hidden mb-4 relative">
-                                                  <img
-                                                    src={img.url}
-                                                    alt={img.caption}
-                                                    className="w-full h-full object-cover"
-                                                  />
-                                                  <div className="absolute top-2 right-2 bg-emerald-500 text-white p-1.5 rounded-md shadow-sm">
-                                                    <Check className="w-3 h-3" />
-                                                  </div>
-                                                  <div className="absolute inset-0 bg-emerald-900/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-3">
-                                                    <button
-                                                      onClick={() =>
-                                                        rejectIllustration(
-                                                          img.id,
-                                                        )
-                                                      }
-                                                      className="w-10 h-10 bg-white text-red-500 rounded-md shadow-md flex items-center justify-center hover:scale-110 active:scale-[0.98] transition-all"
-                                                      title="Hủy duyệt"
-                                                    >
-                                                      <X className="w-5 h-5" />
-                                                    </button>
-                                                  </div>
-                                                </div>
-                                                <h6 className="text-[10px] font-semibold text-slate-800 tracking-tight truncate px-1 mb-1">
-                                                  {img.caption}
-                                                </h6>
-                                                <div className="flex items-center justify-between px-1">
-                                                  <span className="text-[8px] font-semibold text-emerald-600 uppercase">
-                                                    P{img.paragraphIndex} • ĐÃ
-                                                    DUYỆT
-                                                  </span>
-                                                  <p className="text-[8px] font-bold text-slate-300">
-                                                    Xuất sẵn sàng
-                                                  </p>
-                                                </div>
-                                              </div>
-                                            ))}
-                                          {illustrations.filter(
-                                            (img) =>
-                                              img.reviewStatus === "approved",
-                                          ).length === 0 && (
-                                            <div className="col-span-full py-8 text-center text-slate-300 font-bold uppercase text-[10px] tracking-wide border border-slate-200 border-dashed rounded-md">
-                                              Chưa có ảnh nào được duyệt
-                                            </div>
-                                          )}
-                                        </div>
-                                      </div>
-                                    </div>
-                                  </div>
-                                )}
-
-                                <div
-                                  className="p-6 md:p-12 bg-[#FCFDFF] printable-article"
-                                  id="printable-article"
-                                >
-                                  {contentReview && (
-                                    <ContentReviewDisplay
-                                      review={contentReview}
-                                    />
-                                  )}
-
-                                  <div className="prose prose-slate max-w-none prose-headings:text-[#002D56] prose-headings:font-semibold prose-p:text-slate-700 prose-p:text-lg prose-p:leading-relaxed prose-li:text-slate-600 font-serif">
-                                    {isEditing ? (
-                                      <textarea
-                                        value={output}
-                                        onChange={(e) =>
-                                          setOutput(e.target.value)
-                                        }
-                                        className="w-full h-[600px] p-6 bg-slate-50 border border-dashed border-slate-200 rounded-lg text-lg leading-relaxed font-serif focus:outline-none focus:border-[#002D56] transition-all"
-                                      />
-                                    ) : (
-                                      <ReactMarkdown
-                                        components={{
-                                          h1: ({ node, ...props }) => (
-                                            <h1
-                                              className="text-3xl md:text-5xl font-semibold text-[#002D56] mb-8 leading-tight tracking-tight uppercase"
-                                              {...props}
-                                            />
-                                          ),
-                                          h2: ({ node, ...props }) => (
-                                            <h2
-                                              className="text-2xl md:text-3xl mt-14 mb-6 pb-4 border-b-4 border-[#002D56]/10 font-semibold"
-                                              {...props}
-                                            />
-                                          ),
-                                          h3: ({ node, ...props }) => (
-                                            <h3
-                                              className="text-xl font-bold text-slate-800 mt-10 mb-4 flex items-center gap-3 bg-slate-50 p-4 rounded-md border-l-8 border-[#002D56]"
-                                              {...props}
-                                            />
-                                          ),
-                                          p: ({ node, children, ...props }) => {
-                                            return (
-                                              <p
-                                                className="mb-8 text-justify"
-                                                {...props}
-                                              >
-                                                {children}
-                                              </p>
-                                            );
-                                          },
-                                          strong: ({ node, ...props }) => (
-                                            <strong
-                                              className="font-semibold text-slate-900 underline decoration-[#002D56]/20 underline-offset-4"
-                                              {...props}
-                                            />
-                                          ),
-                                          em: ({ node, ...props }) => (
-                                            <em
-                                              className="text-slate-500 italic block border-l-4 border-[#002D56]/20 pl-8 my-10 py-4 text-2xl bg-[#002D56]/5 rounded-r-3xl leading-snug"
-                                              {...props}
-                                            />
-                                          ),
-                                          img: ({
-                                            node,
-                                            src,
-                                            alt,
-                                            ...props
-                                          }) => {
-                                            // Double check URL validity
-                                            if (
-                                              !src ||
-                                              (!src.startsWith("http") &&
-                                                !src.startsWith("data:"))
-                                            ) {
-                                              return null;
-                                            }
-
-                                            // Find metadata to get ID if possible
-                                            const meta = illustrations.find(
-                                              (i) => i.url === src,
-                                            );
-                                            if (
-                                              meta &&
-                                              !isPublishableIllustration(meta)
-                                            )
-                                              return null;
-                                            if (
-                                              meta &&
-                                              meta.loadStatus === "error"
-                                            )
-                                              return null;
-
-                                            return (
-                                              <div className="my-10 group relative">
-                                                <img
-                                                  src={src}
-                                                  alt={alt || "Hình minh họa"}
-                                                  className={cn(
-                                                    "rounded-md shadow-sm border-4 border-white mx-auto w-full transition-all",
-                                                    meta?.reviewStatus ===
-                                                      "suggested" &&
-                                                      "opacity-75 grayscale-[20%] ring-8 ring-[#002D56]/10",
-                                                  )}
-                                                  onLoad={() =>
-                                                    meta &&
-                                                    updateImageLoadStatus(
-                                                      meta.id,
-                                                      "loaded",
-                                                    )
-                                                  }
-                                                  onError={() =>
-                                                    meta &&
-                                                    updateImageLoadStatus(
-                                                      meta.id,
-                                                      "error",
-                                                    )
-                                                  }
-                                                  {...props}
-                                                />
-                                                {meta?.reviewStatus ===
-                                                  "suggested" && (
-                                                  <div className="absolute top-6 left-6 bg-[#002D56] text-white px-4 py-2 rounded-md text-[10px] font-semibold uppercase shadow-md flex items-center gap-2">
-                                                    <Loader2 className="w-3 h-3 animate-spin" />{" "}
-                                                    Ảnh chờ duyệt
-                                                  </div>
-                                                )}
-                                                {alt &&
-                                                  alt !== "Hình minh họa" && (
-                                                    <p className="text-center mt-4 text-sm font-bold text-slate-400 italic">
-                                                      * {alt} *
-                                                    </p>
-                                                  )}
-                                              </div>
-                                            );
-                                          },
-                                        }}
-                                      >
-                                        {isEditing
-                                          ? output
-                                          : insertApprovedIllustrationsForPlainExport(
-                                              output,
-                                              illustrations,
-                                            )}
-                                      </ReactMarkdown>
-                                    )}
-                                  </div>
-                                </div>
-
-                                {/* Versions Quick Access */}
-                                {currentSessionId &&
-                                  sessions.find(
-                                    (s) => s.id === currentSessionId,
-                                  )?.versions.length! > 1 && (
-                                    <div className="px-8 py-4 bg-slate-50 border-t border-slate-100 flex items-center gap-3 overflow-x-auto whitespace-nowrap scrollbar-hide">
-                                      <span className="text-[10px] font-semibold text-slate-400 tracking-normal mr-2">
-                                        Lịch sử bài viết:
-                                      </span>
-                                      {sessions
-                                        .find((s) => s.id === currentSessionId)
-                                        ?.versions.map((v, i) => (
-                                          <button
-                                            key={`ver-${v.id || i}`}
-                                            onClick={() => {
-                                              setOutput(v.content);
-                                              setIllustrations(
-                                                v.illustrations || [],
-                                              );
-                                            }}
-                                            className={cn(
-                                              "flex items-center gap-2 px-3 py-1.5 rounded-md text-[10px] font-bold transition-all border",
-                                              output === v.content
-                                                ? "bg-[#002D56] text-white border-[#002D56]"
-                                                : "bg-white text-slate-500 border-slate-200 hover:border-slate-400",
-                                            )}
-                                          >
-                                            <Clock className="w-3 h-3" />
-                                            {new Date(
-                                              v.timestamp,
-                                            ).toLocaleTimeString([], {
-                                              hour: "2-digit",
-                                              minute: "2-digit",
-                                            })}
-                                            {i === 0 && (
-                                              <span className="ml-1 opacity-60">
-                                                (Mới nhất)
-                                              </span>
-                                            )}
-                                          </button>
-                                        ))}
-                                    </div>
-                                  )}
-
-                                <div className="px-8 py-6 bg-[#002D56] text-white/50 text-[10px] font-semibold text-center uppercase tracking-[0.3em]">
-                                  Bản quyền nội dung thuộc về Tổng Công ty Bảo
-                                  đảm an toàn hàng hải Việt Nam
-                                </div>
-                              </motion.section>
-                            )}
-                          </AnimatePresence>
-                        </div>
-                      </div>
+                      <ProposalListPage 
+                        userId={user?.uid || ""}
+                        onOpenCreateModal={() => setIsCreateProposalModalOpen(true)}
+                        onSelectProposal={(id) => {
+                          setSelectedProposalId(id);
+                        }}
+                      />
                     )
                   ) : activeTab === "history" ? (
-                    <div className="space-y-4 sm:space-y-6">
-                      <div className="flex flex-col sm:flex-row items-center justify-between bg-white px-6 sm:px-8 py-5 sm:py-6 rounded-md lg:rounded-lg border border-slate-200 shadow-sm gap-4">
-                        <div className="flex items-center gap-4 w-full sm:w-auto">
-                          <div className="bg-[#002D56] p-2.5 sm:p-3 rounded-md lg:rounded-lg shadow-sm shrink-0">
-                            <History className="text-white w-5 h-5 sm:w-6 sm:h-6" />
-                          </div>
-                          <div className="min-w-0">
-                            <h2 className="text-base sm:text-lg font-semibold text-slate-800 tracking-tight truncate">
-                              Bài báo AI đã tạo
-                            </h2>
-                            <p className="text-[10px] sm:text-xs text-slate-500 font-medium truncate">
-                              Lưu trữ các bài viết và phiên bản chỉnh sửa.
-                            </p>
-                          </div>
-                        </div>
-
-                        <div className="flex flex-col sm:flex-row w-full sm:w-auto items-center gap-3 flex-1 sm:justify-end">
-                          <div className="relative w-full sm:max-w-xs">
-                            <Search className="w-4 h-4 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2" />
-                            <input
-                              type="text"
-                              placeholder="Tìm kiếm bài viết..."
-                              value={historySearchQuery}
-                              onChange={(e) =>
-                                setHistorySearchQuery(e.target.value)
-                              }
-                              className="w-full pl-10 pr-4 py-3 bg-slate-50 border-none rounded-md text-xs font-semibold focus:ring-2 focus:ring-[#002D56]/20 transition-all"
-                            />
-                          </div>
-                          <button
-                            onClick={createNewSession}
-                            className="w-full sm:w-auto bg-[#002D56] text-white px-6 py-3 rounded-md font-semibold text-xs tracking-normal hover:bg-slate-900 transition-all flex items-center justify-center gap-2 shadow-sm shadow-[#002D56]/20 shrink-0"
-                          >
-                            <Plus className="w-4 h-4" /> Soạn bài mới
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
-                        {sessions.filter(
-                          (s) =>
-                            !historySearchQuery ||
-                            s.title
-                              ?.toLowerCase()
-                              .includes(historySearchQuery.toLowerCase()) ||
-                            s.versions[0]?.content
-                              ?.toLowerCase()
-                              .includes(historySearchQuery.toLowerCase()),
-                        ).length === 0 ? (
-                          <div className="col-span-full py-20 sm:py-32 flex flex-col items-center justify-center bg-white rounded-md lg:rounded-lg border border-dashed border-slate-200">
-                            <Clock className="w-16 h-16 sm:w-20 sm:h-20 text-slate-200 mb-4 sm:mb-6" />
-                            <p className="text-slate-400 font-semibold tracking-normal text-xs">
-                              Không tìm thấy bài viết
-                            </p>
-                          </div>
-                        ) : (
-                          sessions
-                            .filter(
-                              (s) =>
-                                !historySearchQuery ||
-                                s.title
-                                  ?.toLowerCase()
-                                  .includes(historySearchQuery.toLowerCase()) ||
-                                s.versions[0]?.content
-                                  ?.toLowerCase()
-                                  .includes(historySearchQuery.toLowerCase()),
-                            )
-                            .map((session) => (
-                              <div
-                                key={session.id}
-                                className="bg-white rounded-md p-5 sm:p-6 shadow-sm border border-slate-200 hover:border-[#002D56] hover:shadow-md transition-all group flex flex-col h-full relative overflow-hidden"
-                              >
-                                <div className="flex items-start justify-between mb-4">
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    <span
-                                      className={cn(
-                                        "px-2 py-0.5 text-[#002D56] text-[10px] font-medium rounded tracking-normal bg-slate-100",
-                                        session.taskType === "WRITE_NEW"
-                                          ? "bg-blue-50 text-blue-700"
-                                          : "bg-teal-50 text-teal-700",
-                                      )}
-                                    >
-                                      {session.taskType === "WRITE_NEW"
-                                        ? "Viết mới"
-                                        : "Rà soát"}
-                                    </span>
-                                    <span className="text-[11px] text-slate-500 font-medium flex items-center gap-1.5">
-                                      <Clock className="w-3 h-3" />
-                                      {new Date(
-                                        session.updatedAt,
-                                      ).toLocaleDateString("vi-VN")}
-                                    </span>
-                                  </div>
-                                </div>
-
-                                <h3 className="text-base font-semibold text-slate-800 leading-snug line-clamp-2 group-hover:text-[#002D56] transition-colors mb-4 flex-1">
-                                  {cleanDisplayTitle(session.title)}
-                                </h3>
-
-                                <div className="flex flex-wrap gap-2 mb-6">
-                                  <div className="flex items-center gap-1.5 text-[11px] font-medium text-slate-500 bg-slate-50 px-2 py-1 rounded border border-slate-100">
-                                    <History className="w-3.5 h-3.5" />{" "}
-                                    {session.versions.length} phiên bản
-                                  </div>
-                                  <div className="flex items-center gap-1.5 text-[11px] font-medium text-slate-500 bg-slate-50 px-2 py-1 rounded border border-slate-100">
-                                    <Files className="w-3.5 h-3.5" />{" "}
-                                    {session.documentIds.length} nguồn
-                                  </div>
-                                </div>
-
-                                <div className="pt-4 border-t border-slate-100 flex items-center gap-2 mt-auto">
-                                  <button
-                                    onClick={() => loadSession(session)}
-                                    className="flex-1 bg-white text-[#002D56] border border-[#002D56] py-2 rounded-md text-[12px] font-medium hover:bg-slate-50 transition-colors flex items-center justify-center gap-2"
-                                  >
-                                    <Edit3 className="w-4 h-4" /> Tiếp tục
-                                  </button>
-                                  <button
-                                    onClick={async (e) => {
-                                      e.stopPropagation();
-                                      const confirmed =
-                                        await requestConfirmAsync(
-                                          "Bạn có chắc chắn muốn xóa bài viết này cùng toàn bộ lịch sử?",
-                                        );
-                                      if (confirmed) {
-                                        if (user) {
-                                          try {
-                                            await deleteDoc(
-                                              doc(
-                                                db,
-                                                "users",
-                                                user.uid,
-                                                "sessions",
-                                                session.id,
-                                              ),
-                                            );
-                                            setSessions((prev) =>
-                                              prev.filter(
-                                                (s) => s.id !== session.id,
-                                              ),
-                                            );
-                                            toast.success("Đã xóa bài viết.");
-
-                                            await logActivity({
-                                              module: "editorial",
-                                              action: "deleted",
-                                              entityType: "editorial_session",
-                                              entityId: session.id,
-                                              entityTitle: session.title,
-                                              title: "Xóa bài viết",
-                                              summary: `Đã xóa bài viết "${session.title}".`,
-                                              metadata: { source: "client" },
-                                            });
-                                          } catch (err) {
-                                            console.error(
-                                              "Delete session error:",
-                                              err,
-                                            );
-                                            toast.error(
-                                              "Không thể xóa bài viết trên hệ thống.",
-                                            );
-                                          }
-                                        } else {
-                                          setSessions((prev) =>
-                                            prev.filter(
-                                              (s) => s.id !== session.id,
-                                            ),
-                                          );
-                                        }
-                                      }
-                                    }}
-                                    className="px-3 py-2.5 rounded-md text-slate-400 bg-slate-50 hover:bg-rose-50 hover:text-rose-600 transition-all border border-slate-100"
-                                    title="Xóa bài viết"
-                                  >
-                                    <Trash2 className="w-4 h-4" />
-                                  </button>
-                                </div>
-                              </div>
-                            ))
-                        )}
-                      </div>
-                    </div>
+                    <HistoryWorkspace
+                      historySearchQuery={historySearchQuery}
+                      setHistorySearchQuery={setHistorySearchQuery}
+                      createNewSession={createNewSession}
+                      sessions={sessions}
+                      cleanDisplayTitle={cleanDisplayTitle}
+                      loadSession={loadSession}
+                      requestConfirmAsync={requestConfirmAsync}
+                      user={user}
+                      setSessions={setSessions}
+                      logActivity={logActivity}
+                    />
                   ) : activeTab === "activity" ? (
                     <ActivityLogView
                       onOpenEntity={(type, id) => {
@@ -8344,820 +5509,80 @@ function App() {
                       onSave={handleSaveProfile}
                     />
                   ) : activeTab === "admin" ? (
-                    <AdminWorkspace profile={profile} />
+                    <AdminWorkspace profile={profile} requestConfirmAsync={requestConfirmAsync} />
                   ) : (
                     /* Knowledge Base / Library Management - NEW MODULAR UI */
-                    <div className="flex flex-col lg:flex-row gap-6 items-start">
-                      {/* Left Sidebar: Collections - Horizontal on Mobile */}
-                      <aside className="w-full lg:w-72 shrink-0 lg:sticky lg:top-8">
-                        <div className="bg-white rounded-md lg:rounded-md p-4 lg:p-6 shadow-sm border border-slate-200">
-                          <div className="flex items-center justify-between mb-4 lg:mb-6 px-1 shrink-0">
-                            <h3 className="text-[11px] font-semibold text-slate-400 tracking-normal flex items-center gap-2">
-                              <Layers className="w-3.5 h-3.5" /> Kho lưu trữ
-                            </h3>
-                            <button
-                              onClick={() => {
-                                closeMobileDrawer();
-                                setIsAddingLibrary(true);
-                              }}
-                              className="p-1.5 bg-slate-50 text-slate-400 hover:text-[#002D56] hover:bg-blue-50 rounded-lg transition-all"
-                            >
-                              <Plus className="w-4 h-4" />
-                            </button>
-                          </div>
-
-                          <nav className="flex lg:flex-col gap-2 overflow-x-auto lg:overflow-x-visible pb-2 lg:pb-0 scrollbar-hide -mx-2 px-2 lg:mx-0 lg:px-0">
-                            {libraryCollections.map((coll) => (
-                              <button
-                                key={coll.id}
-                                onClick={() => setActiveLibraryId(coll.id)}
-                                className={cn(
-                                  "flex shrink-0 items-center justify-between px-3.5 py-2.5 lg:py-3 rounded-md transition-all group border",
-                                  activeLibraryId === coll.id
-                                    ? "bg-[#002D56] text-white shadow-sm shadow-[#002D56]/20 border-[#002D56]"
-                                    : "text-slate-600 hover:bg-slate-50 border-transparent hover:border-slate-100 bg-slate-50/50",
-                                )}
-                              >
-                                <div className="flex items-center gap-3">
-                                  <div
-                                    className={cn(
-                                      "p-2 rounded-md transition-colors shrink-0",
-                                      activeLibraryId === coll.id
-                                        ? "bg-white/10"
-                                        : "bg-slate-100 group-hover:bg-white shadow-sm",
-                                    )}
-                                  >
-                                    {coll.type === "personal" && (
-                                      <User className="w-3.5 h-3.5 lg:w-4 lg:h-4" />
-                                    )}
-                                    {coll.type === "work" && (
-                                      <Briefcase className="w-3.5 h-3.5 lg:w-4 lg:h-4" />
-                                    )}
-                                    {coll.type === "editorial" && (
-                                      <Edit3 className="w-3.5 h-3.5 lg:w-4 lg:h-4" />
-                                    )}
-                                    {coll.type === "shared" && (
-                                      <Users className="w-3.5 h-3.5 lg:w-4 lg:h-4" />
-                                    )}
-                                    {coll.type === "drive" && (
-                                      <Database className="w-3.5 h-3.5 lg:w-4 lg:h-4" />
-                                    )}
-                                    {coll.type === "custom" && (
-                                      <BookOpen className="w-3.5 h-3.5 lg:w-4 lg:h-4" />
-                                    )}
-                                  </div>
-                                  <span className="text-[11px] lg:text-xs font-semibold tracking-tight truncate max-w-[100px]">
-                                    {coll.name}
-                                  </span>
-                                </div>
-                                <div className="hidden lg:flex items-center gap-2">
-                                  <span
-                                    className={cn(
-                                      "text-[10px] font-semibold px-2 py-0.5 rounded-md",
-                                      activeLibraryId === coll.id
-                                        ? "bg-white/20 text-white"
-                                        : "bg-slate-100 text-slate-400",
-                                    )}
-                                  >
-                                    {
-                                      documents.filter(
-                                        (d) =>
-                                          d.collectionId === coll.id ||
-                                          (!d.collectionId &&
-                                            coll.id === "lib-personal"),
-                                      ).length
-                                    }
-                                  </span>
-                                  {coll.type === "custom" && (
-                                    <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                      <button
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          setEditingCollection(coll);
-                                        }}
-                                        className="p-1 hover:bg-white/20 rounded-md transition-all"
-                                      >
-                                        <Edit3 className="w-3.5 h-3.5" />
-                                      </button>
-                                      <button
-                                        onClick={async (e) => {
-                                          e.stopPropagation();
-                                          const confirmed =
-                                            await requestConfirmAsync(
-                                              "Xóa kho này?",
-                                            );
-                                          if (confirmed)
-                                            deleteLibraryCollection(coll.id);
-                                        }}
-                                        className="p-1 hover:bg-red-500 hover:text-white rounded-md transition-all"
-                                      >
-                                        <Trash2 className="w-3.5 h-3.5" />
-                                      </button>
-                                    </div>
-                                  )}
-                                </div>
-                              </button>
-                            ))}
-                          </nav>
-                        </div>
-
-                        <div className="hidden lg:block bg-[#002D56] rounded-md p-6 text-white shadow-md">
-                          <h4 className="text-[10px] font-semibold tracking-normal mb-4 opacity-60">
-                            Thống kê lưu trữ
-                          </h4>
-                          <div className="space-y-4">
-                            <div className="flex items-center justify-between">
-                              <span className="text-[11px] font-bold opacity-80">
-                                Tổng tài liệu
-                              </span>
-                              <span className="text-sm font-semibold">
-                                {documents.length}
-                              </span>
-                            </div>
-                            <div className="flex items-center justify-between">
-                              <span className="text-[11px] font-bold opacity-80">
-                                Dung lượng ước tính
-                              </span>
-                              <span className="text-sm font-semibold">
-                                ~
-                                {(
-                                  documents.reduce(
-                                    (acc, d) => acc + (d.content?.length || 0),
-                                    0,
-                                  ) / 1024
-                                ).toFixed(1)}{" "}
-                                KB
-                              </span>
-                            </div>
-                            <div className="h-px bg-white/10 w-full"></div>
-                            <p className="text-[9px] font-medium leading-relaxed opacity-40  tracking-tight">
-                              Hệ thống hỗ trợ lưu trữ phi cấu trúc & đồng bộ
-                              Drive Public.
-                            </p>
-                          </div>
-                        </div>
-                      </aside>
-
-                      {/* Main Content: Document List */}
-                      <main className="flex-1 w-full space-y-6">
-                        {/* Toolbar */}
-                        <div className="bg-white rounded-md p-4 sm:p-5 shadow-sm border border-slate-200 flex flex-col gap-4">
-                          <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
-                            <div className="relative w-full sm:max-w-md">
-                              <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-                              <input
-                                type="text"
-                                placeholder="Tìm kiếm tài liệu trong kho..."
-                                value={librarySearchQuery}
-                                onChange={(e) =>
-                                  setLibrarySearchQuery(e.target.value)
-                                }
-                                className="w-full pl-12 pr-4 py-3 bg-slate-50 border border-slate-100 rounded-md text-[13px] font-bold text-slate-800 focus:outline-none focus:ring-4 focus:ring-blue-50 transition-all placeholder:text-slate-400"
-                              />
-                            </div>
-                            <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
-                              {bulkSelectedDocIds.length > 0 && (
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    deleteSelectedDocuments();
-                                  }}
-                                  className="flex-1 sm:flex-initial bg-red-50 text-red-600 border border-red-100 px-4 py-2.5 rounded-md text-[13px] font-bold hover:bg-red-500 hover:text-white transition-all flex items-center justify-center gap-2 shadow-sm"
-                                >
-                                  <Trash2 className="w-4 h-4" /> Xóa (
-                                  {bulkSelectedDocIds.length})
-                                </button>
-                              )}
-                              {documents.some(
-                                (d) =>
-                                  (d.type as string) === "link" &&
-                                  (d.metadata?.url?.includes(
-                                    "drive.google.com",
-                                  ) ||
-                                    d.metadata?.url?.includes(
-                                      "docs.google.com",
-                                    )),
-                              ) && (
-                                <button
-                                  onClick={repairLegacyDriveLinks}
-                                  className="flex-1 sm:flex-initial bg-amber-50 text-amber-700 border border-amber-100 px-4 py-2.5 rounded-md text-[13px] font-bold hover:bg-amber-100 transition-all flex items-center justify-center gap-2"
-                                  title="Chuyển đổi các link Drive cũ sang định dạng chuẩn"
-                                >
-                                  <Zap className="w-4 h-4" /> Sửa link cũ
-                                </button>
-                              )}
-                              <button
-                                onClick={() => {
-                                  closeMobileDrawer();
-                                  setIsAddingText(true);
-                                }}
-                                className="flex-1 sm:flex-initial bg-white border border-slate-200 text-slate-600 px-4 py-2.5 rounded-md text-[13px] font-bold hover:bg-slate-50 hover:text-[#002D56] transition-all flex items-center justify-center gap-2"
-                              >
-                                <Type className="w-4 h-4" /> Ghi chú
-                              </button>
-                              <button
-                                onClick={() => {
-                                  closeMobileDrawer();
-                                  setIsAddingLink(true);
-                                }}
-                                className="flex-1 sm:flex-initial bg-white border border-slate-200 text-slate-600 px-4 py-2.5 rounded-md text-[13px] font-bold hover:bg-slate-50 hover:text-[#002D56] transition-all flex items-center justify-center gap-2"
-                              >
-                                <LinkIcon className="w-4 h-4" /> Liên kết
-                              </button>
-                              <button
-                                onClick={() => fileInputRef.current?.click()}
-                                className="flex-1 sm:flex-initial bg-[#002D56] text-white px-5 py-2.5 rounded-md text-[13px] font-bold hover:bg-slate-900 transition-all shadow-sm shadow-[#002D56]/10 flex items-center justify-center gap-2"
-                              >
-                                <FileUp className="w-4 h-4" /> Tải tệp
-                              </button>
-                            </div>
-                          </div>
-
-                          <div className="flex flex-wrap items-center gap-4 pt-4 border-t border-slate-100">
-                            <div className="flex items-center gap-2">
-                              <span className="text-[11px] font-bold text-slate-500 tracking-normal uppercase">
-                                Loại tài liệu
-                              </span>
-                              <select
-                                value={libraryFilters.kind}
-                                onChange={(e) =>
-                                  setLibraryFilters((prev) => ({
-                                    ...prev,
-                                    kind: e.target.value,
-                                  }))
-                                }
-                                className="bg-slate-50 border border-slate-200 rounded-md px-3 py-1.5 text-xs font-semibold text-slate-700 outline-none focus:ring-2 focus:ring-blue-100"
-                              >
-                                <option value="all">Tất cả</option>
-                                {Object.entries(DOCUMENT_KIND_LABELS).map(
-                                  ([k, v]) => (
-                                    <option key={k} value={k}>
-                                      {v as React.ReactNode}
-                                    </option>
-                                  ),
-                                )}
-                              </select>
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <span className="text-[11px] font-bold text-slate-500 tracking-normal uppercase">
-                                Trạng thái xử lý
-                              </span>
-                              <select
-                                value={libraryFilters.status}
-                                onChange={(e) =>
-                                  setLibraryFilters((prev) => ({
-                                    ...prev,
-                                    status: e.target.value,
-                                  }))
-                                }
-                                className="bg-slate-50 border border-slate-200 rounded-md px-3 py-1.5 text-xs font-semibold text-slate-700 outline-none focus:ring-2 focus:ring-blue-100"
-                              >
-                                <option value="all">Tất cả</option>
-                                <option value="extracted">
-                                  Đã trích xuất nội dung
-                                </option>
-                                <option value="metadata_only">
-                                  Chỉ có Metadata
-                                </option>
-                                <option value="ocr_processing">
-                                  Đang đợi OCR
-                                </option>
-                                <option value="too_large">Quá lớn</option>
-                                <option value="error">Lỗi trích xuất</option>
-                              </select>
-                            </div>
-
-                            <div className="ml-auto">
-                              <button
-                                onClick={async () => {
-                                  const currentDocIds = documents
-                                    .filter(
-                                      (d) => d.collectionId === activeLibraryId,
-                                    )
-                                    .map((d) => d.id);
-                                  if (currentDocIds.length === 0)
-                                    return toast.error(
-                                      "Không có document trong bộ sưu tập này.",
-                                    );
-                                  const token = await getChatAuthToken();
-                                  toast.loading(
-                                    "Đang khởi tạo Knowledge Index...",
-                                  );
-                                  let indexed = 0;
-                                  for (const docId of currentDocIds) {
-                                    try {
-                                      await apiFetchJson(
-                                        "/api/knowledge/index-document",
-                                        {
-                                          method: "POST",
-                                          headers: {
-                                            "Content-Type": "application/json",
-                                            Authorization: `Bearer ${token}`,
-                                          },
-                                          body: JSON.stringify({
-                                            documentId: docId,
-                                          }),
-                                        },
-                                      );
-                                      indexed++;
-                                    } catch (e) {}
-                                  }
-                                  toast.dismiss();
-                                  toast.success(
-                                    `Đã hoàn tất Index ${indexed}/${currentDocIds.length} tài liệu.`,
-                                  );
-                                }}
-                                className="bg-indigo-50 border border-indigo-100 text-indigo-600 px-3 py-1.5 rounded-md text-xs font-bold hover:bg-indigo-100 flex items-center gap-2 transition-all"
-                                title="Khởi tạo AI Knowledge Index cho toàn bộ tài liệu trong bộ sưu tập hiện tại"
-                              >
-                                <Zap className="w-3.5 h-3.5" /> Tạo lại Index
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-
-                        {backgroundTasks.length > 0 && (
-                          <div className="flex flex-col gap-2">
-                            {backgroundTasks.map((task) => (
-                              <div
-                                key={task.id}
-                                className="bg-indigo-50 border border-indigo-100 rounded-md p-3 flex items-center justify-between shadow-sm"
-                              >
-                                <div className="flex items-center gap-3 overflow-hidden">
-                                  {task.status === "processing" ? (
-                                    <Loader2 className="w-5 h-5 text-indigo-500 animate-spin shrink-0" />
-                                  ) : task.status === "success" ? (
-                                    <CheckCircle2 className="w-5 h-5 text-emerald-500 shrink-0" />
-                                  ) : (
-                                    <AlertTriangle className="w-5 h-5 text-rose-500 shrink-0" />
-                                  )}
-                                  <div className="flex flex-col truncate">
-                                    <span className="text-xs font-bold text-slate-700 truncate">
-                                      {task.title || task.url}
-                                    </span>
-                                    <span
-                                      className={cn(
-                                        "text-[10px] font-medium",
-                                        task.status === "processing"
-                                          ? "text-indigo-600"
-                                          : task.status === "success"
-                                            ? "text-emerald-600"
-                                            : "text-rose-600",
-                                      )}
-                                    >
-                                      {task.status === "processing"
-                                        ? "Đang trích xuất dữ liệu..."
-                                        : task.status === "success"
-                                          ? "Trích xuất thành công"
-                                          : `Lỗi: ${task.message}`}
-                                    </span>
-                                  </div>
-                                </div>
-                                {task.status === "error" && (
-                                  <button
-                                    onClick={() =>
-                                      setBackgroundTasks((prev) =>
-                                        prev.filter((t) => t.id !== task.id),
-                                      )
-                                    }
-                                    className="p-1 hover:bg-indigo-100 rounded text-slate-400 hover:text-slate-600"
-                                  >
-                                    <X className="w-4 h-4" />
-                                  </button>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        )}
-
-                        {/* Document Grid */}
-                        <div className="grid grid-cols-1 sm:grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-4 sm:gap-5">
-                          {filteredDocs.length === 0 ? (
-                            <div className="col-span-full py-32 flex flex-col items-center justify-center bg-white rounded-md border border-dashed border-slate-200 text-center">
-                              <div className="w-20 h-20 bg-slate-50 rounded-lg flex items-center justify-center mb-6">
-                                <Database className="w-10 h-10 text-slate-200" />
-                              </div>
-                              <h4 className="text-sm font-semibold text-slate-500 tracking-normal mb-2">
-                                Kho tư liệu đang trống
-                              </h4>
-                              <p className="text-[11px] text-slate-400 font-medium px-10 leading-relaxed uppercase">
-                                Bắt đầu bằng việc tải lên tài liệu, dán liên kết
-                                Google Drive <br /> hoặc tìm kiếm dữ liệu trực
-                                tuyến.
-                              </p>
-                            </div>
-                          ) : (
-                            filteredDocs.map((doc) => (
-                              <motion.div
-                                layout
-                                key={doc.id}
-                                className="bg-white rounded-md border border-slate-200 p-5 shadow-sm hover:shadow-md hover:border-[#002D56]/20 transition-all group relative overflow-hidden flex flex-col justify-between"
-                              >
-                                <div>
-                                  {/* Status/Type Badge */}
-                                  <div className="flex items-center justify-between mb-4">
-                                    <div className="flex items-center gap-2">
-                                      <div
-                                        className={cn(
-                                          "px-2.5 py-1 rounded-lg text-[10px] font-bold border shadow-sm",
-                                          doc.type === "pdf"
-                                            ? "bg-rose-50 border-rose-100 text-rose-600"
-                                            : doc.type === "word"
-                                              ? "bg-blue-50 border-blue-100 text-blue-600"
-                                              : doc.type === "excel"
-                                                ? "bg-emerald-50 border-emerald-100 text-emerald-600"
-                                                : doc.type === "drive"
-                                                  ? "bg-[#002D56] border-[#002D56] text-white"
-                                                  : "bg-slate-50 border-slate-100 text-slate-500",
-                                        )}
-                                      >
-                                        {doc.driveMimeType?.includes("folder")
-                                          ? "Thư mục"
-                                          : getDocTypeLabel(doc.type)}
-                                      </div>
-                                      {doc.documentKind && (
-                                        <div className="px-2 py-1 bg-amber-50 border border-amber-100 text-amber-700 rounded-lg text-[10px] font-bold capitalize">
-                                          {doc.documentKind
-                                            .replace(/_/g, " ")
-                                            .toLowerCase()}
-                                        </div>
-                                      )}
-                                    </div>
-                                    <div className="flex items-center gap-1 relative z-10 opacity-100 sm:opacity-0 group-hover:opacity-100 transition-all">
-                                      <button
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          setBulkSelectedDocIds((prev) =>
-                                            prev.includes(doc.id)
-                                              ? prev.filter(
-                                                  (id) => id !== doc.id,
-                                                )
-                                              : [...prev, doc.id],
-                                          );
-                                        }}
-                                        className={cn(
-                                          "p-2 rounded-md transition-all shadow-sm border",
-                                          bulkSelectedDocIds.includes(doc.id)
-                                            ? "bg-blue-500 text-white border-blue-400"
-                                            : "bg-white text-slate-400 border-slate-100 hover:bg-slate-50",
-                                        )}
-                                        title={
-                                          bulkSelectedDocIds.includes(doc.id)
-                                            ? "Đã chọn lưới"
-                                            : "Chọn nhiều"
-                                        }
-                                      >
-                                        <CheckSquare className="w-3.5 h-3.5" />
-                                      </button>
-
-                                      <div className="relative">
-                                        <button
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            setDocumentMenuDocId(
-                                              documentMenuDocId === doc.id
-                                                ? null
-                                                : doc.id,
-                                            );
-                                          }}
-                                          className="p-2 bg-white border border-slate-100 text-slate-400 hover:text-blue-500 hover:bg-blue-50 rounded-md transition-all shadow-sm"
-                                          title="Thao tác"
-                                        >
-                                          <MoreHorizontal className="w-3.5 h-3.5" />
-                                        </button>
-
-                                        {documentMenuDocId === doc.id && (
-                                          <div className="absolute right-0 top-full mt-2 w-48 bg-white rounded-md shadow-md border border-slate-100 py-1.5 z-[200]">
-                                            {!doc.summary && (
-                                              <button
-                                                onClick={(e) => {
-                                                  e.stopPropagation();
-                                                  setDocumentMenuDocId(null);
-                                                  handleAnalyzeDocument(doc.id);
-                                                }}
-                                                disabled={!!isAnalyzing}
-                                                className="w-full text-left px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 hover:text-blue-600 flex items-center gap-2"
-                                              >
-                                                <Sparkles className="w-3.5 h-3.5" />{" "}
-                                                Phân tích AI
-                                              </button>
-                                            )}
-                                            {doc.type === "drive" && (
-                                              <a
-                                                href={getDocumentOpenUrl(doc)}
-                                                target="_blank"
-                                                rel="noreferrer"
-                                                onClick={(e) => {
-                                                  e.stopPropagation();
-                                                  setDocumentMenuDocId(null);
-                                                }}
-                                                className="flex w-full text-left px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 hover:text-slate-800 items-center gap-2"
-                                              >
-                                                <ExternalLink className="w-3.5 h-3.5" />{" "}
-                                                Mở Drive
-                                              </a>
-                                            )}
-                                            {doc.type === "drive" &&
-                                              doc.driveMimeType?.includes(
-                                                "folder",
-                                              ) && (
-                                                <button
-                                                  onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    setDocumentMenuDocId(null);
-                                                    handleSyncDriveFolder(
-                                                      doc.driveFileId || "",
-                                                      doc.name,
-                                                    );
-                                                  }}
-                                                  disabled={
-                                                    isSyncingDrive ===
-                                                    doc.driveFileId
-                                                  }
-                                                  className="w-full text-left px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 hover:text-amber-600 flex items-center gap-2"
-                                                >
-                                                  <RefreshCw className="w-3.5 h-3.5" />{" "}
-                                                  Đồng bộ thư mục
-                                                </button>
-                                              )}
-                                            {!doc.summary &&
-                                              doc.type === "drive" && (
-                                                <div className="h-px bg-slate-100 my-1"></div>
-                                              )}
-                                            <button
-                                              onClick={(e) => {
-                                                e.stopPropagation();
-                                                setDocumentMenuDocId(null);
-                                                setEditingDocument(doc);
-                                                setDocEditForm({
-                                                  name: doc.name,
-                                                  description:
-                                                    doc.metadata?.description ||
-                                                    "",
-                                                  collectionId:
-                                                    doc.collectionId ||
-                                                    "lib-personal",
-                                                  documentKind:
-                                                    doc.documentKind || "",
-                                                  taskCategoryCode:
-                                                    doc.taskCategoryCode || "",
-                                                });
-                                                setIsEditingDocModalOpen(true);
-                                              }}
-                                              className="w-full text-left px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 hover:text-[#002D56] flex items-center gap-2"
-                                            >
-                                              <Edit3 className="w-3.5 h-3.5" />{" "}
-                                              Chỉnh sửa
-                                            </button>
-                                            <button
-                                              onClick={(e) => {
-                                                e.stopPropagation();
-                                                setDocumentMenuDocId(null);
-                                                archiveDocument(doc.id);
-                                              }}
-                                              className="w-full text-left px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 hover:text-amber-600 flex items-center gap-2"
-                                            >
-                                              <Archive className="w-3.5 h-3.5" />{" "}
-                                              Lưu trữ
-                                            </button>
-                                            <div className="h-px bg-slate-100 my-1"></div>
-                                            <button
-                                              onClick={async (e) => {
-                                                e.stopPropagation();
-                                                setDocumentMenuDocId(null);
-                                                if (
-                                                  await requestConfirmAsync(
-                                                    "Xóa tài liệu này khỏi hệ thống?",
-                                                  )
-                                                ) {
-                                                  removeDocument(doc.id);
-                                                }
-                                              }}
-                                              className="w-full text-left px-4 py-2 text-xs font-semibold text-rose-600 hover:bg-rose-50 flex items-center gap-2"
-                                            >
-                                              <Trash2 className="w-3.5 h-3.5" />{" "}
-                                              Xóa tài liệu
-                                            </button>
-                                          </div>
-                                        )}
-                                      </div>
-                                    </div>
-                                  </div>
-
-                                  {/* Content Info */}
-                                  <div className="space-y-4">
-                                    <div className="flex items-start gap-4">
-                                      <div className="p-3 bg-slate-50 rounded-md group-hover:bg-blue-50 transition-colors shrink-0">
-                                        {doc.driveIconUrl ? (
-                                          <img
-                                            src={doc.driveIconUrl}
-                                            alt="icon"
-                                            className="w-5 h-5 opacity-70"
-                                            referrerPolicy="no-referrer"
-                                          />
-                                        ) : (
-                                          <>
-                                            {doc.type === "pdf" && (
-                                              <FileText className="w-5 h-5 text-rose-500" />
-                                            )}
-                                            {doc.type === "word" && (
-                                              <FileText className="w-5 h-5 text-blue-500" />
-                                            )}
-                                            {doc.type === "excel" && (
-                                              <FileText className="w-5 h-5 text-emerald-500" />
-                                            )}
-                                            {doc.type === "drive" ? (
-                                              <Database className="w-5 h-5 text-[#002D56]" />
-                                            ) : doc.type === "link" ? (
-                                              <LinkIcon className="w-5 h-5 text-indigo-500" />
-                                            ) : (
-                                              <FileText className="w-5 h-5 text-slate-400" />
-                                            )}
-                                          </>
-                                        )}
-                                      </div>
-                                      <div className="min-w-0">
-                                        <h4 className="text-[13px] font-semibold text-slate-800 leading-tight line-clamp-3 decoration-[#002D56]/10 underline-offset-2 decoration-2 group-hover:underline mt-0.5">
-                                          {doc.name}
-                                        </h4>
-                                        <div className="flex flex-wrap items-center gap-2 mt-1.5 min-h-[16px]">
-                                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-tight truncate">
-                                            {formatLibraryDate(
-                                              doc.metadata?.modifiedTime ||
-                                                doc.updatedAt ||
-                                                doc.createdAt,
-                                            )}
-                                          </p>
-                                          <span className="text-[10px] font-bold text-slate-300">
-                                            •
-                                          </span>
-                                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-tight">
-                                            {getDocTypeLabel(doc.type)}
-                                          </p>
-                                          {doc.documentKind && (
-                                            <>
-                                              <span className="text-[10px] font-bold text-slate-300">
-                                                •
-                                              </span>
-                                              <span className="px-1.5 py-0.5 bg-blue-50 text-[#002D56] text-[8px] font-bold rounded tracking-tight uppercase border border-blue-100">
-                                                {DOCUMENT_KIND_LABELS[
-                                                  doc.documentKind
-                                                ] || doc.documentKind}
-                                              </span>
-                                            </>
-                                          )}
-                                          {doc.taskCategoryCode && (
-                                            <>
-                                              <span className="text-[10px] font-bold text-slate-300">
-                                                •
-                                              </span>
-                                              <span className="text-[9px] font-bold text-slate-500 italic">
-                                                {
-                                                  TASK_CATEGORIES.find(
-                                                    (c) =>
-                                                      c.code ===
-                                                      doc.taskCategoryCode,
-                                                  )?.name
-                                                }
-                                              </span>
-                                            </>
-                                          )}
-                                        </div>
-                                      </div>
-                                    </div>
-
-                                    {((doc.summary &&
-                                      (typeof doc.summary === "string"
-                                        ? doc.summary
-                                        : doc.summary.short)) ||
-                                      doc.metadata?.description) && (
-                                      <p className="text-[11px] text-slate-500 font-medium leading-relaxed line-clamp-3 border-l-2 border-slate-100 pl-3 italic">
-                                        {typeof doc.summary === "string"
-                                          ? doc.summary
-                                          : doc.summary?.short ||
-                                            doc.metadata?.description}
-                                      </p>
-                                    )}
-
-                                    {doc.type === "drive" && (
-                                      <div className="space-y-3 pt-1">
-                                        <div className="flex flex-wrap items-center gap-2">
-                                          <div className="px-2 py-0.5 bg-[#002D56]/5 text-[#002D56] rounded-md text-[10px] font-bold border border-[#002D56]/10">
-                                            Nguồn Drive
-                                          </div>
-                                          <div
-                                            className={cn(
-                                              "px-2 py-0.5 rounded-md text-[10px] font-bold border flex items-center gap-1",
-                                              doc.contentStatus ===
-                                                "extracted" ||
-                                                doc.contentStatus ===
-                                                  "summary_only"
-                                                ? "bg-emerald-50 text-emerald-700 border-emerald-100"
-                                                : doc.contentStatus ===
-                                                    "too_large"
-                                                  ? "bg-orange-50 text-orange-700 border-orange-100"
-                                                  : doc.contentStatus ===
-                                                      "error"
-                                                    ? "bg-red-50 text-red-700 border-red-100"
-                                                    : "bg-amber-50 text-amber-700 border-amber-100",
-                                            )}
-                                          >
-                                            {doc.contentStatus ===
-                                              "extracted" ||
-                                            doc.contentStatus ===
-                                              "summary_only" ? (
-                                              <Check className="w-3 h-3" />
-                                            ) : doc.contentStatus ===
-                                              "too_large" ? (
-                                              <HardDrive className="w-3 h-3" />
-                                            ) : doc.contentStatus ===
-                                              "error" ? (
-                                              <AlertTriangle className="w-3 h-3" />
-                                            ) : (
-                                              <EyeOff className="w-3 h-3" />
-                                            )}
-                                            {doc.contentStatus ===
-                                              "extracted" ||
-                                            doc.contentStatus === "summary_only"
-                                              ? "AI Đọc được"
-                                              : doc.contentStatus ===
-                                                  "too_large"
-                                                ? "Tệp quá lớn"
-                                                : doc.contentStatus === "error"
-                                                  ? "Lỗi phân tích"
-                                                  : doc.sourceType ===
-                                                      "google_drive_folder"
-                                                    ? "Thư mục"
-                                                    : "Chỉ tiêu đề"}
-                                          </div>
-                                        </div>
-                                      </div>
-                                    )}
-                                  </div>
-                                </div>
-
-                                {/* Footer / Meta */}
-                                <div className="mt-5 pt-4 border-t border-slate-50 flex items-center justify-between">
-                                  <div className="flex items-center gap-2">
-                                    <button
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        closeMobileDrawer();
-                                        setIsPickingTaskForDoc(doc);
-                                      }}
-                                      className="px-3 py-1.5 bg-emerald-50 text-emerald-700 border border-emerald-100 rounded-md hover:bg-emerald-100 transition-all flex items-center gap-1.5 group/btn"
-                                    >
-                                      <Plus className="w-3.5 h-3.5 group-hover/btn:rotate-90 transition-transform" />
-                                      <span className="text-[11px] font-bold">
-                                        Dùng làm nguồn
-                                      </span>
-                                    </button>
-                                    {doc.summary && (
-                                      <div className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-600 italic px-2">
-                                        <ShieldCheck className="w-3.5 h-3.5" />{" "}
-                                        Đã phân tích
-                                      </div>
-                                    )}
-                                  </div>
-                                  <button
-                                    onClick={() => openDocumentPreview(doc)}
-                                    className="text-[11px] font-bold text-[#002D56] hover:underline flex items-center gap-1.5 group/link bg-slate-50 px-3 py-1.5 rounded-md hover:bg-slate-100"
-                                  >
-                                    Xem{" "}
-                                    <ArrowRight className="w-3.5 h-3.5 group-hover/link:translate-x-0.5 transition-transform" />
-                                  </button>
-                                </div>
-                              </motion.div>
-                            ))
-                          )}
-                        </div>
-                      </main>
-                    </div>
+                    <LibraryWorkspace 
+                      closeMobileDrawer={closeMobileDrawer}
+                      setIsAddingLibrary={setIsAddingLibrary}
+                      libraryCollections={libraryCollections}
+                      setActiveLibraryId={setActiveLibraryId}
+                      activeLibraryId={activeLibraryId}
+                      documents={documents}
+                      setEditingCollection={setEditingCollection}
+                      requestConfirmAsync={requestConfirmAsync}
+                      deleteLibraryCollection={deleteLibraryCollection}
+                      librarySearchQuery={librarySearchQuery}
+                      setLibrarySearchQuery={setLibrarySearchQuery}
+                      bulkSelectedDocIds={bulkSelectedDocIds}
+                      deleteSelectedDocuments={deleteSelectedDocuments}
+                      repairLegacyDriveLinks={repairLegacyDriveLinks}
+                      setIsAddingText={setIsAddingText}
+                      setIsAddingLink={setIsAddingLink}
+                      fileInputRef={fileInputRef}
+                      libraryFilters={libraryFilters}
+                      setLibraryFilters={setLibraryFilters}
+                      DOCUMENT_KIND_LABELS={DOCUMENT_KIND_LABELS}
+                      toast={toast}
+                      apiFetchJson={apiFetchJson}
+                      getChatAuthToken={getChatAuthToken}
+                      backgroundTasks={backgroundTasks}
+                      setBackgroundTasks={setBackgroundTasks}
+                      filteredDocs={filteredDocs}
+                      getDocTypeLabel={getDocTypeLabel}
+                      setBulkSelectedDocIds={setBulkSelectedDocIds}
+                      setDocumentMenuDocId={setDocumentMenuDocId}
+                      documentMenuDocId={documentMenuDocId}
+                      handleAnalyzeDocument={handleAnalyzeDocument}
+                      isAnalyzing={isAnalyzing}
+                      getDocumentOpenUrl={getDocumentOpenUrl}
+                      handleSyncDriveFolder={handleSyncDriveFolder}
+                      isSyncingDrive={isSyncingDrive}
+                      setEditingDocument={setEditingDocument}
+                      setDocEditForm={setDocEditForm}
+                      setIsEditingDocModalOpen={setIsEditingDocModalOpen}
+                      archiveDocument={archiveDocument}
+                      removeDocument={removeDocument}
+                      formatLibraryDate={formatLibraryDate}
+                      openDocumentPreview={openDocumentPreview}
+                      setIsPickingTaskForDoc={setIsPickingTaskForDoc}
+                    />
                   )}
                 </React.Suspense>
               </motion.div>
             </AnimatePresence>
           </div>
 
-          <footer className="mt-8 border-t border-slate-200 bg-white px-4 py-6 sm:px-6 lg:px-8">
-            <div className="mx-auto flex max-w-7xl flex-col gap-5 md:flex-row md:items-start md:justify-between">
-              <div className="text-center md:text-left">
-                <h2 className="text-sm font-semibold tracking-normal text-[#002D56]">
-                  Công ty TNHH MTV Hoa tiêu hàng hải miền Bắc
-                </h2>
-                <p className="mt-1 text-xs text-slate-500">
-                  Hệ thống hỗ trợ nghiệp vụ và biên tập nội dung
-                </p>
-              </div>
-
-              <nav className="flex flex-wrap justify-center gap-x-4 gap-y-2 text-xs font-medium text-slate-500 md:justify-end">
-                <button
-                  disabled
-                  className="hover:text-[#002D56] disabled:opacity-50 disabled:cursor-not-allowed transition-opacity cursor-pointer"
-                >
-                  Sơ đồ luồng
-                </button>
-                <button
+          {activeTab === "home" && (
+            <footer className="mt-8 border-t border-slate-200 bg-white px-4 py-6 sm:px-6 lg:px-8">
+              <div className="mx-auto flex max-w-7xl flex-col gap-5 md:flex-row md:items-start md:justify-between">
+                <div className="text-center md:text-left">
+                  <h2 className="text-sm font-semibold tracking-normal text-[#002D56]">
+                    Công ty TNHH MTV Hoa tiêu hàng hải miền Bắc
+                  </h2>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Hệ thống hỗ trợ nghiệp vụ và biên tập nội dung
+                  </p>
+                </div>
+  
+                <nav className="flex flex-wrap justify-center gap-x-4 gap-y-2 text-xs font-medium text-slate-500 md:justify-end">
+                  <button
+                    disabled
+                    className="hover:text-[#002D56] disabled:opacity-50 disabled:cursor-not-allowed transition-opacity cursor-pointer"
+                  >
+                    Sơ đồ luồng
+                  </button>
+                  <button
                   disabled
                   className="hover:text-[#002D56] disabled:opacity-50 disabled:cursor-not-allowed transition-opacity cursor-pointer"
                 >
@@ -9180,6 +5605,7 @@ function App() {
               Việt Nam. Bản quyền được bảo lưu.
             </div>
           </footer>
+          )}
         </main>
 
         {/* Modals Container */}
@@ -9506,7 +5932,7 @@ function App() {
                           <button
                             onClick={deletePersonalKey}
                             className="p-1.5 text-slate-300 hover:text-red-500 transition-colors"
-                            title="Xóa key cá nhân"
+                            title="Xóa key cá nhân" aria-label="Xóa key cá nhân"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
@@ -9707,7 +6133,7 @@ function App() {
 
         <AnimatePresence>
           {selectingParagraphForImage && (
-            <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+            <div role="dialog" aria-modal="true" className="fixed inset-0 z-[100] flex items-center justify-center p-4">
               <motion.div
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
@@ -9779,6 +6205,15 @@ function App() {
             </div>
           )}
 
+          <TaskAICreateModal 
+            isOpen={isAiCreateModalOpen}
+            onClose={() => setIsAiCreateModalOpen(false)}
+            onAnalyze={handleAnalyzeTasks}
+            isAnalyzing={isAnalyzing === "tasks"}
+            onSave={saveAiTasks}
+            setTaskFilters={setTaskFilters}
+          />
+
           {activeModal === "task-edit" && editingTask && (
             <React.Suspense fallback={null}>
               <TaskEditModal
@@ -9804,7 +6239,7 @@ function App() {
 
           {/* Library Add Text Modal */}
           {isAddingText && (
-            <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[110] flex items-center justify-center p-4">
+            <div role="dialog" aria-modal="true" className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[110] flex items-center justify-center p-4">
               <motion.div
                 initial={{ opacity: 0, scale: 0.9 }}
                 animate={{ opacity: 1, scale: 1 }}
@@ -9868,7 +6303,7 @@ function App() {
 
           {/* Library Add Link Modal */}
           {isAddingLink && (
-            <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[110] flex items-center justify-center p-4">
+            <div role="dialog" aria-modal="true" className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[110] flex items-center justify-center p-4">
               <motion.div
                 initial={{ opacity: 0, scale: 0.9 }}
                 animate={{ opacity: 1, scale: 1 }}
@@ -9919,7 +6354,7 @@ function App() {
 
           {/* Create Collection Modal */}
           {isAddingLibrary && (
-            <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[110] flex items-center justify-center p-4">
+            <div role="dialog" aria-modal="true" className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[110] flex items-center justify-center p-4">
               <motion.div
                 initial={{ opacity: 0, scale: 0.9 }}
                 animate={{ opacity: 1, scale: 1 }}
@@ -9976,7 +6411,7 @@ function App() {
           )}
           {/* Pick from Library Modal */}
           {isPickingFromLibrary && (
-            <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-[2px] z-[120] flex justify-end">
+            <div role="dialog" aria-modal="true" className="fixed inset-0 bg-slate-900/40 backdrop-blur-[2px] z-[120] flex justify-end">
               <motion.div
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
@@ -10080,7 +6515,8 @@ function App() {
                               activeLibraryId === "lib-personal"),
                         )
                         .filter((d) => matchesSearch(d, searchQuery))
-                        .map((doc) => {
+                        .map((doc, idx) => {
+                          const kind = doc.type === 'drive' ? (doc.driveMimeType?.includes('folder') ? 'drive_folder' : 'drive_file') : (doc.temporary ? 'temp' : 'document');
                           const isSelected =
                             pickingMode === "ai"
                               ? selectedSourceDocIds.includes(doc.id)
@@ -10090,7 +6526,7 @@ function App() {
 
                           return (
                             <button
-                              key={doc.id}
+                              key={`${kind}:${doc.id}:${idx}`}
                               onClick={() => {
                                 if (pickingMode === "ai") {
                                   toggleDocSelection(doc.id);
@@ -10190,7 +6626,7 @@ function App() {
           )}
           {/* Edit Collection Modal */}
           {editingCollection && (
-            <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[110] flex items-center justify-center p-4">
+            <div role="dialog" aria-modal="true" className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[110] flex items-center justify-center p-4">
               <motion.div
                 initial={{ opacity: 0, scale: 0.9 }}
                 animate={{ opacity: 1, scale: 1 }}
@@ -10250,7 +6686,7 @@ function App() {
           )}
           {/* Task Picker Modal for Documents */}
           {isPickingTaskForDoc && (
-            <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-md z-[200] flex items-center justify-center p-4">
+            <div role="dialog" aria-modal="true" className="fixed inset-0 bg-slate-900/80 backdrop-blur-md z-[200] flex items-center justify-center p-4">
               <motion.div
                 initial={{ opacity: 0, scale: 0.95, y: 20 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -10386,7 +6822,7 @@ function App() {
         {/* Document Detail Drawer */}
         <AnimatePresence>
           {previewDocument && (
-            <div className="fixed inset-0 z-[250] flex justify-end">
+            <div role="dialog" aria-modal="true" className="fixed inset-0 z-[250] flex justify-end">
               <motion.div
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
@@ -10494,22 +6930,30 @@ function App() {
                         ) : (
                           <div className="py-4 text-center">
                             <p className="text-xs text-slate-500 font-semibold uppercase mb-4">
-                              Chưa có bản tóm tắt AI
+                              {isAnalyzing === previewDocument.id
+                                ? "Đang phân tích..."
+                                : previewDocument.contentStatus === "quota_exceeded" 
+                                  ? "Hạn mức AI đã hết" 
+                                  : previewDocument.contentStatus === "ai_error"
+                                  ? "Lỗi AI / Quá tải"
+                                  : "Chưa có bản tóm tắt AI"}
                             </p>
-                            <button
-                              onClick={() =>
-                                handleAnalyzeDocument(previewDocument.id)
-                              }
-                              disabled={!!isAnalyzing}
-                              className="bg-blue-600 text-white px-6 py-2.5 rounded-md text-[10px] font-semibold tracking-normal hover:bg-blue-700 transition-all flex items-center gap-2 mx-auto disabled:opacity-50"
-                            >
-                              {isAnalyzing === previewDocument.id ? (
-                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                              ) : (
-                                <Sparkles className="w-3.5 h-3.5" />
-                              )}
-                              Phân tích ngay
-                            </button>
+                            {(!(previewDocument.driveMimeType === "application/vnd.google-apps.folder" || previewDocument.isFolder)) && (
+                              <button
+                                onClick={() =>
+                                  handleAnalyzeDocument(previewDocument.id)
+                                }
+                                disabled={!!isAnalyzing}
+                                className="bg-blue-600 text-white px-6 py-2.5 rounded-md text-[10px] font-semibold tracking-normal hover:bg-blue-700 transition-all flex items-center gap-2 mx-auto disabled:opacity-50"
+                              >
+                                {isAnalyzing === previewDocument.id ? (
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                ) : (
+                                  <Sparkles className="w-3.5 h-3.5" />
+                                )}
+                                Phân tích ngay
+                              </button>
+                            )}
                           </div>
                         )}
                       </div>
@@ -10670,14 +7114,10 @@ function App() {
                                   const token = await user?.getIdToken();
                                   setIsParsing(true);
                                   try {
-                                    const resp = await fetch(
+                                    const respData = await apiFetchJson<any>(
                                       "/api/drive/import-public-link",
                                       {
                                         method: "POST",
-                                        headers: {
-                                          "Content-Type": "application/json",
-                                          Authorization: `Bearer ${token}`,
-                                        },
                                         body: JSON.stringify({
                                           url: `https://drive.google.com/open?id=${item.id}`,
                                           collectionId:
@@ -10686,18 +7126,18 @@ function App() {
                                         }),
                                       },
                                     );
-                                    const respData = await resp.json();
-                                    if (resp.ok && respData.document) {
-                                      setDocuments((prev) => [
-                                        respData.document,
-                                        ...prev,
-                                      ]);
+                                    if (respData.document) {
+                                      setDocuments((prev) => {
+                                        const exists = prev.findIndex(d => d.id === respData.document.id);
+                                        if (exists >= 0) {
+                                          const next = [...prev];
+                                          next[exists] = respData.document;
+                                          return next;
+                                        }
+                                        return [respData.document, ...prev];
+                                      });
                                       toast.success(
                                         "Đã import tài liệu từ thư mục!",
-                                      );
-                                    } else {
-                                      toast.error(
-                                        `Không thể import tài liệu: ${respData.message || "Lỗi không xác định"}`,
                                       );
                                     }
                                   } catch (e: any) {
@@ -11106,11 +7546,11 @@ function App() {
                   <div className="flex gap-2">
                     <button
                       onClick={() => {
-                        setSelectedSourceDocIds((prev) =>
-                          prev.includes(previewDocument.id)
-                            ? prev
-                            : [...prev, previewDocument.id],
-                        );
+                        if (selectedSourceDocIds.includes(previewDocument.id)) {
+                          toast.error("Nguồn này đã có trong danh sách nguồn AI.");
+                          return;
+                        }
+                        setSelectedSourceDocIds((prev) => [...prev, previewDocument.id]);
                         setPreviewDocument(null);
                         toast.success("Đã chọn làm nguồn AI");
                       }}
@@ -11118,6 +7558,20 @@ function App() {
                     >
                       Dùng làm nguồn AI
                     </button>
+                    {previewDocument.driveMimeType !== "application/vnd.google-apps.folder" && !previewDocument.isFolder && (
+                      <button
+                        onClick={() => handleAnalyzeDocument(previewDocument.id)}
+                        disabled={!!isAnalyzing}
+                        className="px-6 py-2.5 bg-blue-600 text-white rounded-md text-[10px] font-semibold tracking-normal disabled:opacity-50 flex items-center gap-2 shadow-sm"
+                      >
+                        {isAnalyzing === previewDocument.id ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Sparkles className="w-3.5 h-3.5" />
+                        )}
+                        Phân tích bằng AI
+                      </button>
+                    )}
                     <button
                       onClick={async (e) => {
                         e.stopPropagation();
@@ -11147,7 +7601,7 @@ function App() {
         </AnimatePresence>
         <AnimatePresence>
           {isPickingFromLibrary && pickingMode === "task" && editingTask && (
-            <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-md z-[200] flex items-center justify-center p-4">
+            <div role="dialog" aria-modal="true" className="fixed inset-0 bg-slate-900/80 backdrop-blur-md z-[200] flex items-center justify-center p-4">
               <motion.div
                 initial={{ opacity: 0, scale: 0.95, y: 20 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -11249,7 +7703,7 @@ function App() {
 
         <AnimatePresence>
           {isEditingDocModalOpen && editingDocument && (
-            <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
+            <div role="dialog" aria-modal="true" className="fixed inset-0 z-[300] flex items-center justify-center p-4">
               <motion.div
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
@@ -11395,7 +7849,7 @@ function App() {
 
         <AnimatePresence>
           {documentExplorerFolder && (
-            <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
+            <div role="dialog" aria-modal="true" className="fixed inset-0 z-[300] flex items-center justify-center p-4">
               <motion.div
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
@@ -11560,9 +8014,10 @@ function App() {
                 messages={chatMessages}
                 input={chatInput}
                 onInputChange={setChatInput}
-                onSend={(atts) => handleSendChat(undefined, atts)}
+                onSend={(atts, mode) => handleSendChat(undefined, atts, mode)}
                 onClear={() => setChatMessages([])}
                 onExecuteAction={handleExecuteAction}
+                onApplyImport={handleApplyDraftImport}
                 onCreateTasks={createTasksFromChatDrafts}
                 onToggleTaskDraft={toggleChatTaskDraft}
                 activeTab={activeTab}
@@ -11584,11 +8039,26 @@ function App() {
                     : health?.textModel || "gemini-2.5-flash"
                 }
                 onUploadAttachment={handleUploadChatAttachment}
+                proposalContext={FEATURE_FLAGS.PROPOSAL_CHAT_CONTEXT ? proposalChatContext : null}
               />
             </React.Suspense>
           )}
 
         <AnimatePresence>
+          {isCreateProposalModalOpen && (
+            <CreateProposalModal 
+              userId={user?.uid || ""}
+              isOpen={isCreateProposalModalOpen}
+              onClose={() => setIsCreateProposalModalOpen(false)}
+              onSuccess={(id) => {
+                toast.success("Đã tạo đề án thành công!");
+                setIsCreateProposalModalOpen(false);
+                setActiveTab("proposals");
+                setSelectedProposalId(id);
+              }}
+            />
+          )}
+
           {confirmDialog && (
             <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4">
               <motion.div
