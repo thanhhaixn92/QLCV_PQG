@@ -34,6 +34,7 @@ import {
   addProposalTask
 } from '../../features/proposals/proposalService';
 import { cn } from '../../lib/utils';
+import { getRenderKey } from '../../utils/listKeys';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'react-hot-toast';
 import { apiFetchJson } from '../../services/apiClient';
@@ -386,9 +387,9 @@ export const ProposalChecklistTab: React.FC<ProposalChecklistTabProps> = ({
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                  {groupItems.map(item => (
+                  {groupItems.map((item, itemIdx) => (
                     <ChecklistItemCard 
-                      key={item.id}
+                      key={getRenderKey("proposal-checklist-group-item", item, itemIdx)}
                       item={item}
                       outlineItems={outlineItems}
                       onUpdateStatus={(s) => handleUpdateStatus(item.id, s)}
@@ -423,9 +424,9 @@ export const ProposalChecklistTab: React.FC<ProposalChecklistTabProps> = ({
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                      {outlineItemsToCheck.map(item => (
+                      {outlineItemsToCheck.map((item, itemIdx) => (
                         <ChecklistItemCard 
-                          key={item.id}
+                          key={getRenderKey("proposal-checklist-outline-item", item, itemIdx)}
                           item={item}
                           outlineItems={outlineItems}
                           onUpdateStatus={(s) => handleUpdateStatus(item.id, s)}
@@ -452,9 +453,9 @@ export const ProposalChecklistTab: React.FC<ProposalChecklistTabProps> = ({
                        <div className="flex-1 h-px bg-slate-100" />
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                      {filteredItems.filter(i => !i.outlineItemId).map(item => (
+                      {filteredItems.filter(i => !i.outlineItemId).map((item, itemIdx) => (
                         <ChecklistItemCard 
-                          key={item.id}
+                          key={getRenderKey("proposal-checklist-unlinked-item", item, itemIdx)}
                           item={item}
                           outlineItems={outlineItems}
                           onUpdateStatus={(s) => handleUpdateStatus(item.id, s)}

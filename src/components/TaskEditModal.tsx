@@ -24,6 +24,8 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
   documents,
   setIsPickingFromLibrary
 }) => {
+  const isPersistedTask = !!editingTask.id && !editingTask.clientId;
+
   return (
     <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[100] flex justify-end" onClick={onClose}>
       <motion.div 
@@ -38,11 +40,11 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
         <div className="px-6 py-4 sm:px-8 sm:py-6 bg-slate-50 border-b border-slate-100 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-4">
             <div className="bg-[#002D56] p-2 sm:p-3 rounded-md">
-              {editingTask.id ? <Edit3 className="text-white w-5 h-5" /> : <Plus className="text-white w-5 h-5" />}
+              {isPersistedTask ? <Edit3 className="text-white w-5 h-5" /> : <Plus className="text-white w-5 h-5" />}
             </div>
             <div>
               <h3 className="text-sm sm:text-lg font-semibold text-slate-800 tracking-tight">
-                {editingTask.id ? 'Chi tiết công việc' : 'Tạo mới công việc'}
+                {isPersistedTask ? 'Chi tiết công việc' : 'Tạo mới công việc'}
               </h3>
               <p className="text-[10px] text-slate-400 font-bold tracking-normal hidden sm:block">Hoa Tiêu Miền Bắc - Hệ thống Công việc</p>
             </div>
@@ -236,7 +238,7 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
         {/* Sticky Footer */}
         <div className="p-4 sm:px-8 sm:py-5 border-t border-slate-200 bg-white flex flex-col sm:flex-row items-center justify-between gap-4 shrink-0 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)] z-10">
           <div className="flex items-center gap-3 w-full sm:w-auto">
-            {editingTask.id && (
+            {isPersistedTask && (
               <button 
                 onClick={() => {
                   if (window.confirm("Bạn có chắc chắn muốn xóa công việc này?")) {
@@ -260,7 +262,7 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
             className="w-full sm:w-auto bg-[#002D56] text-white px-8 py-3 rounded-lg text-sm font-bold shadow-md hover:shadow-lg hover:bg-blue-900 transition-all active:scale-[0.98] flex items-center justify-center gap-2"
           >
             <Save className="w-5 h-5" />
-            {editingTask.id ? 'Cập nhật công việc' : 'Lưu công việc mới'}
+            {isPersistedTask ? 'Cập nhật công việc' : 'Lưu công việc mới'}
           </button>
         </div>
       </motion.div>

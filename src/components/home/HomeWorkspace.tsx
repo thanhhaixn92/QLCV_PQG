@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { TaskType, OutputFormat, WritingStyle } from '../../types';
+import { getRenderKey } from '../../utils/listKeys';
 
 export const HomeWorkspace = (props: any) => {
   const {
@@ -309,9 +310,9 @@ export const HomeWorkspace = (props: any) => {
                     new Date(b.dueDate || "9999").getTime(),
                 )
                 .slice(0, 5)
-                .map((task: any) => (
+                .map((task: any, taskIdx: number) => (
                   <button
-                    key={task.id}
+                    key={getRenderKey("home-task", task, taskIdx)}
                     onClick={() => {
                       setEditingTask(task);
                       setActiveModal("task-edit");

@@ -20,6 +20,7 @@ import { SlideOutlineWorkspace } from './SlideOutlineWorkspace';
 import { getEditorialTool } from '../../lib/editorialTools';
 import { EditorialToolSelector } from './EditorialToolSelector';
 import { ContentReviewDisplay } from './ContentReviewDisplay';
+import { getRenderKey } from '../../utils/listKeys';
 
 export const EditorWorkspace = (props: any) => {
   const {
@@ -28,6 +29,31 @@ export const EditorWorkspace = (props: any) => {
   } = props;
 
   const currentTool = getEditorialTool(selectedEditorialToolId);
+  const makeBuiltTaskClientId = React.useCallback((idx: number) =>
+    `editor-built-task-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 9)}`, []);
+  const getBuiltTaskIdentity = React.useCallback((task: any, idx: number) =>
+    String(task?.clientId || task?.id || getRenderKey("editor-built-task", task, idx)).trim(), []);
+  const updateBuiltTaskAt = React.useCallback((idx: number, updater: (task: any) => any) => {
+    setBuiltTasks((prev) =>
+      (prev as any[]).map((t, tIdx) => (tIdx === idx ? updater(t) : t)),
+    );
+  }, [setBuiltTasks]);
+  const removeBuiltTaskAt = React.useCallback((idx: number) => {
+    setBuiltTasks((prev) => (prev as any[]).filter((_, tIdx) => tIdx !== idx));
+  }, [setBuiltTasks]);
+
+  React.useEffect(() => {
+    if (!Array.isArray(builtTasks) || builtTasks.length === 0) return;
+    let changed = false;
+    const normalized = (builtTasks as any[]).map((task, idx) => {
+      const existingIdentity = String(task?.clientId || task?.id || "").trim();
+      if (existingIdentity) return task;
+      changed = true;
+      const clientId = makeBuiltTaskClientId(idx);
+      return { ...task, id: clientId, clientId };
+    });
+    if (changed) setBuiltTasks(normalized);
+  }, [builtTasks, makeBuiltTaskClientId, setBuiltTasks]);
 
   const [cooldownRemaining, setCooldownRemaining] = React.useState(0);
   React.useEffect(() => {
@@ -664,9 +690,11 @@ export const EditorWorkspace = (props: any) => {
                                 </div>
 
                                 <div className="p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 bg-slate-50/50">
-                                  {(builtTasks as any[]).map((task, idx) => (
+                                  {(builtTasks as any[]).map((task, idx) => {
+                                    const taskIdentity = getBuiltTaskIdentity(task, idx);
+                                    return (
                                     <div
-                                      key={task.id}
+                                      key={getRenderKey("editor-built-task", task, idx)}
                                       className={`bg-white p-6 rounded-md shadow-sm border transition-all relative ${task.selected ? "border-[#002D56] shadow-md ring-4 ring-[#002D56]/5" : "border-slate-200 shadow-slate-200/50"}`}
                                     >
                                       <div className="absolute top-6 left-6 z-10 flex items-center gap-3">
@@ -674,16 +702,10 @@ export const EditorWorkspace = (props: any) => {
                                           type="checkbox"
                                           checked={task.selected}
                                           onChange={() =>
-                                            setBuiltTasks((prev) =>
-                                              prev.map((t) =>
-                                                t.id === task.id
-                                                  ? {
-                                                      ...t,
-                                                      selected: !t.selected,
-                                                    }
-                                                  : t,
-                                              ),
-                                            )
+                                            updateBuiltTaskAt(idx, (t) => ({
+                                              ...t,
+                                              selected: !t.selected,
+                                            }))
                                           }
                                           className="w-5 h-5 rounded-lg text-[#002D56] focus:ring-[#002D56] border-slate-300 cursor-pointer"
                                         />
@@ -695,17 +717,10 @@ export const EditorWorkspace = (props: any) => {
                                             <select
                                               value={task.categoryCode}
                                               onChange={(e) =>
-                                                setBuiltTasks((prev) =>
-                                                  prev.map((t) =>
-                                                    t.id === task.id
-                                                      ? {
-                                                          ...t,
-                                                          categoryCode:
-                                                            e.target.value,
-                                                        }
-                                                      : t,
-                                                  ),
-                                                )
+                                                updateBuiltTaskAt(idx, (t) => ({
+                                                  ...t,
+                                                  categoryCode: e.target.value,
+                                                }))
                                               }
                                               className="bg-blue-50 text-[#002D56] text-[9px] font-semibold tracking-normal px-3 py-1 rounded-md border-none focus:ring-1 focus:ring-blue-300 outline-none cursor-pointer"
                                             >
@@ -721,17 +736,10 @@ export const EditorWorkspace = (props: any) => {
                                             <select
                                               value={task.priority}
                                               onChange={(e) =>
-                                                setBuiltTasks((prev) =>
-                                                  prev.map((t) =>
-                                                    t.id === task.id
-                                                      ? {
-                                                          ...t,
-                                                          priority: e.target
-                                                            .value as any,
-                                                        }
-                                                      : t,
-                                                  ),
-                                                )
+                                                updateBuiltTaskAt(idx, (t) => ({
+                                                  ...t,
+                                                  priority: e.target.value as any,
+                                                }))
                                               }
                                               className={cn(
                                                 "text-[9px] font-semibold tracking-normal px-3 py-1 rounded-md border-none outline-none cursor-pointer",
@@ -759,16 +767,10 @@ export const EditorWorkspace = (props: any) => {
                                           <input
                                             value={task.title}
                                             onChange={(e) =>
-                                              setBuiltTasks((prev) =>
-                                                prev.map((t) =>
-                                                  t.id === task.id
-                                                    ? {
-                                                        ...t,
-                                                        title: e.target.value,
-                                                      }
-                                                    : t,
-                                                ),
-                                              )
+                                              updateBuiltTaskAt(idx, (t) => ({
+                                                ...t,
+                                                title: e.target.value,
+                                              }))
                                             }
                                             className="text-base sm:text-lg font-semibold text-[#002D56] bg-transparent border-b-2 border-transparent hover:border-slate-100 focus:border-[#002D56] focus:outline-none w-full tracking-tight"
                                             placeholder="Tên nhiệm vụ..."
@@ -783,11 +785,7 @@ export const EditorWorkspace = (props: any) => {
                                                 toast.success(
                                                   "Đã lưu công việc",
                                                 );
-                                                setBuiltTasks((prev) =>
-                                                  prev.filter(
-                                                    (t) => t.id !== task.id,
-                                                  ),
-                                                );
+                                                removeBuiltTaskAt(idx);
                                               }
                                             }}
                                             className="text-emerald-500 hover:bg-emerald-50 p-2 rounded-md transition-all shadow-sm active:scale-[0.98]"
@@ -797,11 +795,7 @@ export const EditorWorkspace = (props: any) => {
                                           </button>
                                           <button
                                             onClick={() =>
-                                              setBuiltTasks((prev) =>
-                                                prev.filter(
-                                                  (t) => t.id !== task.id,
-                                                ),
-                                              )
+                                              removeBuiltTaskAt(idx)
                                             }
                                             className="text-slate-300 hover:text-red-500 transition-all p-2 rounded-md active:scale-[0.98]"
                                           >
@@ -820,17 +814,10 @@ export const EditorWorkspace = (props: any) => {
                                             <input
                                               value={task.assignee}
                                               onChange={(e) =>
-                                                setBuiltTasks((prev) =>
-                                                  prev.map((t) =>
-                                                    t.id === task.id
-                                                      ? {
-                                                          ...t,
-                                                          assignee:
-                                                            e.target.value,
-                                                        }
-                                                      : t,
-                                                  ),
-                                                )
+                                                updateBuiltTaskAt(idx, (t) => ({
+                                                  ...t,
+                                                  assignee: e.target.value,
+                                                }))
                                               }
                                               placeholder="Gán tên..."
                                               className="w-full bg-transparent border-none p-0 text-xs font-semibold text-[#002D56] tracking-tight focus:ring-0 focus:outline-none placeholder:text-slate-300"
@@ -845,17 +832,10 @@ export const EditorWorkspace = (props: any) => {
                                               type="date"
                                               value={task.dueDate || ""}
                                               onChange={(e) =>
-                                                setBuiltTasks((prev) =>
-                                                  prev.map((t) =>
-                                                    t.id === task.id
-                                                      ? {
-                                                          ...t,
-                                                          dueDate:
-                                                            e.target.value,
-                                                        }
-                                                      : t,
-                                                  ),
-                                                )
+                                                updateBuiltTaskAt(idx, (t) => ({
+                                                  ...t,
+                                                  dueDate: e.target.value,
+                                                }))
                                               }
                                               className="w-full bg-transparent border-none p-0 text-xs font-semibold text-[#002D56] focus:ring-0 focus:outline-none cursor-pointer"
                                             />
@@ -868,17 +848,10 @@ export const EditorWorkspace = (props: any) => {
                                           <textarea
                                             value={task.description}
                                             onChange={(e) =>
-                                              setBuiltTasks((prev) =>
-                                                prev.map((t) =>
-                                                  t.id === task.id
-                                                    ? {
-                                                        ...t,
-                                                        description:
-                                                          e.target.value,
-                                                      }
-                                                    : t,
-                                                ),
-                                              )
+                                              updateBuiltTaskAt(idx, (t) => ({
+                                                ...t,
+                                                description: e.target.value,
+                                              }))
                                             }
                                             rows={2}
                                             placeholder="Mô tả các bước thực hiện..."
@@ -934,25 +907,18 @@ export const EditorWorkspace = (props: any) => {
                                         <div className="flex items-center gap-2">
                                           <input
                                             type="checkbox"
-                                            id={`deputy-${task.id}`}
+                                            id={`deputy-${taskIdentity}`}
                                             checked={task.isDeputy}
                                             onChange={(e) =>
-                                              setBuiltTasks((prev) =>
-                                                prev.map((t) =>
-                                                  t.id === task.id
-                                                    ? {
-                                                        ...t,
-                                                        isDeputy:
-                                                          e.target.checked,
-                                                      }
-                                                    : t,
-                                                ),
-                                              )
+                                              updateBuiltTaskAt(idx, (t) => ({
+                                                ...t,
+                                                isDeputy: e.target.checked,
+                                              }))
                                             }
                                             className="w-4 h-4 rounded text-amber-500 focus:ring-amber-400 border-slate-300 cursor-pointer"
                                           />
                                           <label
-                                            htmlFor={`deputy-${task.id}`}
+                                            htmlFor={`deputy-${taskIdentity}`}
                                             className="text-[10px] font-semibold uppercase text-amber-600 tracking-wide cursor-pointer select-none"
                                           >
                                             P. Trưởng phòng / Kiêm nhiệm
@@ -960,7 +926,8 @@ export const EditorWorkspace = (props: any) => {
                                         </div>
                                       </div>
                                     </div>
-                                  ))}
+                                    );
+                                  })}
                                 </div>
                               </motion.section>
                             )}

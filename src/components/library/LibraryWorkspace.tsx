@@ -7,6 +7,7 @@ import {
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '../../lib/utils';
 import { DocumentSource, TASK_CATEGORIES } from '../../types';
+import { getRenderKey } from '../../utils/listKeys';
 
 export const LibraryWorkspace = (props: any) => {
   const { 
@@ -353,9 +354,9 @@ export const LibraryWorkspace = (props: any) => {
 
                         {backgroundTasks.length > 0 && (
                           <div className="flex flex-col gap-2">
-                            {backgroundTasks.map((task) => (
+                            {backgroundTasks.map((task, taskIdx) => (
                               <div
-                                key={task.id}
+                                key={getRenderKey("library-background-task", task, taskIdx)}
                                 className="bg-indigo-50 border border-indigo-100 rounded-md p-3 flex items-center justify-between shadow-sm"
                               >
                                 <div className="flex items-center gap-3 overflow-hidden">
