@@ -3,13 +3,44 @@
  * Provides searchable, selectable, vector-grade high-quality printouts.
  */
 
-import * as pdfMake from "pdfmake/build/pdfmake";
-import * as pdfFonts from "pdfmake/build/vfs_fonts";
 import htmlToPdfmake from "html-to-pdfmake";
 import { normalizeExportDom, validateExportContent } from "./exportContentNormalizer";
 
-// Initialize vfs for pdfMake
-(pdfMake as any).vfs = pdfFonts.pdfMake ? pdfFonts.pdfMake.vfs : pdfFonts.vfs;
+// Helper for dynamic loading and module normalization
+async function getPdfMakeClient() {
+  const pdfMakeModule = await import("pdfmake/build/pdfmake");
+  const pdfFontsModule = await import("pdfmake/build/vfs_fonts");
+
+  const pdfMakeCandidate: any =
+    (pdfMakeModule as any).default ??
+    (pdfMakeModule as any);
+
+  const pdfFontsCandidate: any =
+    (pdfFontsModule as any).default ??
+    (pdfFontsModule as any);
+
+  const vfs =
+    pdfFontsCandidate?.pdfMake?.vfs ??
+    pdfFontsCandidate?.vfs ??
+    pdfFontsCandidate?.default?.vfs;
+
+  if (vfs && !pdfMakeCandidate.vfs) {
+    pdfMakeCandidate.vfs = vfs;
+  }
+
+  const createPdf =
+    pdfMakeCandidate?.createPdf ??
+    pdfMakeCandidate?.default?.createPdf;
+
+  if (typeof createPdf !== "function") {
+    throw new Error("Không thể khởi tạo trình xuất (pdfMake is undefined).");
+  }
+
+  return {
+    pdfMake: pdfMakeCandidate,
+    createPdf: createPdf.bind(pdfMakeCandidate),
+  };
+}
 
 export interface PrintPdfOptions {
   title?: string;
@@ -84,9 +115,10 @@ export async function exportPrintablePdfFromElement(elementId: string, options: 
 
   // Generate and download
   try {
-    pdfMake.createPdf(docDefinition).download(`${options.title || 'Tai_Lieu_Xuat_Ban'}.pdf`);
+    const { createPdf } = await getPdfMakeClient();
+    createPdf(docDefinition).download(`${options.title || 'Tai_Lieu_Xuat_Ban'}.pdf`);
   } catch (err) {
     console.error("pdfmake error:", err);
-    throw new Error("Lỗi khi tạo và tải xuống file PDF.");
+    throw new Error("Không thể khởi tạo trình xuất PDF. Vui lòng thử lại hoặc xuất Word.");
   }
 }
