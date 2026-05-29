@@ -320,6 +320,7 @@ export interface WorkTaskChecklistItem {
 
 export interface WorkTask {
   id: string;
+  clientId?: string; // Client-only stable ID for unsaved drafts/rendering; never persisted to Firestore
   title: string;
   assignee: string;
   dueDate: string; // ISO format

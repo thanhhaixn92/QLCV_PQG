@@ -3,6 +3,7 @@ import { ProposalOutlineItem } from '../../features/proposals/types';
 import { ProposalOutlineItemCard } from './ProposalOutlineItemCard';
 import { Layout } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { getRenderKey } from '../../utils/listKeys';
 
 interface ProposalOutlineTreeProps {
   items: ProposalOutlineItem[];
@@ -51,7 +52,7 @@ export const ProposalOutlineTree: React.FC<ProposalOutlineTreeProps> = ({
         <AnimatePresence initial={false}>
           {items.map((item, index) => (
             <motion.div
-              key={item.id}
+              key={getRenderKey("proposal-outline-tree-item", item, index)}
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95 }}

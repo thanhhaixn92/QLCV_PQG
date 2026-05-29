@@ -52,6 +52,7 @@ import { analyzeDataLocally } from '../../features/proposals/proposalDataLocalAn
 import { apiFetchJson } from '../../services/apiClient';
 import { auth } from '../../lib/firebase';
 import ReactMarkdown from 'react-markdown';
+import { getRenderKey } from '../../utils/listKeys';
 
 interface ProposalDataRequirementsTabProps {
   userId: string;
@@ -333,14 +334,21 @@ export const ProposalDataRequirementsTab: React.FC<ProposalDataRequirementsTabPr
     }
   };
 
+  const hasPersistedItemId = (itemId?: string) => !!String(itemId || "").trim();
+
   const handleCreateTaskFromItem = async (item: ProposalDataRequirement) => {
+    const itemId = String(item.id || "").trim();
+    if (!itemId) {
+      toast.error("Không thể tạo nhiệm vụ cho mục số liệu chưa có ID lưu trữ.");
+      return;
+    }
     try {
       await addProposalTask(userId, proposalId, {
         title: `Thu thập số liệu: ${item.title}`,
         description: `Nhiệm vụ thu thập, cập nhật số liệu cho mục "${item.title}".\nNhóm: ${item.group}\nMục đích: ${item.purpose}\nNguồn dự kiến: ${item.suggestedSource || 'N/A'}\nGhi chú: ${item.verificationNote || ''}`,
         priority: (item.priority as any) || 'medium',
         sourceType: 'data_requirement',
-        sourceId: item.id,
+        sourceId: itemId,
         sourceLabel: 'Số liệu' as any,
         responsibleUnit: item.responsibleUnit,
         linkedOutlineCodes: item.linkedOutlineCodes || [],
@@ -349,7 +357,7 @@ export const ProposalDataRequirementsTab: React.FC<ProposalDataRequirementsTabPr
       });
       
       // Update item with task info (locally first, though firestore would eventually sync)
-      await updateDataRequirement(userId, proposalId, item.id, {
+      await updateDataRequirement(userId, proposalId, itemId, {
         taskId: 'created', // Placeholder or real ID if we returned it, addProposalTask returns string ID
         taskStatus: 'todo'
       });
@@ -377,6 +385,10 @@ export const ProposalDataRequirementsTab: React.FC<ProposalDataRequirementsTabPr
   };
 
   const handleUpdateStatus = async (itemId: string, newStatus: ProposalDataRequirement['status']) => {
+    if (!hasPersistedItemId(itemId)) {
+      toast.error("Không thể cập nhật mục số liệu chưa có ID lưu trữ.");
+      return;
+    }
     try {
       await updateDataRequirement(userId, proposalId, itemId, { status: newStatus });
       setItems(items.map(item => item.id === itemId ? { ...item, status: newStatus } : item));
@@ -387,6 +399,10 @@ export const ProposalDataRequirementsTab: React.FC<ProposalDataRequirementsTabPr
   };
 
   const handleDelete = async (itemId: string) => {
+    if (!hasPersistedItemId(itemId)) {
+      toast.error("Không thể xóa mục số liệu chưa có ID lưu trữ.");
+      return;
+    }
     const confirmFn = requestConfirmAsync ? requestConfirmAsync : async (m: string) => window.confirm(m);
     if (!(await confirmFn("Xóa yêu cầu số liệu này?"))) return;
     try {
@@ -399,6 +415,10 @@ export const ProposalDataRequirementsTab: React.FC<ProposalDataRequirementsTabPr
   };
 
   const handleLinkOutline = async (itemId: string, outlineId: string) => {
+    if (!hasPersistedItemId(itemId)) {
+      toast.error("Không thể liên kết mục số liệu chưa có ID lưu trữ.");
+      return;
+    }
     const item = items.find(i => i.id === itemId);
     if (!item) return;
     
@@ -802,13 +822,14 @@ export const ProposalDataRequirementsTab: React.FC<ProposalDataRequirementsTabPr
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {groupItems.map(item => {
+                {groupItems.map((item, idx) => {
                   const statusInfo = getStatusConfig(item.status, item.statusDetail);
                   const priorityInfo = getPriorityConfig(item.priority || 'medium');
+                  const itemId = String(item.id || "").trim();
                   
                   return (
                     <motion.div 
-                      key={item.id}
+                      key={getRenderKey("proposal-req-item", item, idx)}
                       layout
                       className="bg-white border-2 border-slate-100 rounded-[32px] p-8 shadow-sm hover:shadow-2xl hover:shadow-[#002D56]/5 hover:border-blue-100 transition-all flex flex-col group relative overflow-hidden"
                     >
@@ -817,7 +838,7 @@ export const ProposalDataRequirementsTab: React.FC<ProposalDataRequirementsTabPr
                            onClick={() => {
                              const states: ProposalDataRequirement['status'][] = ['requested', 'collected', 'verified', 'missing', 'needs_update', 'needs_verification'];
                              const next = states[(states.indexOf(item.status) + 1) % states.length];
-                             handleUpdateStatus(item.id, next);
+                             if (itemId) handleUpdateStatus(itemId, next);
                            }}
                            className={cn("px-4 py-2 rounded-2xl flex items-center gap-2.5 text-[10px] font-black uppercase tracking-widest transition-all cursor-pointer hover:scale-105 active:scale-95 border shadow-sm", statusInfo.color)}
                          >
@@ -863,22 +884,24 @@ export const ProposalDataRequirementsTab: React.FC<ProposalDataRequirementsTabPr
                            <button className="px-4 py-3 bg-white border-2 border-slate-100 text-slate-600 rounded-2xl text-[9px] font-black uppercase hover:border-blue-200 hover:text-blue-600 transition-all shadow-sm">SỬA</button>
                            {item.status === 'collected' && (
                              <button 
-                               onClick={() => handleUpdateStatus(item.id, 'verified')}
+                               onClick={() => handleUpdateStatus(itemId, 'verified')}
                                className="px-4 py-3 bg-emerald-600 text-white rounded-2xl text-[9px] font-black uppercase hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-900/10"
                              >XÁC MINH</button>
                            )}
                          </div>
 
-                         <div className="pt-2">
-                            <EvidenceLinker 
+                         {itemId && (
+                           <div className="pt-2">
+                            <EvidenceLinker
                                userId={userId}
                                proposalId={proposalId}
                                targetType="dataRequirement"
-                               targetId={item.id}
+                               targetId={itemId}
                             />
-                         </div>
+                           </div>
+                         )}
                       </div>
-                      <button onClick={() => handleDelete(item.id)} className="absolute top-4 right-4 p-2 text-slate-200 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all">
+                      <button onClick={() => handleDelete(itemId)} className="absolute top-4 right-4 p-2 text-slate-200 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all">
                         <Trash2 className="w-4 h-4" />
                       </button>
                     </motion.div>

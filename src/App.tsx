@@ -94,6 +94,7 @@ import { motion, AnimatePresence } from "motion/react";
 import ReactMarkdown from "react-markdown";
 import axios from "axios";
 import toast, { Toaster } from "react-hot-toast";
+import { getRenderKey, staticKey } from "./utils/listKeys";
 
 const TaskEditModal = React.lazy(() =>
   import("./components/TaskEditModal").then((m) => ({
@@ -443,6 +444,15 @@ function App() {
   // Task & Work Management State
   const [allTasks, setAllTasks] = useState<WorkTask[]>([]);
   const [editingTask, setEditingTask] = useState<WorkTask | null>(null);
+  const createDraftTaskId = () =>
+    `draft-task-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  const isDraftTaskId = (id?: string) =>
+    typeof id === "string" && id.trim().startsWith("draft-task-");
+  const createTaskDraft = (task: Omit<WorkTask, "id">): WorkTask => {
+    const clientId = createDraftTaskId();
+    return { ...task, id: clientId, clientId };
+  };
+
   const [isAiCreateModalOpen, setIsAiCreateModalOpen] = useState(false);
   const [taskFilters, setTaskFilters] = useState({
     status: "all",
@@ -1256,8 +1266,7 @@ function App() {
         setActiveTab("tasks");
         break;
       case "create_task":
-        setEditingTask({
-          id: "",
+        setEditingTask(createTaskDraft({
           title: action.payload?.title || "Công việc mới từ Chat",
           description: action.payload?.description || "",
           assignee: profile?.displayName || "",
@@ -1269,7 +1278,7 @@ function App() {
           checklist: [],
           createdAt: Date.now(),
           updatedAt: Date.now(),
-        });
+        }));
         setActiveModal("task-edit");
         break;
       case "open_library":
@@ -2916,8 +2925,7 @@ function App() {
       });
     });
 
-    setEditingTask({
-      id: "",
+    setEditingTask(createTaskDraft({
       title: `Hoàn thiện Slide Deck: ${result.title}`,
       description: `Mục tiêu: Hoàn thiện bài thuyết trình cho đối tượng ${result.audience}.\n\nThông điệp chính: ${result.mainMessage}\n\nPhong cách: ${result.style}\nSố lượng: ${result.slideCount} slides.\n\nCần lưu ý rà soát kỹ các slide: ${slidesWithCaution.map((s) => s.slideNumber).join(", ") || "Không có cảnh báo"}`,
       categoryCode: "LV_VPDT",
@@ -2929,7 +2937,7 @@ function App() {
       createdAt: Date.now(),
       updatedAt: Date.now(),
       checklist: checklistItems,
-    });
+    }));
     closeMobileDrawer();
     setActiveModal("task-edit");
   };
@@ -2963,16 +2971,21 @@ function App() {
       if (!response.ok)
         throw new Error(data.error || "Không thể trích xuất công việc từ AI");
 
-      const newTasks = (data.tasks || []).map((t: any) => {
+      const buildStartedAt = Date.now();
+      const newTasks = (data.tasks || []).map((t: any, idx: number) => {
         // Fallback safety
         const safeCategory = TASK_CATEGORIES.some(
           (c) => c.code === t.categoryCode,
         )
           ? t.categoryCode
           : "LV_DH";
+        const renderId =
+          String(t.clientId || t.id || "").trim() ||
+          `ai-built-task-${buildStartedAt}-${idx}-${Math.random().toString(36).slice(2, 9)}`;
         return {
           ...t,
-          id: `wt-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          id: renderId,
+          clientId: renderId,
           status: t.status || "todo",
           priority: ["low", "medium", "high", "urgent"].includes(t.priority)
             ? t.priority
@@ -3669,8 +3682,7 @@ function App() {
   // Quick Action Helpers
   const openCreateTask = () => {
     closeMobileDrawer();
-    setEditingTask({
-      id: "",
+    setEditingTask(createTaskDraft({
       title: "",
       assignee:
         profile?.defaultAssigneeName || getUserDisplayName(user, profile),
@@ -3685,7 +3697,7 @@ function App() {
       source: "manual",
       createdAt: Date.now(),
       updatedAt: Date.now(),
-    });
+    }));
     setActiveModal("task-edit");
   };
 
@@ -5005,9 +5017,9 @@ Nội dung văn bản:\n` + content,
             ...(profile?.role === "admin"
               ? [{ id: "admin", label: "Admin Workspace", icon: Shield }]
               : []),
-          ].map((item) => (
+          ].map((item, itemIdx) => (
             <button
-              key={item.id}
+              key={staticKey("sidebar-item", item.id, itemIdx)}
               onClick={() => {
                 if (item.id === "tasks") {
                   openTaskOverview();
@@ -6223,10 +6235,11 @@ Nội dung văn bản:\n` + content,
                 onDelete={handleDeleteTask}
                 onSave={(task) => {
                   if (!task.title) return toast.error("Vui lòng nhập tiêu đề");
-                  if (task.id) {
-                    handleUpdateTask(task.id, task);
+                  if (task.id && !isDraftTaskId(task.id)) {
+                    const { clientId, ...updates } = task;
+                    handleUpdateTask(task.id, updates);
                   } else {
-                    const { id, ...rest } = task;
+                    const { id, clientId, ...rest } = task;
                     persistTask(rest);
                     setActiveModal(null);
                   }
@@ -6742,9 +6755,9 @@ Nội dung văn bản:\n` + content,
                             .toLowerCase()
                             .includes(taskFilters.search.toLowerCase()),
                       )
-                      .map((task) => (
+                      .map((task, taskIdx) => (
                         <button
-                          key={task.id}
+                          key={getRenderKey("document-picker-task", task, taskIdx)}
                           disabled={task.linkedDocumentIds?.includes(
                             isPickingTaskForDoc.id,
                           )}

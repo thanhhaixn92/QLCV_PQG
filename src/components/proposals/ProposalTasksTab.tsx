@@ -33,6 +33,7 @@ import {
 import { 
   WorkTask
 } from '../../types';
+import { getRenderKey } from '../../utils/listKeys';
 import {
   ProposalOutlineItem,
   Proposal
@@ -376,9 +377,9 @@ export const ProposalTasksTab: React.FC<ProposalTasksTabProps> = ({
         <div className="xl:col-span-8 space-y-4">
            {filteredTasks.length > 0 ? (
              <div className="grid grid-cols-1 gap-4">
-               {filteredTasks.map(task => (
+               {filteredTasks.map((task, taskIdx) => (
                  <TaskCard 
-                   key={task.id}
+                   key={getRenderKey("proposal-task", task, taskIdx)}
                    task={task}
                    onUpdateStatus={(s) => handleUpdateStatus(task.id, s)}
                    onDelete={() => handleDelete(task.id)}
