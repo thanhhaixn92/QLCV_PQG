@@ -55,14 +55,14 @@ export const listProposals = async (userId: string): Promise<Proposal[]> => {
   const proposalsRef = getProposalsRef(userId);
   const q = query(proposalsRef, orderBy('updatedAt', 'desc'));
   const snapshot = await getDocs(q);
-  return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Proposal));
+  return snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Proposal));
 };
 
 export const getProposal = async (userId: string, proposalId: string): Promise<Proposal | null> => {
   const docRef = getProposalDoc(userId, proposalId);
   const snapshot = await getDoc(docRef);
   if (!snapshot.exists()) return null;
-  return { id: snapshot.id, ...snapshot.data() } as Proposal;
+  return { ...snapshot.data(), id: snapshot.id } as Proposal;
 };
 
 export const updateProposal = async (userId: string, proposalId: string, data: Partial<Proposal>): Promise<void> => {
@@ -101,7 +101,7 @@ export const listSources = async (userId: string, proposalId: string): Promise<P
   const sourcesRef = collection(db, 'users', userId, 'proposals', proposalId, 'sources');
   const q = query(sourcesRef, orderBy('order', 'asc'));
   const snapshot = await getDocs(q);
-  return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ProposalSource));
+  return snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as ProposalSource));
 };
 
 // Outline Items
@@ -119,7 +119,7 @@ export const listOutlineItems = async (userId: string, proposalId: string): Prom
   const outlineRef = collection(db, 'users', userId, 'proposals', proposalId, 'outlineItems');
   const q = query(outlineRef, orderBy('order', 'asc'));
   const snapshot = await getDocs(q);
-  return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ProposalOutlineItem));
+  return snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as ProposalOutlineItem));
 };
 
 export const updateOutlineItem = async (userId: string, proposalId: string, itemId: string, data: Partial<ProposalOutlineItem>) => {
@@ -242,7 +242,7 @@ export const listDrafts = async (userId: string, proposalId: string): Promise<Pr
   const draftsRef = collection(db, 'users', userId, 'proposals', proposalId, 'drafts');
   const q = query(draftsRef, orderBy('createdAt', 'desc'));
   const snapshot = await getDocs(q);
-  return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ProposalDraft));
+  return snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as ProposalDraft));
 };
 
 export const getDraftByOutlineItem = async (userId: string, proposalId: string, outlineItemId: string): Promise<ProposalDraft | null> => {
@@ -250,7 +250,7 @@ export const getDraftByOutlineItem = async (userId: string, proposalId: string, 
   const q = query(draftsRef, where('outlineItemId', '==', outlineItemId));
   const snapshot = await getDocs(q);
   if (snapshot.empty) return null;
-  return { id: snapshot.docs[0].id, ...snapshot.docs[0].data() } as ProposalDraft;
+  return { ...snapshot.docs[0].data(), id: snapshot.docs[0].id } as ProposalDraft;
 };
 
 export const createDraftForOutlineItem = async (userId: string, proposalId: string, outlineItem: ProposalOutlineItem): Promise<string> => {
@@ -387,7 +387,7 @@ export const listDraftVersions = async (userId: string, proposalId: string, draf
   const versionsRef = collection(db, 'users', userId, 'proposals', proposalId, 'drafts', draftId, 'versions');
   const q = query(versionsRef, orderBy('version', 'desc'));
   const snapshot = await getDocs(q);
-  return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+  return snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }));
 };
 
 // Tasks
@@ -426,7 +426,7 @@ export const listProposalTasks = async (userId: string, proposalId: string): Pro
     where('proposalId', '==', proposalId)
   );
   const snapshot = await getDocs(q);
-  const tasks = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as WorkTask));
+  const tasks = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as WorkTask));
   // Sort client-side to avoid index requirement
   return tasks.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
 };
@@ -565,7 +565,7 @@ export const listChecklistItems = async (userId: string, proposalId: string): Pr
   const checklistRef = collection(db, 'users', userId, 'proposals', proposalId, 'checklistItems');
   const q = query(checklistRef, orderBy('createdAt', 'asc'));
   const snapshot = await getDocs(q);
-  return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ProposalChecklistItem));
+  return snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as ProposalChecklistItem));
 };
 
 export const updateChecklistItem = async (userId: string, proposalId: string, itemId: string, patch: Partial<ProposalChecklistItem>): Promise<void> => {
@@ -637,7 +637,7 @@ export const listDataRequirements = async (userId: string, proposalId: string): 
   const dataRef = collection(db, 'users', userId, 'proposals', proposalId, 'dataRequirements');
   const q = query(dataRef, orderBy('createdAt', 'asc'));
   const snapshot = await getDocs(q);
-  return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ProposalDataRequirement));
+  return snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as ProposalDataRequirement));
 };
 
 export const updateDataRequirement = async (userId: string, proposalId: string, itemId: string, patch: Partial<ProposalDataRequirement>): Promise<void> => {
@@ -803,7 +803,7 @@ export const removeEvidenceLink = async (userId: string, proposalId: string, lin
 export const listEvidenceLinksForProposal = async (userId: string, proposalId: string): Promise<ProposalEvidenceLink[]> => {
   const linksRef = collection(db, 'users', userId, 'proposals', proposalId, 'evidenceLinks');
   const snapshot = await getDocs(linksRef);
-  return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ProposalEvidenceLink));
+  return snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as ProposalEvidenceLink));
 };
 
 export const listEvidenceLinksForTarget = async (
@@ -819,5 +819,5 @@ export const listEvidenceLinksForTarget = async (
     where('targetId', '==', targetId)
   );
   const snapshot = await getDocs(q);
-  return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ProposalEvidenceLink));
+  return snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as ProposalEvidenceLink));
 };

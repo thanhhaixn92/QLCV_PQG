@@ -48,7 +48,7 @@ export const TaskStatsCompact = ({ stats, filters, setFilters }: any) => {
         },
       ].map((stat) => (
         <div
-          key={stat.status}
+          key={`task-stat-${stat.status}`}
           className={cn(
             "min-w-[150px] flex-1 bg-white p-3.5 rounded-xl border shadow-sm flex items-center justify-between cursor-pointer transition-all hover:shadow-md group snap-start shrink-0",
             filters.status === stat.status ? "border-blue-400 ring-1 ring-blue-100" : "border-slate-200 hover:border-slate-300"

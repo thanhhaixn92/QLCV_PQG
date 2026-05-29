@@ -1,4 +1,5 @@
 import React from 'react';
+import { getRenderKey } from "../../utils/listKeys";
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Zap, Database, Bot, HardDrive, ShieldCheck, PieChart, Play,
@@ -14,6 +15,63 @@ export const HomeWorkspace = (props: any) => {
     setActiveTab, openCreateTask, openAiTaskBuilder,
     setEditingTask, setActiveModal
   } = props;
+
+  const systemStatus = [
+    {
+      label: "Cloud Firestore",
+      active: health?.firestoreReady,
+      icon: Database,
+      code: "firestore"
+    },
+    {
+      label: "Hoa Tiêu AI Core",
+      active: isAiCoreActive,
+      icon: Bot,
+      code: "ai_core"
+    },
+    {
+      label: "Workspace Drive",
+      active: health?.hasGoogleDriveKey,
+      icon: "DriveIcon",
+      code: "drive"
+    },
+    {
+      label: "Bảo mật dữ liệu",
+      active: health?.hasEncryptionSecret,
+      icon: ShieldCheck,
+      code: "encryption"
+    },
+  ];
+
+  const dashboards = [
+    {
+      id: "tasks",
+      label: "Công việc",
+      icon: CheckSquare,
+      desc: "Quản lý nhiệm vụ, checklist, tiến độ",
+      color: "text-emerald-500",
+      bg: "bg-emerald-50",
+      value: `${allTasks.length}`,
+    },
+    {
+      id: "editor",
+      label: "Biên tập",
+      icon: Edit3,
+      desc: "Soạn thảo bài viết, tài liệu AI",
+      color: "text-blue-500",
+      bg: "bg-blue-50",
+      value: "AI",
+    },
+    {
+      id: "library",
+      label: "Kho tư liệu",
+      icon: Library,
+      desc: "Kho dữ liệu mẫu, văn bản, hướng dẫn",
+      color: "text-orange-500",
+      bg: "bg-orange-50",
+      value: `${documents.length}`,
+    },
+  ];
 
   return (
     <>
@@ -49,35 +107,14 @@ export const HomeWorkspace = (props: any) => {
 
         {/* System Status Grid */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          {[
-            {
-              label: "Cloud Firestore",
-              active: health?.firestoreReady,
-              icon: Database,
-            },
-            {
-              label: "Hoa Tiêu AI Core",
-              active: isAiCoreActive,
-              icon: Bot,
-            },
-            {
-              label: "Workspace Drive",
-              active: health?.hasGoogleDriveKey,
-              icon: "DriveIcon",
-            },
-            {
-              label: "Bảo mật dữ liệu",
-              active: health?.hasEncryptionSecret,
-              icon: ShieldCheck,
-            },
-          ].map((sys, idx) => {
+          {systemStatus.map((sys: any) => {
             const IconComp =
               sys.icon === "DriveIcon"
                 ? HardDrive
                 : (sys.icon as any);
             return (
               <div
-                key={idx}
+                key={`home-sys-${sys.code}`}
                 className={cn(
                   "p-5 rounded-2xl border transition-all flex flex-col justify-between h-32 relative overflow-hidden",
                   sys.active
@@ -148,37 +185,9 @@ export const HomeWorkspace = (props: any) => {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          {[
-            {
-              id: "tasks",
-              label: "Công việc",
-              icon: CheckSquare,
-              desc: "Quản lý nhiệm vụ, checklist, tiến độ",
-              color: "text-emerald-500",
-              bg: "bg-emerald-50",
-              value: `${allTasks.length}`,
-            },
-            {
-              id: "editor",
-              label: "Biên tập",
-              icon: Edit3,
-              desc: "Soạn thảo bài viết, tài liệu AI",
-              color: "text-blue-500",
-              bg: "bg-blue-50",
-              value: "AI",
-            },
-            {
-              id: "library",
-              label: "Kho tư liệu",
-              icon: Library,
-              desc: "Kho dữ liệu mẫu, văn bản, hướng dẫn",
-              color: "text-orange-500",
-              bg: "bg-orange-50",
-              value: `${documents.length}`,
-            },
-          ].map((stat, i) => (
+          {dashboards.map((stat: any) => (
             <motion.button
-              key={i}
+              key={`home-dash-${stat.id}`}
               whileHover={{ y: -5, scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
               onClick={() => setActiveTab(stat.id)}
@@ -309,9 +318,9 @@ export const HomeWorkspace = (props: any) => {
                     new Date(b.dueDate || "9999").getTime(),
                 )
                 .slice(0, 5)
-                .map((task: any) => (
+                .map((task: any, idx: number) => (
                   <button
-                    key={task.id}
+                    key={getRenderKey("task-home", task, idx)}
                     onClick={() => {
                       setEditingTask(task);
                       setActiveModal("task-edit");
@@ -410,9 +419,9 @@ export const HomeWorkspace = (props: any) => {
                     (b.updatedAt || 0) - (a.updatedAt || 0),
                 )
                 .slice(0, 5)
-                .map((doc: any) => (
+                .map((doc: any, idx: number) => (
                   <button
-                    key={doc.id}
+                    key={getRenderKey("doc-home", doc, idx)}
                     onClick={() => {
                       setActiveTab("library");
                     }}

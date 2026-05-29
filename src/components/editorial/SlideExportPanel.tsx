@@ -42,7 +42,7 @@ export function SlideExportPanel({ outline, onExportComplete }: Props) {
       
       const token = await user.getIdToken();
       
-      const themeColors = SLIDE_THEMES[options.theme]?.colors;
+      const themeColors = SLIDE_THEMES[options.theme as SlideDeckTheme]?.colors;
       
       const res = await fetch('/api/ai/slide-outline/export-html', {
         method: 'POST',
@@ -222,8 +222,8 @@ export function SlideExportPanel({ outline, onExportComplete }: Props) {
             </span>
           </div>
           <ul className="list-disc pl-5 mt-2 space-y-1 text-sm text-slate-700">
-             {validation.errors.map((e, i) => <li key={i} className="text-red-700">{e}</li>)}
-             {validation.warnings.map((w, i) => <li key={i}>{w}</li>)}
+             {validation.errors.map((e, i) => <li key={`exp-err-${i}`} className="text-red-700">{e}</li>)}
+             {validation.warnings.map((w, i) => <li key={`exp-warn-${i}`}>{w}</li>)}
           </ul>
         </div>
       )}

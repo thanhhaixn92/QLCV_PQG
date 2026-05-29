@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { getRenderKey, staticKey } from '../../utils/listKeys';
 import { 
   CheckCircle2, 
   AlertCircle, 
@@ -298,7 +299,7 @@ export const ProposalChecklistTab: React.FC<ProposalChecklistTabProps> = ({
              { label: 'Chưa đạt', value: stats.fail, color: 'bg-red-50 text-red-600' },
              { label: 'Rủi ro lớn', value: stats.blocker, color: 'bg-rose-100 text-rose-700' },
            ].map((stat, idx) => (
-             <div key={idx} className={cn("p-5 rounded-[24px] border-2 border-transparent flex flex-col items-center justify-center text-center transition-all hover:scale-105 shadow-sm", stat.color)}>
+             <div key={staticKey("checklist-stat", stat.label, idx)} className={cn("p-5 rounded-[24px] border-2 border-transparent flex flex-col items-center justify-center text-center transition-all hover:scale-105 shadow-sm", stat.color)}>
                 <span className="text-[10px] font-black opacity-60 uppercase tracking-widest mb-1.5 leading-none">{stat.label}</span>
                 <span className="text-2xl font-black tabular-nums">{stat.value}</span>
              </div>
@@ -386,9 +387,9 @@ export const ProposalChecklistTab: React.FC<ProposalChecklistTabProps> = ({
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                  {groupItems.map(item => (
+                  {groupItems.map((item, idx) => (
                     <ChecklistItemCard 
-                      key={item.id}
+                      key={`${item.id}-${idx}`}
                       item={item}
                       outlineItems={outlineItems}
                       onUpdateStatus={(s) => handleUpdateStatus(item.id, s)}
@@ -423,9 +424,9 @@ export const ProposalChecklistTab: React.FC<ProposalChecklistTabProps> = ({
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                      {outlineItemsToCheck.map(item => (
+                      {outlineItemsToCheck.map((item, idx) => (
                         <ChecklistItemCard 
-                          key={item.id}
+                          key={`${item.id}-${idx}`}
                           item={item}
                           outlineItems={outlineItems}
                           onUpdateStatus={(s) => handleUpdateStatus(item.id, s)}
@@ -452,9 +453,9 @@ export const ProposalChecklistTab: React.FC<ProposalChecklistTabProps> = ({
                        <div className="flex-1 h-px bg-slate-100" />
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                      {filteredItems.filter(i => !i.outlineItemId).map(item => (
+                      {filteredItems.filter(i => !i.outlineItemId).map((item, idx) => (
                         <ChecklistItemCard 
-                          key={item.id}
+                          key={`${item.id}-${idx}`}
                           item={item}
                           outlineItems={outlineItems}
                           onUpdateStatus={(s) => handleUpdateStatus(item.id, s)}

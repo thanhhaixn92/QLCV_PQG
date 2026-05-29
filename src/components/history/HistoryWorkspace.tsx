@@ -4,6 +4,7 @@ import { doc, deleteDoc } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 import { cn } from '../../lib/utils';
 import { toast } from 'react-hot-toast';
+import { getRenderKey } from '../../utils/listKeys';
 
 export const HistoryWorkspace = (props: any) => {
   const {
@@ -69,9 +70,9 @@ export const HistoryWorkspace = (props: any) => {
                 s.title?.toLowerCase().includes(historySearchQuery.toLowerCase()) ||
                 s.versions?.[0]?.content?.toLowerCase().includes(historySearchQuery.toLowerCase()),
             )
-            .map((session: any) => (
+            .map((session: any, idx: number) => (
               <div
-                key={session.id}
+                key={getRenderKey("session", session, idx)}
                 className="bg-white rounded-md p-5 sm:p-6 shadow-sm border border-slate-200 hover:border-[#002D56] hover:shadow-md transition-all group flex flex-col h-full relative overflow-hidden"
               >
                 <div className="flex items-start justify-between mb-4">

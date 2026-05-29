@@ -185,13 +185,13 @@ export const ProposalOutlineItemCard: React.FC<ProposalOutlineItemCardProps> = (
         {/* Requirements */}
         {(item.requiredSources?.length || item.requiredData?.length) ? (
           <div className="flex flex-wrap gap-2 mt-3">
-            {item.requiredSources?.map(s => (
-              <span key={s} className="text-[8px] font-bold text-[#002D56] bg-blue-50 px-2 py-0.5 rounded border border-blue-100 uppercase tracking-tighter">
+            {item.requiredSources?.map((s, sIdx) => (
+              <span key={`source-${s}-${sIdx}`} className="text-[8px] font-bold text-[#002D56] bg-blue-50 px-2 py-0.5 rounded border border-blue-100 uppercase tracking-tighter">
                 NGUỒN: {s}
               </span>
             ))}
-            {item.requiredData?.map(d => (
-              <span key={d} className="text-[8px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-100 uppercase tracking-tighter">
+            {item.requiredData?.map((d, dIdx) => (
+              <span key={`data-${d}-${dIdx}`} className="text-[8px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-100 uppercase tracking-tighter">
                 SỐ LIỆU: {d}
               </span>
             ))}

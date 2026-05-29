@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { getRenderKey, staticKey } from '../../utils/listKeys';
 import { 
   BarChart, 
   Database, 
@@ -377,6 +378,10 @@ export const ProposalDataRequirementsTab: React.FC<ProposalDataRequirementsTabPr
   };
 
   const handleUpdateStatus = async (itemId: string, newStatus: ProposalDataRequirement['status']) => {
+    if (!itemId) {
+      toast.error("Không thể cập nhật mục chưa có ID");
+      return;
+    }
     try {
       await updateDataRequirement(userId, proposalId, itemId, { status: newStatus });
       setItems(items.map(item => item.id === itemId ? { ...item, status: newStatus } : item));
@@ -387,6 +392,10 @@ export const ProposalDataRequirementsTab: React.FC<ProposalDataRequirementsTabPr
   };
 
   const handleDelete = async (itemId: string) => {
+    if (!itemId) {
+      toast.error("Không thể xóa mục chưa có ID");
+      return;
+    }
     const confirmFn = requestConfirmAsync ? requestConfirmAsync : async (m: string) => window.confirm(m);
     if (!(await confirmFn("Xóa yêu cầu số liệu này?"))) return;
     try {
@@ -555,7 +564,7 @@ export const ProposalDataRequirementsTab: React.FC<ProposalDataRequirementsTabPr
              { label: 'Còn thiếu', value: stats.missing, color: 'bg-red-50 text-red-600 border-red-100' },
              { label: 'Có nhiệm vụ', value: stats.taskCreated, color: 'bg-indigo-50 text-indigo-600 border-indigo-100' },
            ].map((stat, idx) => (
-             <div key={idx} className={cn("p-5 rounded-[24px] border-2 flex flex-col items-center justify-center text-center transition-all hover:scale-105", stat.color)}>
+             <div key={staticKey("proposal-data-stat", stat.label, idx)} className={cn("p-5 rounded-[24px] border-2 flex flex-col items-center justify-center text-center transition-all hover:scale-105", stat.color)}>
                 <span className="text-[10px] font-black opacity-60 uppercase tracking-widest mb-1.5 leading-none">{stat.label}</span>
                 <span className="text-2xl font-black tabular-nums">{stat.value}</span>
              </div>
@@ -691,7 +700,7 @@ export const ProposalDataRequirementsTab: React.FC<ProposalDataRequirementsTabPr
                                    </h5>
                                    <div className="space-y-3">
                                       {analysisResult.detectedData?.map((d, i) => (
-                                        <div key={i} className="p-4 bg-slate-50 border border-slate-100 rounded-2xl">
+                                        <div key={getRenderKey("ai-detected", d, i)} className="p-4 bg-slate-50 border border-slate-100 rounded-2xl">
                                            <div className="flex items-center justify-between mb-2">
                                               <span className="text-[9px] font-black text-blue-600 uppercase tracking-tighter bg-blue-50 px-2.5 py-1 rounded-lg">{d.group}</span>
                                            </div>
@@ -710,7 +719,7 @@ export const ProposalDataRequirementsTab: React.FC<ProposalDataRequirementsTabPr
                                    </h5>
                                    <div className="space-y-3">
                                       {analysisResult.missingData?.map((m, i) => (
-                                        <div key={i} className="p-4 bg-red-50/30 border border-red-50 rounded-2xl">
+                                        <div key={getRenderKey("ai-missing", m, i)} className="p-4 bg-red-50/30 border border-red-50 rounded-2xl">
                                            <div className="flex items-center justify-between mb-2">
                                               <span className="text-[9px] font-black text-red-600 uppercase tracking-tighter bg-red-50 px-2.5 py-1 rounded-lg">{m.group}</span>
                                            </div>
@@ -766,7 +775,7 @@ export const ProposalDataRequirementsTab: React.FC<ProposalDataRequirementsTabPr
              className="px-5 py-3.5 bg-white rounded-[20px] border-2 border-slate-100 text-[10px] font-black uppercase tracking-widest outline-none text-[#002D56] cursor-pointer hover:border-blue-200 transition-all shadow-sm"
            >
              <option value="all">MỌI PHÂN NHÓM</option>
-             {groups.map(g => <option key={g} value={g}>{g.toUpperCase()}</option>)}
+             {groups.map((g, gIdx) => <option key={`filter-group-${g}-${gIdx}`} value={g}>{g.toUpperCase()}</option>)}
            </select>
            <select 
              value={filterStatus}
@@ -786,12 +795,12 @@ export const ProposalDataRequirementsTab: React.FC<ProposalDataRequirementsTabPr
 
       {/* 4. Data Requirement Catalog */}
       <div className="space-y-10">
-        {groups.filter(g => filterGroup === 'all' || g === filterGroup).map(group => {
+        {groups.filter(g => filterGroup === 'all' || g === filterGroup).map((group, groupIdx) => {
           const groupItems = filteredItems.filter(i => i.group === group);
           if (groupItems.length === 0) return null;
 
           return (
-            <div key={group} className="space-y-6">
+            <div key={`group-section-${group}-${groupIdx}`} className="space-y-6">
               <div className="flex items-center gap-6 px-4">
                  <div className="flex items-center gap-3">
                    <div className="w-2.5 h-7 bg-[#002D56] rounded-full" />
@@ -802,13 +811,13 @@ export const ProposalDataRequirementsTab: React.FC<ProposalDataRequirementsTabPr
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {groupItems.map(item => {
+                {groupItems.map((item, idx) => {
                   const statusInfo = getStatusConfig(item.status, item.statusDetail);
                   const priorityInfo = getPriorityConfig(item.priority || 'medium');
                   
                   return (
                     <motion.div 
-                      key={item.id}
+                      key={getRenderKey("data-req", item, idx)}
                       layout
                       className="bg-white border-2 border-slate-100 rounded-[32px] p-8 shadow-sm hover:shadow-2xl hover:shadow-[#002D56]/5 hover:border-blue-100 transition-all flex flex-col group relative overflow-hidden"
                     >

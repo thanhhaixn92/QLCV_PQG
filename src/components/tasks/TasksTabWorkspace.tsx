@@ -105,6 +105,7 @@ export const TasksTabWorkspace = ({
         
         <div className="flex bg-slate-100 p-1 rounded-lg shrink-0 w-fit self-end sm:self-auto">
           <button
+            key="task-view-mode-list"
             onClick={() => setViewMode("list")}
             className={cn(
               "px-3 py-1.5 rounded-md flex items-center gap-2 text-sm font-medium transition-all",
@@ -114,6 +115,7 @@ export const TasksTabWorkspace = ({
             <LayoutList className="w-4 h-4" /> Danh sách
           </button>
           <button
+            key="task-view-mode-board"
             onClick={() => setViewMode("board")}
             className={cn(
               "px-3 py-1.5 rounded-md flex items-center gap-2 text-sm font-medium transition-all",

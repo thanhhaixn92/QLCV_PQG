@@ -1,4 +1,4 @@
-import { ProposalDataAnalysisResponse } from './types';
+import { ProposalDataAnalysisResponse, DetectedDataPoint, MissingDataPoint } from './types';
 
 function generateId() {
   return Math.random().toString(36).substring(2, 9);
@@ -18,8 +18,8 @@ export function analyzeDataLocally(rawText: string | null | undefined): Proposal
 
   const lowerText = rawText.toLowerCase();
   
-  const detectedData = [];
-  const missingData = [];
+  const detectedData: DetectedDataPoint[] = [];
+  const missingData: MissingDataPoint[] = [];
   let detectedCount = 0;
   
   // A mapping of keywords to properties

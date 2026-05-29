@@ -1,4 +1,5 @@
 import React from "react";
+import { getRenderKey } from "../../utils/listKeys";
 import { cn } from "../../lib/utils";
 import { MoreHorizontal, AlertCircle, CalendarClock, PlayCircle, CheckCircle2, Circle, Clock } from "lucide-react";
 import { NoTasksMessage, TASK_STATUS_LABELS, getCategoryLabel, TASK_PRIORITY_LABELS, isTaskOverdue, isTaskUpcoming } from "./TaskHelpers";
@@ -66,7 +67,7 @@ export const TaskListView = ({
 
             return (
               <div
-                key={t.id || `task-${index}-${t.title || ""}`}
+                key={getRenderKey("task-list", t, index)}
                 className={cn(
                   "group bg-white p-4 rounded-xl border border-slate-200 shadow-sm hover:shadow-md hover:border-blue-300 transition-all cursor-pointer flex gap-3 relative",
                   isCompleted && "opacity-75"

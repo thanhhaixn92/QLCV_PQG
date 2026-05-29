@@ -12,6 +12,7 @@ import {
   MoreHorizontal
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
+import { getRenderKey, staticKey } from '../../utils/listKeys';
 import { DraftImportPreviewResponse, DraftImportAllocation } from '../../features/proposals/types';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -196,13 +197,13 @@ export const DraftImportPreviewCard: React.FC<DraftImportPreviewCardProps> = ({
       {(preview.risks.length > 0 || preview.missingData.length > 0) && (
         <div className="p-3 bg-amber-50 border-t border-amber-100">
            {preview.risks.map((r, i) => (
-             <div key={i} className="flex items-start gap-2 text-[10px] text-amber-800 font-medium mb-1">
+             <div key={staticKey("import-risk", r, i)} className="flex items-start gap-2 text-[10px] text-amber-800 font-medium mb-1">
                <AlertTriangle className="w-3 h-3 shrink-0 mt-0.5" />
                <span>{r}</span>
              </div>
            ))}
            {preview.missingData.map((m, i) => (
-             <div key={i} className="flex items-start gap-2 text-[10px] text-amber-700 font-medium">
+             <div key={staticKey("import-missing", m, i)} className="flex items-start gap-2 text-[10px] text-amber-700 font-medium">
                <Info className="w-3 h-3 shrink-0 mt-0.5" />
                <span>{m}</span>
              </div>

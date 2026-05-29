@@ -307,7 +307,7 @@ export function SlideOutlineWorkspace({ initialResult, onSave, onCreateTask, tok
                   const errors = getSlideErrors(s);
                   return (
                     <div 
-                      key={s.id || idx}
+                      key={`storyboard-slide-${s.id || idx}`}
                       onClick={() => setSelectedSlideId(s.id!)}
                       className={cn(
                         "p-3 rounded-lg border group cursor-pointer transition-all shrink-0 w-60 lg:w-auto",
@@ -395,7 +395,7 @@ export function SlideOutlineWorkspace({ initialResult, onSave, onCreateTask, tok
                         </div>
                         <div className="space-y-2">
                           {selectedSlide.bullets.map((b, bIdx) => (
-                            <div key={bIdx} className="flex items-start gap-2 group">
+                            <div key={`slide-${selectedSlide.id}-bullet-${bIdx}`} className="flex items-start gap-2 group">
                               <span className="text-slate-300 select-none mt-1.5">•</span>
                               <textarea 
                                 value={b}
@@ -462,7 +462,7 @@ export function SlideOutlineWorkspace({ initialResult, onSave, onCreateTask, tok
                         <div className="bg-red-50 p-3 rounded-md border border-red-100">
                            <ul className="list-disc pl-5 text-sm text-red-700 space-y-1">
                               {selectedSlide.cautionNotes.map((c, i) => (
-                                 <li key={i}>{c}</li>
+                                 <li key={`slide-${selectedSlide.id}-caution-${i}`}>{c}</li>
                               ))}
                            </ul>
                         </div>
@@ -493,7 +493,7 @@ export function SlideOutlineWorkspace({ initialResult, onSave, onCreateTask, tok
                     <div className="flex-1 flex gap-2">
                        <div className="flex-1">
                           <ul className="text-[9px] text-slate-700 space-y-1.5 px-3 list-disc">
-                             {selectedSlide.bullets.slice(0, 5).map((b, i) => <li key={i} className="line-clamp-2">{b}</li>)}
+                             {selectedSlide.bullets.slice(0, 5).map((b, i) => <li key={`slide-${selectedSlide.id}-preview-${i}`} className="line-clamp-2">{b}</li>)}
                           </ul>
                        </div>
                        {selectedSlide.visualSuggestion && (
@@ -543,7 +543,7 @@ export function SlideOutlineWorkspace({ initialResult, onSave, onCreateTask, tok
                  ) : (
                    <div className="space-y-4">
                      {outline.expectedQA.map((qa, i) => (
-                       <div key={i} className="flex flex-col gap-2 p-4 bg-slate-50 border border-slate-200 rounded-lg group relative">
+                       <div key={`slide-qa-${i}-${qa.question.slice(0, 10)}`} className="flex flex-col gap-2 p-4 bg-slate-50 border border-slate-200 rounded-lg group relative">
                          <button
                            onClick={() => {
                              const newQA = [...outline.expectedQA!];
@@ -623,7 +623,7 @@ export function SlideOutlineWorkspace({ initialResult, onSave, onCreateTask, tok
                     <p className="text-xs font-semibold text-slate-500 tracking-wide mb-1">Điểm đánh giá tổng thể</p>
                     <div className="flex items-center gap-1">
                        {[...Array(10)].map((_, i) => (
-                         <Star key={i} className={cn("w-4 h-4", i < feedbackData.overallScore ? "text-amber-500 fill-amber-500" : "text-slate-300")} />
+                         <Star key={`score-star-${i}`} className={cn("w-4 h-4", i < feedbackData.overallScore ? "text-amber-500 fill-amber-500" : "text-slate-300")} />
                        ))}
                        <span className="ml-2 font-bold text-slate-700">{feedbackData.overallScore}/10</span>
                     </div>
@@ -641,7 +641,7 @@ export function SlideOutlineWorkspace({ initialResult, onSave, onCreateTask, tok
                      </h4>
                      <ul className="space-y-2">
                         {feedbackData.strengths.map((s: string, i: number) => (
-                          <li key={i} className="text-xs text-emerald-700 flex gap-2">
+                          <li key={`fb-strength-${i}`} className="text-xs text-emerald-700 flex gap-2">
                              <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 mt-1.5 shrink-0" />
                              {s}
                           </li>
@@ -654,7 +654,7 @@ export function SlideOutlineWorkspace({ initialResult, onSave, onCreateTask, tok
                      </h4>
                      <ul className="space-y-2">
                         {feedbackData.weaknesses.map((w: string, i: number) => (
-                          <li key={i} className="text-xs text-red-700 flex gap-2">
+                          <li key={`fb-weakness-${i}`} className="text-xs text-red-700 flex gap-2">
                              <div className="w-1.5 h-1.5 rounded-full bg-red-400 mt-1.5 shrink-0" />
                              {w}
                           </li>
@@ -667,7 +667,7 @@ export function SlideOutlineWorkspace({ initialResult, onSave, onCreateTask, tok
                   <h4 className="text-sm font-bold text-slate-800 mb-4 px-1">Đề xuất hành động cụ thể</h4>
                   <div className="space-y-3">
                      {feedbackData.actionableSuggestions.map((s: any, i: number) => (
-                       <div key={i} className="p-4 rounded-lg border border-slate-100 bg-slate-50/50">
+                       <div key={`fb-action-${i}`} className="p-4 rounded-lg border border-slate-100 bg-slate-50/50">
                           <div className="flex items-start gap-3">
                              <div className="w-6 h-6 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center text-[10px] font-bold shrink-0">
                                 {s.slideNumber ? `S${s.slideNumber}` : "!!"}

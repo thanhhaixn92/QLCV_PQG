@@ -19,6 +19,8 @@ interface Props {
   onOpenEntity?: (entityType: string, entityId: string) => void;
 }
 
+import { getRenderKey } from '../../utils/listKeys';
+
 export function ActivityLogView({ onClose, onOpenEntity }: Props) {
   const [logs, setLogs] = useState<ActivityLogEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -130,9 +132,9 @@ export function ActivityLogView({ onClose, onOpenEntity }: Props) {
           </div>
         ) : (
           <div className="space-y-4 max-w-3xl mx-auto">
-            {filteredLogs.map(log => (
+            {filteredLogs.map((log, idx) => (
               <div 
-                key={log.id} 
+                key={getRenderKey("activity-log", log, idx)} 
                 className="bg-white p-4 rounded-md border border-slate-200 shadow-sm hover:shadow-md transition-shadow cursor-pointer flex gap-4"
                 onClick={() => setSelectedLog(log)}
               >
@@ -233,8 +235,8 @@ export function ActivityLogView({ onClose, onOpenEntity }: Props) {
                <div>
                   <label className="block text-[9px] font-semibold tracking-normal text-slate-400 mb-2">Trường dữ liệu đã đổi</label>
                   <div className="flex flex-wrap gap-2">
-                     {selectedLog.changedFields.map(f => (
-                        <span key={f} className="px-2 py-1 bg-blue-50 text-blue-600 text-[10px] font-bold rounded-md font-mono">{f}</span>
+                     {selectedLog.changedFields.map((f, fIdx) => (
+                        <span key={`change-field-${f}-${fIdx}`} className="px-2 py-1 bg-blue-50 text-blue-600 text-[10px] font-bold rounded-md font-mono">{f}</span>
                      ))}
                   </div>
                </div>

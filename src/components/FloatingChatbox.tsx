@@ -9,6 +9,7 @@ import { ProposalChatContext } from '../features/proposals/types';
 import ReactMarkdown from 'react-markdown';
 import { DraftImportPreviewCard } from './proposals/DraftImportPreviewCard';
 import { DraftImportAllocation } from '../features/proposals/types';
+import { getRenderKey, staticKey } from '../utils/listKeys';
 
 interface FloatingChatboxProps {
   isOpen: boolean;
@@ -61,7 +62,7 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []);
+    const files: File[] = Array.from(e.target.files ?? []);
     if (!files.length) return;
     
     if (attachments.length + files.length > 3) {
@@ -163,9 +164,15 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
     }
   }, [input]);
 
-  const getQuickPrompts = () => {
+  interface QuickPrompt {
+    label: string;
+    prompt: string;
+    mode?: string;
+  }
+
+  const getQuickPrompts = (): QuickPrompt[] => {
     if (activeTab === 'proposals' && proposalContext && FEATURE_FLAGS.PROPOSAL_CHAT_CONTEXT) {
-      const prompts = [
+      const prompts: QuickPrompt[] = [
         { label: 'Viết bản thảo mục này', prompt: 'Hãy viết bản thảo chi tiết cho mục đề cương đang chọn.', mode: 'write_draft' },
         { label: 'Biên tập văn phong', prompt: 'Hãy biên tập lại bản thảo này theo văn phong hành chính nghiệp vụ.', mode: 'improve_draft' },
         { label: 'Rà soát logic', prompt: 'Rà soát tính logic và sự mạch lạc của đoạn thảo này.', mode: 'review_logic' },
@@ -368,7 +375,7 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                       <div className="mt-6 flex flex-wrap justify-center gap-2">
                         {quickPrompts.map(qp => (
                           <button 
-                            key={qp.label}
+                            key={`chat-quick-prompt-${qp.label}`}
                             onClick={() => {
                               onInputChange(qp.prompt);
                               if (qp.mode) setChatMode(qp.mode);
@@ -386,7 +393,7 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
 
               {messages.map((msg, i) => (
                 <div 
-                  key={i} 
+                  key={getRenderKey("chat-msg", msg, i)} 
                   className={cn(
                     "flex flex-col gap-2 animate-in fade-in slide-in-from-bottom-2 duration-300",
                     msg.role === 'user' ? "items-end" : "items-start"
@@ -528,8 +535,8 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                           {msg.content}
                           {msg.attachments && msg.attachments.length > 0 && (
                             <div className="mt-2 flex flex-col gap-1.5">
-                              {msg.attachments.map(att => (
-                                <div key={att.id} className="flex items-center gap-2 bg-blue-900/30 border border-blue-800/30 py-1.5 px-3 rounded-md max-w-full">
+                              {msg.attachments.map((att, idx) => (
+                                <div key={getRenderKey("msg-att", att, idx)} className="flex items-center gap-2 bg-blue-900/30 border border-blue-800/30 py-1.5 px-3 rounded-md max-w-full">
                                   <File className="w-3.5 h-3.5 text-blue-300 shrink-0" />
                                   <span className="text-[11px] font-bold text-blue-100 truncate">{att.originalName || att.name}</span>
                                 </div>
@@ -587,7 +594,7 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                                     </p>
                                     <div className="space-y-1.5">
                                       {draft.checklist.map((item, itemIdx) => (
-                                        <div key={`${item.id}-${itemIdx}`} className="flex items-start gap-2.5">
+                                        <div key={getRenderKey("chat-check", item, itemIdx)} className="flex items-start gap-2.5">
                                           <div className="w-3.5 h-3.5 rounded border border-slate-300 mt-0.5 shrink-0" />
                                           <span className="text-[10px] text-slate-600 font-bold leading-relaxed">{item.title}</span>
                                         </div>
@@ -667,7 +674,7 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                               </p>
                               <ul className="space-y-1">
                                 {msg.missingData.map((m: string, idx: number) => (
-                                  <li key={idx} className="text-[11px] text-emerald-900 leading-tight flex items-start gap-1.5">
+                                  <li key={`msg-${i}-missing-${idx}`} className="text-[11px] text-emerald-900 leading-tight flex items-start gap-1.5">
                                     <span className="text-emerald-500 mt-0.5">•</span>
                                     {m}
                                   </li>
@@ -684,7 +691,7 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                               </p>
                               <ul className="space-y-1">
                                 {msg.risks.map((r: string, idx: number) => (
-                                  <li key={idx} className="text-[11px] text-rose-900 leading-tight flex items-start gap-1.5">
+                                  <li key={`msg-${i}-risk-${idx}`} className="text-[11px] text-rose-900 leading-tight flex items-start gap-1.5">
                                     <span className="text-rose-500 mt-0.5">•</span>
                                     {r}
                                   </li>
@@ -701,7 +708,7 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                           <div className="flex flex-wrap gap-1.5 mb-1">
                             {msg.suggestedActions.map((action, actionIdx) => (
                               <button
-                                key={action.id || `action-${actionIdx}`}
+                                key={staticKey("chat-action", action.id, actionIdx)}
                                 onClick={() => onExecuteAction?.(action)}
                                 className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 border border-emerald-100 text-emerald-700 text-[10px] font-bold rounded-lg hover:bg-emerald-100 transition-colors shadow-sm"
                               >
@@ -768,7 +775,7 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
                   { id: 'editor', label: 'Bài viết' }
                 ].map(m => (
                   <button
-                    key={m.id}
+                    key={`chat-mode-${m.id}`}
                     onClick={() => setChatMode(m.id)}
                     className={cn(
                       "px-2.5 py-1 rounded-md text-[10px] font-bold tracking-wide transition-all",
@@ -782,8 +789,8 @@ export const FloatingChatbox: React.FC<FloatingChatboxProps> = ({
 
               {attachments.length > 0 && (
                 <div className="flex flex-wrap gap-2 mb-3">
-                  {attachments.map(att => (
-                    <div key={att.id} className="flex items-center gap-2 bg-blue-50 border border-blue-100 py-1.5 px-3 rounded-md max-w-full">
+                  {attachments.map((att, idx) => (
+                    <div key={getRenderKey("compose-att", att, idx)} className="flex items-center gap-2 bg-blue-50 border border-blue-100 py-1.5 px-3 rounded-md max-w-full">
                       {(att.status === 'uploading' || att.contentStatus === 'pending' || att.contentStatus === 'extracting') ? (
                         <Loader2 className="w-3.5 h-3.5 text-blue-500 animate-spin shrink-0" />
                       ) : (att.status === 'error' || att.contentStatus === 'error') ? (

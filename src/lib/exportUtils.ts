@@ -1,9 +1,8 @@
-import { jsPDF } from "jspdf";
-import * as htmlToImage from 'html-to-image';
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, ImageRun, Table, TableRow, TableCell, BorderStyle, WidthType } from "docx";
 import { saveAs } from "file-saver";
 import { EditorialIllustration } from "../types";
 import { splitParagraphs, isPublishableIllustration, hasUnapprovedPlaceholders } from "./editorialImageUtils";
+import { normalizeVietnameseText } from "./exportContentNormalizer";
 
 async function fetchImageAsBuffer(url: string): Promise<Uint8Array> {
   const response = await fetch(url);
@@ -42,55 +41,7 @@ export function extractExportTitle(input: string, output: string): { title: stri
     title = title.replace(/^NGÀNH H(\S+)?\s*/i, '').trim() || "BÀI VIẾT";
   }
 
-  return { title, body: bodyLines.join('\n') };
-}
-
-export async function exportVisualSnapshotPDF(elementId: string, filename: string) {
-  const element = document.getElementById(elementId);
-  if (!element) return;
-
-  try {
-    const dataUrl = await htmlToImage.toPng(element, {
-      quality: 1,
-      pixelRatio: 2,
-      backgroundColor: "#ffffff"
-    });
-
-    const pdf = new jsPDF("p", "mm", "a4");
-    const imgProps = pdf.getImageProperties(dataUrl);
-    
-    const pageWidth = pdf.internal.pageSize.getWidth();
-    const pageHeight = pdf.internal.pageSize.getHeight();
-    
-    const imgWidth = pageWidth;
-    const imgHeight = (imgProps.height * pageWidth) / imgProps.width;
-    
-    let heightLeft = imgHeight;
-    let position = 0;
-
-    const addWatermark = (pdfDoc: jsPDF) => {
-      pdfDoc.setFontSize(10);
-      pdfDoc.setTextColor(150, 150, 150);
-      pdfDoc.text("Bản xem nhanh (Visual Snapshot)", pageWidth - 10, 10, { align: "right" });
-    };
-
-    pdf.addImage(dataUrl, "PNG", 0, position, imgWidth, imgHeight);
-    addWatermark(pdf);
-    heightLeft -= pageHeight;
-
-    while (heightLeft > 0) {
-      position = heightLeft - imgHeight;
-      pdf.addPage();
-      pdf.addImage(dataUrl, "PNG", 0, position, imgWidth, imgHeight);
-      addWatermark(pdf);
-      heightLeft -= pageHeight;
-    }
-
-    pdf.save(`${filename}.pdf`);
-  } catch (error) {
-    console.error('Error generating PDF:', error);
-    throw new Error('Không thể tạo bản chụp PDF. Vui lòng thử lại sau.');
-  }
+  return { title: normalizeVietnameseText(title), body: bodyLines.join('\n') };
 }
 
 export async function exportToWord(title: string, content: string, filename: string, illustrations: EditorialIllustration[] = [], kind?: string) {
@@ -100,7 +51,9 @@ export async function exportToWord(title: string, content: string, filename: str
   
   const approved = illustrations.filter(isPublishableIllustration);
   
-  const paragraphs = splitParagraphs(content);
+  // Normalize entire body content
+  const normalizedContent = normalizeVietnameseText(content);
+  const paragraphs = splitParagraphs(normalizedContent);
   
   const children: any[] = [];
 
@@ -229,7 +182,7 @@ export async function exportToWord(title: string, content: string, filename: str
     };
 
     if (!heading && !isBullet && !isNumbered && !text.startsWith('Tên báo cáo:') && !text.startsWith('THÔNG BÁO')) {
-       pOptions.indent = { firstLine: 720 };
+       pOptions.indent = { firstLine: 567 }; // 1cm approx
     }
 
     if (isBullet) {
@@ -251,7 +204,7 @@ export async function exportToWord(title: string, content: string, filename: str
       
       if (looksLikeTable) {
         try {
-          const tableRows = lines.filter((_, idx) => idx !== 1).map(line => {
+          const tableRows = lines.filter((_, idx) => idx !== 1).map((line, rIndex) => {
             const cells = line.split('|').map(c => c.trim());
             // Remove empty outer cells common in markdown tables `| A | B |` -> ['', 'A', 'B', '']
             if (cells.length > 0 && cells[0] === '') cells.shift();
@@ -259,8 +212,19 @@ export async function exportToWord(title: string, content: string, filename: str
             
             return new TableRow({
               children: cells.map(c => new TableCell({
-                children: [new Paragraph({ children: parseTextRuns(c) })],
-                margins: { top: 100, bottom: 100, left: 100, right: 100 }
+                children: [
+                  new Paragraph({ 
+                    children: [new TextRun({ 
+                      text: c.replace(/\*\*/g, ""), 
+                      bold: rIndex === 0, 
+                      font: "Times New Roman", 
+                      size: 28 
+                    })],
+                    alignment: rIndex === 0 ? AlignmentType.CENTER : AlignmentType.LEFT
+                  })
+                ],
+                margins: { top: 100, bottom: 100, left: 100, right: 100 },
+                shading: rIndex === 0 ? { fill: "f5f5f5" } : undefined
               }))
             });
           });

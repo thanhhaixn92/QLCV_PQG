@@ -320,6 +320,7 @@ export interface WorkTaskChecklistItem {
 
 export interface WorkTask {
   id: string;
+  clientId?: string;
   title: string;
   assignee: string;
   dueDate: string; // ISO format

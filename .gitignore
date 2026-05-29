@@ -6,3 +6,5 @@ coverage/
 *.log
 .env*
 !.env.example
+scripts/garbage/
+tmp_effect.txt

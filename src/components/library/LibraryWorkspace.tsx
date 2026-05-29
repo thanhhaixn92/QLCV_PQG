@@ -1,4 +1,5 @@
 import React from 'react';
+import { getRenderKey } from '../../utils/listKeys';
 import { 
   Layers, Plus, User, Briefcase, Edit3, Users, Database, BookOpen, Trash2, 
   Search, ExternalLink, Clock, Folder, CheckSquare, Eye, FileText, Image as ImageIcon,
@@ -34,9 +35,9 @@ export const LibraryWorkspace = (props: any) => {
                           </div>
 
                           <nav className="flex lg:flex-col gap-2 overflow-x-auto lg:overflow-x-visible pb-2 lg:pb-0 scrollbar-hide -mx-2 px-2 lg:mx-0 lg:px-0">
-                            {libraryCollections.map((coll) => (
+                            {libraryCollections.map((coll, idx) => (
                               <div
-                                key={coll.id}
+                                key={getRenderKey("lib-coll", coll, idx)}
                                 role="button"
                                 tabIndex={0}
                                 onClick={() => setActiveLibraryId(coll.id)}
@@ -266,7 +267,7 @@ export const LibraryWorkspace = (props: any) => {
                                 <option value="all">Tất cả</option>
                                 {Object.entries(DOCUMENT_KIND_LABELS).map(
                                   ([k, v]) => (
-                                    <option key={k} value={k}>
+                                    <option key={`lib-filter-kind-${k}`} value={k}>
                                       {v as React.ReactNode}
                                     </option>
                                   ),
@@ -353,9 +354,9 @@ export const LibraryWorkspace = (props: any) => {
 
                         {backgroundTasks.length > 0 && (
                           <div className="flex flex-col gap-2">
-                            {backgroundTasks.map((task) => (
+                            {backgroundTasks.map((task, taskIdx) => (
                               <div
-                                key={task.id}
+                                key={getRenderKey("lib-task", task, taskIdx)}
                                 className="bg-indigo-50 border border-indigo-100 rounded-md p-3 flex items-center justify-between shadow-sm"
                               >
                                 <div className="flex items-center gap-3 overflow-hidden">
@@ -427,7 +428,7 @@ export const LibraryWorkspace = (props: any) => {
                               return (
                                 <motion.div
                                   layout
-                                  key={`${kind}:${doc.id}:${idx}`}
+                                  key={getRenderKey("lib-doc", doc, idx)}
                                   className="bg-white rounded-md border border-slate-200 p-5 shadow-sm hover:shadow-md hover:border-[#002D56]/20 transition-all group relative overflow-hidden flex flex-col justify-between"
                                 >
                                 <div>

@@ -69,7 +69,7 @@ export const UserProfileSection: React.FC<UserProfileSectionProps> = ({ user, pr
                 <CheckCircle2 className="w-3 h-3" /> Đã xác thực
               </span>
               <span className="px-3 py-1 bg-slate-100 text-slate-500 rounded-md text-[10px] font-semibold tracking-wide">
-                {user?.email}
+                {user?.isAnonymous ? "Khách (Anonymous)" : (user?.email || "Chưa có email")}
               </span>
             </div>
           </div>

@@ -167,9 +167,9 @@ export const ProposalListPage: React.FC<ProposalListPageProps> = ({
         </div>
       ) : filteredProposals.length > 0 ? (
         <div className="grid grid-cols-1 gap-4">
-          {filteredProposals.map((proposal) => (
+          {filteredProposals.map((proposal, idx) => (
             <motion.div 
-              key={proposal.id}
+              key={`${proposal.id}-${idx}`}
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               className="bg-white border border-slate-200 rounded-2xl p-5 hover:border-[#002D56]/30 hover:shadow-xl transition-all group relative cursor-pointer"

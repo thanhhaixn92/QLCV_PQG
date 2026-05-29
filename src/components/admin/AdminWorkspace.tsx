@@ -3,6 +3,7 @@ import { UserProfile } from '../../types';
 import { Shield, Users, Database, HardDrive, Search, Loader2, Lock, Unlock, History, AlertCircle, Settings2, Bot } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { auth } from '../../lib/firebase';
+import { getRenderKey } from '../../utils/listKeys';
 
 interface Props {
   profile: UserProfile | null;
@@ -379,8 +380,8 @@ function AdminAuditLogs() {
          <div className="text-slate-500 italic p-4 text-center border border-dashed rounded-lg">Chưa có hoạt động quản trị viên nào.</div>
       ) : (
         <div className="space-y-3">
-          {logs.map((log: any) => (
-             <div key={log.id} className="flex flex-col md:flex-row md:items-center justify-between p-4 bg-slate-50 rounded-lg border border-slate-100">
+          {logs.map((log: any, idx: number) => (
+             <div key={getRenderKey("admin-log", log, idx)} className="flex flex-col md:flex-row md:items-center justify-between p-4 bg-slate-50 rounded-lg border border-slate-100">
                 <div>
                    <div className="font-semibold text-slate-800 text-sm">Hành động: <span className="text-[#002D56] tracking-wide text-xs ml-1 bg-blue-100 px-2 py-0.5 rounded">{log.action}</span></div>
                    <div className="text-xs text-slate-500 mt-1">Từ Admin: <span className="font-mono">{log.adminUid}</span> &rarr; User: <span className="font-mono">{log.targetUid}</span></div>

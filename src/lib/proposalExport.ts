@@ -10,6 +10,8 @@ import {
   ProposalEvidenceLink
 } from "../features/proposals/types";
 import { jsPDF } from "jspdf";
+import { normalizeVietnameseText } from "./exportContentNormalizer";
+import { processMarkdownToDocxChildren } from "./docxHelpers";
 
 /**
  * Export Proposal to Word (Docx)
@@ -85,14 +87,9 @@ export async function exportProposalToWord(
 
     if (draft && draft.content) {
       // Split content into paragraphs
-      const lines = draft.content.split('\n').filter(l => l.trim());
-      lines.forEach(line => {
-        children.push(new Paragraph({
-          children: [new TextRun({ text: line, font: "Times New Roman", size: 28 })],
-          alignment: AlignmentType.JUSTIFIED,
-          spacing: { line: 360, after: 200 }
-        }));
-      });
+      const normalizedContent = normalizeVietnameseText(draft.content);
+      const docxChildren = processMarkdownToDocxChildren(normalizedContent);
+      children.push(...docxChildren);
     } else {
       children.push(new Paragraph({
         children: [new TextRun({ text: "[Chưa có nội dung]", italics: true, color: "999999", font: "Times New Roman", size: 28 })],
@@ -278,7 +275,7 @@ export async function exportProposalToPDF(
 
     doc.setFont("times", "normal");
     doc.setFontSize(11);
-    const content = draft && draft.content ? draft.content : "[Chưa có nội dung]";
+    const content = draft && draft.content ? normalizeVietnameseText(draft.content) : "[Chưa có nội dung]";
     const lines = doc.splitTextToSize(content, pageWidth - 2 * margin);
     
     for (const line of lines) {

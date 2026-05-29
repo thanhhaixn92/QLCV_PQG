@@ -1,4 +1,5 @@
 import React from "react";
+import { getRenderKey } from "../../utils/listKeys";
 import { cn } from "../../lib/utils";
 import { WorkTask } from "../../types";
 import { getCategoryLabel, TASK_PRIORITY_LABELS, isTaskOverdue, isTaskUpcoming } from "./TaskHelpers";
@@ -25,7 +26,7 @@ export const TaskBoardView = ({ tasks, documents, openTaskEditor }: any) => {
         });
 
         return (
-          <div key={col.status} className={cn("flex-none w-[320px] rounded-xl border p-2.5 flex flex-col snap-center", col.color)}>
+          <div key={`kanban-column-${col.status}`} className={cn("flex-none w-[320px] rounded-xl border p-2.5 flex flex-col snap-center", col.color)}>
             <div className="flex items-center justify-between mb-3 px-1.5 shrink-0">
               <h3 className={cn("font-bold text-sm tracking-tight", col.headerColor)}>{col.title}</h3>
               <span className="bg-white/80 shadow-sm text-slate-500 text-xs font-bold px-2 py-0.5 rounded-md">
@@ -40,7 +41,7 @@ export const TaskBoardView = ({ tasks, documents, openTaskEditor }: any) => {
 
                 return (
                   <div
-                    key={t.id || `task-board-${col.status}-${index}-${t.title || ""}`}
+                    key={getRenderKey("task-board", t, index)}
                     className={cn(
                       "bg-white p-3.5 rounded-lg border border-slate-200 shadow-sm hover:shadow-md hover:border-blue-300 transition-all cursor-pointer group flex flex-col",
                       isCompleted && "opacity-75"

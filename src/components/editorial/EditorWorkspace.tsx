@@ -1,4 +1,5 @@
 import React from 'react';
+import { getRenderKey } from '../../utils/listKeys';
 import {
   ChevronDown, Files, Globe, Type, FileUp, Search, Loader2, Database,
   FileText, X, ShieldCheck, User, Calendar, FileDown, CheckCircle,
@@ -99,7 +100,7 @@ export const EditorWorkspace = (props: any) => {
                                 },
                               ].map((tab) => (
                                 <button
-                                  key={tab.id}
+                                  key={`editor-source-tab-${tab.id}`}
                                   onClick={() =>
                                     setSourceActiveTab(
                                       sourceActiveTab === tab.id
@@ -413,7 +414,7 @@ export const EditorWorkspace = (props: any) => {
                                     const kind = doc.type === 'drive' ? (doc.driveMimeType?.includes('folder') ? 'drive_folder' : 'drive_file') : (doc.temporary ? 'temp' : 'document');
                                     return (
                                       <div
-                                        key={`${kind}:${doc.id}:${idx}`}
+                                        key={getRenderKey("editor-doc", doc, idx)}
                                         className={cn(
                                           "flex items-center gap-3 p-3 rounded-md border transition-all shadow-sm",
                                           doc.temporary
@@ -666,7 +667,7 @@ export const EditorWorkspace = (props: any) => {
                                 <div className="p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 bg-slate-50/50">
                                   {(builtTasks as any[]).map((task, idx) => (
                                     <div
-                                      key={task.id}
+                                      key={getRenderKey("editor-built-task", task, idx)}
                                       className={`bg-white p-6 rounded-md shadow-sm border transition-all relative ${task.selected ? "border-[#002D56] shadow-md ring-4 ring-[#002D56]/5" : "border-slate-200 shadow-slate-200/50"}`}
                                     >
                                       <div className="absolute top-6 left-6 z-10 flex items-center gap-3">
@@ -676,7 +677,7 @@ export const EditorWorkspace = (props: any) => {
                                           onChange={() =>
                                             setBuiltTasks((prev) =>
                                               prev.map((t) =>
-                                                t.id === task.id
+                                                (t.clientId || t.id) === (task.clientId || task.id)
                                                   ? {
                                                       ...t,
                                                       selected: !t.selected,
@@ -697,7 +698,7 @@ export const EditorWorkspace = (props: any) => {
                                               onChange={(e) =>
                                                 setBuiltTasks((prev) =>
                                                   prev.map((t) =>
-                                                    t.id === task.id
+                                                    (t.clientId || t.id) === (task.clientId || task.id)
                                                       ? {
                                                           ...t,
                                                           categoryCode:
@@ -723,7 +724,7 @@ export const EditorWorkspace = (props: any) => {
                                               onChange={(e) =>
                                                 setBuiltTasks((prev) =>
                                                   prev.map((t) =>
-                                                    t.id === task.id
+                                                    (t.clientId || t.id) === (task.clientId || task.id)
                                                       ? {
                                                           ...t,
                                                           priority: e.target
@@ -1187,14 +1188,24 @@ export const EditorWorkspace = (props: any) => {
                                             }
                                             try {
                                               toast(
-                                                "Đang mở chế độ in/lưu PDF văn bản. Hãy chọn Save as PDF trong hộp thoại in.",
+                                                "Đang tạo file PDF...",
                                                 { icon: "ℹ️", duration: 5000 },
                                               );
                                               const { exportPrintablePdfFromElement } =
                                                 await import("../../lib/printablePdfExport");
-                                              exportPrintablePdfFromElement(
-                                                "printable-article", { title: `Bai_viet_HTMB_${Date.now()}`, profile: "article" }
+                                              await exportPrintablePdfFromElement(
+                                                "printable-article", { 
+                                                  title: `Bai_viet_HTMB_${Date.now()}`, 
+                                                  profile: "article",
+                                                  onValidationError: (msg) => {
+                                                    toast(`Lỗi: ${msg}`, { icon: '❌', duration: 4000 });
+                                                  },
+                                                  onValidationWarning: (msg) => {
+                                                    toast(`Cảnh báo: ${msg}`, { icon: '⚠️', duration: 3000 });
+                                                  }
+                                                }
                                               );
+                                              toast.success("Tải PDF thành công!");
 
                                               if (currentSessionId) {
                                                 await logActivity({
@@ -1204,11 +1215,11 @@ export const EditorWorkspace = (props: any) => {
                                                   entityId: currentSessionId,
                                                   entityTitle:
                                                     sessions.find(
-                                                      (s) => s.id === currentSessionId,
+                                                      (s: any) => s.id === currentSessionId,
                                                     )?.title || "Bài viết",
                                                   title: "Xuất PDF văn bản",
                                                   summary:
-                                                    "Đã in hoặc xuất bài viết ra định dạng PDF văn bản có thể tìm kiếm.",
+                                                    "Đã xuất bài viết ra định dạng PDF văn bản có thể tìm kiếm.",
                                                   metadata: {
                                                     exportFormat: "pdf",
                                                     source: "client",
@@ -1216,6 +1227,8 @@ export const EditorWorkspace = (props: any) => {
                                                 });
                                               }
                                             } catch (err: any) {
+                                              console.error("PDF Export Error:", err);
+                                              toast.error("Không tạo được file PDF. Vui lòng kiểm tra console.");
                                               setError(err.message);
                                             }
                                           }}
@@ -1228,61 +1241,7 @@ export const EditorWorkspace = (props: any) => {
                                           </span>
                                         </button>
 
-                                        <button
-                                          onClick={async () => {
-                                            const audit = auditEditorialPublish(illustrations);
-                                            if (audit.suggestedCount > 0) {
-                                              const confirmed = await requestConfirmAsync(
-                                                `Còn ${audit.suggestedCount} hình ảnh chưa được duyệt. Bạn có muốn tiếp tục tải Bản chụp PDF dự phòng không?`,
-                                              );
-                                              if (!confirmed) return;
-                                            }
-                                            try {
-                                              toast(
-                                            "Hệ thống đang chụp ảnh trực quan toàn màn hình biên tập để tạo PDF dự phòng...",
-                                            { icon: "📸", duration: 4000 },
-                                          );
-                                          const { exportVisualSnapshotPDF } =
-                                            await import("../../lib/exportUtils");
-                                          await exportVisualSnapshotPDF(
-                                            "printable-article",
-                                            `Bai_viet_HTMB_Chup_${Date.now()}`,
-                                          );
-
-                                          if (currentSessionId) {
-                                            await logActivity({
-                                              module: "editorial",
-                                              action: "exported",
-                                              entityType: "editorial_session",
-                                              entityId: currentSessionId,
-                                              entityTitle:
-                                                sessions.find(
-                                                  (s: any) =>
-                                                    s.id === currentSessionId,
-                                                )?.title || "Bài viết",
-                                              title: "Xuất Bản chụp PDF",
-                                              summary:
-                                                "Đã tải bản chụp nhanh PDF (Visual Snapshot).",
-                                              metadata: {
-                                                exportFormat: "pdf_snapshot",
-                                                source: "client",
-                                              },
-                                            });
-                                          }
-                                        } catch (err: any) {
-                                          setError(err.message);
-                                        }
-                                      }}
-                                      className="flex items-center gap-2 px-3 py-2.5 rounded-md text-[10px] font-semibold bg-red-50 text-red-700 border border-red-200 hover:bg-red-100/80 transition-all shrink-0 active:scale-[0.98] shadow-sm disabled:opacity-50"
-                                      title="Tải ảnh chụp giao diện trực quan làm phương án dự phòng"
-                                    >
-                                      <FileDown className="w-4 h-4 text-red-650" />
-                                      <span className="text-[10px] font-bold uppercase tracking-wider">
-                                        Bản chụp PDF
-                                      </span>
-                                    </button>
-
-                                    {(currentTool?.allowWordExport !== false) && (
+                                        {(currentTool?.allowWordExport !== false) && (
                                       <button
                                         onClick={async () => {
                                           const audit = auditEditorialPublish(illustrations);

@@ -76,3 +76,22 @@ Khi gặp lỗi nghiêm trọng trên production sau khi release, thực hiện 
 - **Lỗi 429**: Đợi 1 phút (AI Quota).
 - **Lỗi 401/403**: Kiểm tra chênh lệch Project ID giữa frontend và backend (X-Auth-Audience-Mismatch).
 - **Lỗi Firestore Timeout**: Tắt local cache nếu cần (chỉnh trong `firebase.ts`).
+
+## 9. Cấu hình Xác thực (Authentication)
+Ứng dụng hỗ trợ đăng nhập qua Google và Chế độ khách (Anonymous).
+
+Để dùng chế độ khách (phù hợp trong môi trường dev/preview):
+1. Mở Firebase Console > Authentication > Sign-in method.
+2. Bật (Enable) Anonymous provider.
+3. Thiết lập biến môi trường (trong .env/Cloud Run):
+   `VITE_ENABLE_GOOGLE_AUTH=false`
+   `VITE_ENABLE_ANONYMOUS_AUTH=true`
+4. Rebuild và redeploy ứng dụng.
+
+Để bật lại Google Login trên domain thật (production):
+1. Mở Firebase Console > Authentication > Sign-in method > Bật Google provider.
+2. Mở Firebase Console > Authentication > Settings > Authorized domains.
+3. Thêm domain production thật của ứng dụng vào danh sách.
+4. Thiết lập biến môi trường:
+   `VITE_ENABLE_GOOGLE_AUTH=true`
+5. Test xác thực trực tiếp trên domain production (không test trong AI Studio preview portal để tránh lỗi popup blocked/unauthorized domain).

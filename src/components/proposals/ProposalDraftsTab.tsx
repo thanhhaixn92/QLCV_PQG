@@ -197,7 +197,7 @@ export const ProposalDraftsTab: React.FC<ProposalDraftsTabProps> = ({
 
   const renderOutlineItems = () => (
     <div className="flex-1 overflow-y-auto pr-1 -mr-1 custom-scrollbar space-y-1.5 py-1">
-      {filteredOutline.map((item) => {
+      {filteredOutline.map((item, idx) => {
         const itemType = item.itemType || (item.level === 1 ? 'section' : 'content');
         const isSection = itemType === 'section';
         const canHaveDraft = item.canHaveDraft !== false;
@@ -208,7 +208,7 @@ export const ProposalDraftsTab: React.FC<ProposalDraftsTabProps> = ({
         
         return (
           <button
-            key={item.id}
+            key={`${item.id}-${idx}`}
             onClick={() => {
               setSelectedItemId(item.id);
               setIsOutlineOpen(false); // Close drawer on mobile
@@ -420,9 +420,9 @@ export const ProposalDraftsTab: React.FC<ProposalDraftsTabProps> = ({
             <div className="flex flex-col items-center gap-6 py-4">
                <FileText className="w-5 h-5 text-blue-500" />
                <div className="flex flex-col gap-3">
-                  {filteredOutline.slice(0, 10).map(item => (
+                  {filteredOutline.slice(0, 10).map((item, idx) => (
                     <button 
-                      key={item.id}
+                      key={`${item.id}-collapsed-${idx}`}
                       onClick={() => setSelectedItemId(item.id)}
                       className={cn(
                         "w-10 h-10 rounded-xl flex items-center justify-center text-[10px] font-black border transition-all",

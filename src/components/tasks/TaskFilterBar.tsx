@@ -22,10 +22,10 @@ export const TaskFilterBar = ({ filters, setFilters }: any) => {
   return (
     <div className="flex gap-2 overflow-x-auto hide-scrollbar pb-2 sm:pb-0 shrink-0 max-w-full">
       {chips.map((chip, idx) => {
-        const isActive = filters[chip.key] === chip.value || (chip.value === "high" && filters[chip.key] === "high"); // Simplified
+        const isActive = filters[chip.key] === chip.value || (chip.value === "high" && filters[chip.key] === "high");
         return (
           <button
-            key={`${chip.key}-${String(chip.value)}`}
+            key={`task-filter-${chip.key}-${chip.value}`}
             onClick={() => {
               if (chip.value === "all") {
                 setFilters({ ...filters, status: "all", priority: "all" });

@@ -81,7 +81,7 @@ export const ContentReviewDisplay = ({ review }: { review: ContentReview }) => {
                 <ul className="space-y-2">
                   {review.strengths.map((s, idx) => (
                     <li
-                      key={idx}
+                      key={`review-strength-${idx}`}
                       className="text-xs font-semibold text-emerald-900 leading-tight flex gap-2"
                     >
                       <span className="shrink-0">•</span> {s}
@@ -101,7 +101,7 @@ export const ContentReviewDisplay = ({ review }: { review: ContentReview }) => {
                 <ul className="space-y-2">
                   {review.weaknesses.map((w, idx) => (
                     <li
-                      key={idx}
+                      key={`review-weakness-${idx}`}
                       className="text-xs font-semibold text-rose-900 leading-tight flex gap-2"
                     >
                       <span className="shrink-0">•</span> {w}
@@ -193,7 +193,7 @@ export const ContentReviewDisplay = ({ review }: { review: ContentReview }) => {
               <div className="space-y-2">
                 {group.data && group.data.length > 0 ? (
                   group.data.map((item, idx) => (
-                    <div key={idx} className="flex gap-2 items-start">
+                    <div key={`review-issue-${group.id}-${idx}`} className="flex gap-2 items-start">
                       <span className="text-slate-300 mt-0.5 shrink-0">•</span>
                       <p className="text-xs font-medium text-slate-600 leading-tight">
                         {item}
@@ -218,7 +218,7 @@ export const ContentReviewDisplay = ({ review }: { review: ContentReview }) => {
             <div className="space-y-3">
               {review.improvementSuggestions &&
                 review.improvementSuggestions.map((s, idx) => (
-                  <div key={idx} className="flex gap-3 items-center">
+                  <div key={`review-suggestion-${idx}`} className="flex gap-3 items-center">
                     <div className="w-5 h-5 bg-emerald-100 text-emerald-600 rounded flex items-center justify-center text-[10px] font-bold shrink-0">
                       {idx + 1}
                     </div>

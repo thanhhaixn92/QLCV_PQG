@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { getRenderKey, staticKey } from '../../utils/listKeys';
 import { 
   Plus, 
   Sparkles, 
@@ -301,7 +302,7 @@ export const ProposalTasksTab: React.FC<ProposalTasksTabProps> = ({
              { label: 'Đã hoàn tất', value: stats.done, color: 'bg-emerald-50 text-emerald-600 border-emerald-100' },
              { label: 'Chậm tiến độ', value: stats.overdue, color: 'bg-rose-100 text-rose-700 border-rose-200' },
            ].map((stat, idx) => (
-             <div key={idx} className={cn("p-5 rounded-[24px] border-2 flex flex-col items-center justify-center text-center transition-all hover:scale-105 shadow-sm", stat.color)}>
+             <div key={staticKey("task-stat", stat.label, idx)} className={cn("p-5 rounded-[24px] border-2 flex flex-col items-center justify-center text-center transition-all hover:scale-105 shadow-sm", stat.color)}>
                 <span className="text-[10px] font-black opacity-60 uppercase tracking-widest mb-1.5 leading-none">{stat.label}</span>
                 <span className="text-2xl font-black tabular-nums">{stat.value}</span>
              </div>
@@ -376,9 +377,9 @@ export const ProposalTasksTab: React.FC<ProposalTasksTabProps> = ({
         <div className="xl:col-span-8 space-y-4">
            {filteredTasks.length > 0 ? (
              <div className="grid grid-cols-1 gap-4">
-               {filteredTasks.map(task => (
+               {filteredTasks.map((task, idx) => (
                  <TaskCard 
-                   key={task.id}
+                   key={`${task.id}-${idx}`}
                    task={task}
                    onUpdateStatus={(s) => handleUpdateStatus(task.id, s)}
                    onDelete={() => handleDelete(task.id)}
@@ -549,7 +550,7 @@ export const ProposalTasksTab: React.FC<ProposalTasksTabProps> = ({
 };
 
 // Subcomponent: TaskCard
-const TaskCard = ({ task, onUpdateStatus, onDelete }: { task: WorkTask, onUpdateStatus: (s: string) => void, onDelete: () => void }) => {
+const TaskCard = ({ task, onUpdateStatus, onDelete }: { task: WorkTask, onUpdateStatus: (s: string) => void | Promise<void>, onDelete: () => void | Promise<void> }) => {
   const isOverdue = task.status !== 'done' && task.dueDate && new Date(task.dueDate) < new Date();
   
   const getPriorityConfig = (priority: string) => {

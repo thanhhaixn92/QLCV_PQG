@@ -44,7 +44,6 @@ import {
   updateExportStatus 
 } from '../../features/proposals/proposalExportService';
 import { exportProposalToWord } from '../../lib/proposalExport';
-import { exportVisualSnapshotPDF } from '../../lib/exportUtils';
 import { ProposalExportPreviewModal } from './ProposalExportPreviewModal';
 import { cn } from '../../lib/utils';
 import { motion } from 'motion/react';
@@ -68,7 +67,7 @@ export const ProposalExportTab: React.FC<ProposalExportTabProps> = ({
   const [evidenceLinks, setEvidenceLinks] = useState<ProposalEvidenceLink[]>([]);
   
   const [loading, setLoading] = useState(true);
-  const [exporting, setExporting] = useState<'docx' | 'pdf' | 'pdf_snapshot' | null>(null);
+  const [exporting, setExporting] = useState<'docx' | 'pdf' | null>(null);
   
   // Preview State
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
@@ -140,7 +139,7 @@ export const ProposalExportTab: React.FC<ProposalExportTabProps> = ({
     }
   };
 
-  const handleDownload = async (fileType: 'docx' | 'pdf' | 'pdf_snapshot') => {
+  const handleDownload = async (fileType: 'docx' | 'pdf') => {
     if (!proposal || !activeExportType || !previewContent) return;
     setExporting(fileType);
     
@@ -150,9 +149,9 @@ export const ProposalExportTab: React.FC<ProposalExportTabProps> = ({
       exportId = await createExportRecord(userId, proposalId, {
         proposalId,
         exportType: activeExportType,
-        fileType: fileType === 'pdf_snapshot' ? 'pdf' : fileType,
+        fileType: fileType,
         title: previewContent.title,
-        fileName: `${previewContent.title.replace(/\s+/g, '_')}_${new Date().getTime()}.${fileType === 'pdf_snapshot' ? 'pdf' : fileType}`,
+        fileName: `${previewContent.title.replace(/\s+/g, '_')}_${new Date().getTime()}.${fileType}`,
         status: 'previewed'
       });
 
@@ -176,15 +175,18 @@ export const ProposalExportTab: React.FC<ProposalExportTabProps> = ({
           await exportProposalToWord(proposal, outlineItems, drafts, sources, evidenceLinks, checklistItems, dataReqs);
         }
       } else if (fileType === 'pdf') {
-        toast("Đang chuẩn bị trang in đề án. Hãy chọn 'Lưu dưới dạng PDF' (Save as PDF) tại hộp thoại in hệ thống.", { icon: "🖨️", duration: 5000 });
+        toast("Đang tạo file PDF...", { icon: "🖨️", duration: 5000 });
         const { exportPrintablePdfFromElement } = await import('../../lib/printablePdfExport');
-        exportPrintablePdfFromElement('proposal-export-preview-content', {
+        await exportPrintablePdfFromElement('proposal-export-preview-content', {
           title: `${proposal.name}_De_An`,
-          profile: 'proposal'
+          profile: 'proposal',
+          onValidationError: (msg) => {
+            toast(`Lỗi: ${msg}`, { icon: '❌', duration: 4000 });
+          },
+          onValidationWarning: (msg) => {
+            toast(`Cảnh báo: ${msg}`, { icon: '⚠️', duration: 3000 });
+          }
         });
-      } else {
-        toast("Đang tải xuống bản chụp đề án...", { icon: "📸" });
-        await exportVisualSnapshotPDF('proposal-export-preview-content', `${proposal.name}_snapshot`);
       }
 
       // 3. Update Record

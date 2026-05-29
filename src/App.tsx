@@ -190,6 +190,7 @@ import {
   User as FirebaseUser,
   GoogleAuthProvider,
   signInWithPopup,
+  signInAnonymously,
 } from "firebase/auth";
 import {
   collection,
@@ -241,7 +242,11 @@ import {
 } from "./components/tasks/TaskHelpers";
 
 import { getEditorialTool } from "./lib/editorialTools";
+import { sanitizeEditorContent } from "./lib/unicodeNormalizer";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { EditorialToolSelector } from "./components/editorial/EditorialToolSelector";
+
+import { getStableEntityId, getRenderKey, dedupeByStableId, staticKey } from "./utils/listKeys";
 
 function getUserDisplayName(user: FirebaseUser | null, profile?: any) {
   if (profile?.displayName) return profile.displayName;
@@ -253,7 +258,35 @@ function getUserDisplayName(user: FirebaseUser | null, profile?: any) {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+function getSafeUserDisplay(user: FirebaseUser | null, profile?: any) {
+  const displayName =
+    profile?.displayName?.trim() ||
+    user?.displayName?.trim() ||
+    user?.email?.trim() ||
+    (user?.isAnonymous ? "Người dùng khách" : "Người dùng");
+
+  const secondaryText =
+    user?.email?.trim() ||
+    (user?.isAnonymous ? "Phiên đăng nhập khách (Anonymous)" : "Chưa có email");
+
+  const initial = (displayName.trim().charAt(0) || "N").toUpperCase();
+
+  return {
+    displayName,
+    secondaryText,
+    initial,
+    isAnonymous: Boolean(user?.isAnonymous),
+  };
+}
+
 // --- HELPERS ---
+const createDraftTaskId = () =>
+  `draft-task-${
+    typeof crypto !== "undefined" && crypto.randomUUID
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`
+  }`;
+
 function safeParseSlideOutline(value?: string): SlideOutlineResult | undefined {
   if (!value?.trim()) return undefined;
   try {
@@ -415,6 +448,21 @@ function App() {
   const [activeModal, setActiveModal] = useState<
     "auth" | "account" | "settings" | "task-edit" | null
   >(null);
+
+  // App Render State Logging (Diagnostic - Runs once on mount)
+  useEffect(() => {
+    console.log("[ROOT_RENDER_DECISION]", {
+      startupState,
+      backendReady,
+      firestoreReady,
+      authReady,
+      hasUser: !!user,
+      userEmail: user?.email || null,
+      hasProfile: !!profile,
+      profileRole: profile?.role || null,
+      activeTab,
+    });
+  }, []);
 
   // Document & Library State
   const [documents, setDocuments] = useState<DocumentSource[]>([]);
@@ -659,18 +707,51 @@ function App() {
       setAuthReady(true);
       return;
     }
+
+    let anonymousLoginStarted = false;
+
     const unsubscribe = onAuthStateChanged(
       auth,
-      (firebaseUser) => {
-        setUser(firebaseUser);
+      async (firebaseUser) => {
+        if (firebaseUser) {
+          setUser(firebaseUser);
+          setAuthReady(true);
+          logDebug("[BOOT] auth ready", {
+            uid: firebaseUser.uid,
+            isAnonymous: firebaseUser.isAnonymous,
+          });
+          return;
+        }
+
+        if (FEATURE_FLAGS.ANONYMOUS_AUTH_ENABLED && !anonymousLoginStarted) {
+          anonymousLoginStarted = true;
+
+          try {
+            logDebug("[BOOT] starting anonymous auth");
+            await signInAnonymously(auth);
+            return;
+          } catch (err) {
+            console.error("[BOOT] anonymous auth failed", err);
+            setUser(null);
+            setAuthReady(true);
+            setError(
+              "Không thể vào chế độ khách. Vui lòng bật Anonymous provider trong Firebase Authentication."
+            );
+            return;
+          }
+        }
+
+        setUser(null);
         setAuthReady(true);
-        console.log("[BOOT] auth ready");
+        logDebug("[BOOT] no auth user");
       },
       (error) => {
         console.error("[BOOT] auth error", error);
+        setUser(null);
         setAuthReady(true);
-      },
+      }
     );
+
     return () => unsubscribe();
   }, []);
 
@@ -680,7 +761,7 @@ function App() {
 
     const bootstrap = async () => {
       try {
-        console.log("[BOOT] app init start");
+        logDebug("[BOOT] app init start");
         setStartupState("booting");
         setBackendLoading(true);
 
@@ -697,7 +778,7 @@ function App() {
         const data = await response.json();
         if (cancelled) return;
 
-        console.log("[BOOT] health success", data);
+        logDebug("[BOOT] health success", data);
         setHealth(data);
         setBackendReady(true);
         setFirestoreReady(data.firestoreReady === true);
@@ -1255,9 +1336,11 @@ function App() {
         }
         setActiveTab("tasks");
         break;
-      case "create_task":
+      case "create_task": {
+        const draftId = createDraftTaskId();
         setEditingTask({
-          id: "",
+          id: draftId,
+          clientId: draftId,
           title: action.payload?.title || "Công việc mới từ Chat",
           description: action.payload?.description || "",
           assignee: profile?.displayName || "",
@@ -1272,6 +1355,7 @@ function App() {
         });
         setActiveModal("task-edit");
         break;
+      }
       case "open_library":
         setActiveTab("library");
         break;
@@ -1574,7 +1658,8 @@ function App() {
       
       // new filter: mytasks, today, thisweek
       if (taskFilters.status === "mytasks") {
-        matchesStatus = user && t.assignee.toLowerCase().includes(user.email?.split("@")[0].toLowerCase() || "");
+        const userSearch = user?.email?.split("@")[0] || user?.displayName || "";
+        matchesStatus = user && userSearch && t.assignee.toLowerCase().includes(userSearch.toLowerCase());
       }
       if (taskFilters.status === "today") {
         const today = new Date().toISOString().split("T")[0];
@@ -1877,7 +1962,20 @@ function App() {
       profileRef,
       (docSnap) => {
         if (docSnap.exists()) {
-          setProfile(docSnap.data() as UserProfile);
+          const firestoreProfile = docSnap.data() as UserProfile;
+          setProfile((prevProfile) => {
+            if (!prevProfile) return firestoreProfile;
+            
+            // Prevent downgrade: If current role is admin, keep it as admin
+            const newRole = (prevProfile.role === "admin" || firestoreProfile.role === "admin")
+              ? "admin"
+              : "user";
+            
+            return {
+              ...firestoreProfile,
+              role: newRole
+            };
+          });
         } else {
           setProfile(null);
         }
@@ -1889,6 +1987,15 @@ function App() {
     return () => unsub();
   }, [user, db]);
 
+  // Helper for debug logging
+  const ENABLE_DEBUG_LOGS = import.meta.env.DEV && import.meta.env.VITE_ENABLE_DEBUG_LOGS === "true";
+  
+  const logDebug = (msg: string, data?: any) => {
+    if (ENABLE_DEBUG_LOGS) {
+      console.log(msg, data);
+    }
+  };
+
   // Sync Library Collections
   useEffect(() => {
     if (!user || !db) return;
@@ -1896,27 +2003,13 @@ function App() {
     const unsub = onSnapshot(collsRef, (snapshot) => {
       const fbColls: LibraryCollection[] = [];
       snapshot.forEach((d) =>
-        fbColls.push({ id: d.id, ...d.data() } as LibraryCollection),
+        fbColls.push({ ...d.data(), id: d.id } as LibraryCollection),
       );
 
       // Merge with default collections
       setLibraryCollections((prev) => {
-        const merged = [...DEFAULT_LIBRARY_COLLECTIONS];
-        fbColls.forEach((fc) => {
-          if (!fc.id) return; // filter valid id
-          const idx = merged.findIndex((m) => m.id === fc.id);
-          if (idx >= 0) merged[idx] = fc;
-          else merged.push(fc);
-        });
-
-        // Final deduplicate by id
-        const uniqueMap = new Map();
-        merged.forEach((m) => {
-          if (m.id) {
-            uniqueMap.set(m.id, m);
-          }
-        });
-        return Array.from(uniqueMap.values());
+        const merged = [...DEFAULT_LIBRARY_COLLECTIONS, ...fbColls];
+        return dedupeByStableId(merged, "library");
       });
     });
     return () => unsub();
@@ -1933,12 +2026,11 @@ function App() {
     const unsub = onSnapshot(docsRef, (snapshot) => {
       const fbDocs: DocumentSource[] = [];
       snapshot.forEach((d) =>
-        fbDocs.push({ id: d.id, ...d.data() } as DocumentSource),
+        fbDocs.push({ ...d.data(), id: d.id } as DocumentSource),
       );
       setDocuments((prev) => {
         const localOnly = prev.filter((d) => d.temporary);
-        // Avoid duplicates if any, though temporary shouldn't be in fbDocs
-        return [...fbDocs, ...localOnly];
+        return dedupeByStableId([...fbDocs, ...localOnly], "document");
       });
     });
     return () => unsub();
@@ -1954,9 +2046,9 @@ function App() {
     const unsub = onSnapshot(sessionsRef, (snapshot) => {
       const fbSessions: ProjectSession[] = [];
       snapshot.forEach((s) =>
-        fbSessions.push({ id: s.id, ...s.data() } as ProjectSession),
+        fbSessions.push({ ...s.data(), id: s.id } as ProjectSession),
       );
-      setSessions(fbSessions);
+      setSessions(dedupeByStableId(fbSessions, "session"));
     });
     return () => unsub();
   }, [user?.uid, db]);
@@ -1976,8 +2068,8 @@ function App() {
 
       unsubscribeLogs = onSnapshot(logsQuery, (snapshot) => {
         const logs: any[] = [];
-        snapshot.forEach((doc) => logs.push({ id: doc.id, ...doc.data() }));
-        setRecentLogs(logs);
+        snapshot.forEach((doc) => logs.push({ ...doc.data(), id: doc.id }));
+        setRecentLogs(dedupeByStableId(logs, "activity-log"));
       });
     } catch (e) {
       console.error("Error fetching logs", e);
@@ -1996,9 +2088,14 @@ function App() {
         (snapshot) => {
           const tasks: WorkTask[] = [];
           snapshot.forEach((doc) =>
-            tasks.push({ id: doc.id, ...doc.data() } as WorkTask),
+            tasks.push({ ...doc.data(), id: doc.id } as WorkTask),
           );
-          setAllTasks(tasks);
+          logDebug("[TASKS SNAPSHOT]", {
+            total: tasks.length,
+            ids: tasks.map((t) => t.id),
+            uniqueIds: new Set(tasks.map((t) => t.id)).size,
+          });
+          setAllTasks(dedupeByStableId(tasks, "task"));
         },
         (err) => {
           if (err.code === "permission-denied") {
@@ -2012,7 +2109,10 @@ function App() {
       console.error("Critical Firestore Error during setup:", e);
     }
 
-    return () => unsubscribeTasks();
+    return () => {
+      unsubscribeTasks();
+      unsubscribeLogs();
+    };
   }, [user?.uid, db]);
 
   const syncDataFromFirestore = async (userId: string) => {
@@ -2695,8 +2795,14 @@ function App() {
   }, [sessions]);
 
   const saveCurrentToSession = async (newOutput?: string) => {
-    const finalOutput = newOutput ?? output;
+    let finalOutput = newOutput ?? output;
     if (!finalOutput) return;
+    
+    // Normalize unicode and Vietnamese text
+    finalOutput = sanitizeEditorContent(finalOutput);
+    if (finalOutput !== output) {
+      setOutput(finalOutput);
+    }
 
     // CONSTRAINT 3: Check session size (700,000 chars limit for currentOutput)
     if (finalOutput.length > 700000) {
@@ -2916,8 +3022,10 @@ function App() {
       });
     });
 
+    const draftId = createDraftTaskId();
     setEditingTask({
-      id: "",
+      id: draftId,
+      clientId: draftId,
       title: `Hoàn thiện Slide Deck: ${result.title}`,
       description: `Mục tiêu: Hoàn thiện bài thuyết trình cho đối tượng ${result.audience}.\n\nThông điệp chính: ${result.mainMessage}\n\nPhong cách: ${result.style}\nSố lượng: ${result.slideCount} slides.\n\nCần lưu ý rà soát kỹ các slide: ${slidesWithCaution.map((s) => s.slideNumber).join(", ") || "Không có cảnh báo"}`,
       categoryCode: "LV_VPDT",
@@ -2963,16 +3071,20 @@ function App() {
       if (!response.ok)
         throw new Error(data.error || "Không thể trích xuất công việc từ AI");
 
-      const newTasks = (data.tasks || []).map((t: any) => {
+      const newTasks = (data.tasks || []).map((t: any, idx: number) => {
         // Fallback safety
         const safeCategory = TASK_CATEGORIES.some(
           (c) => c.code === t.categoryCode,
         )
           ? t.categoryCode
           : "LV_DH";
+        
+        const clientId = `wt-ai-${Date.now()}-${idx}-${Math.random().toString(36).substr(2, 5)}`;
+        
         return {
           ...t,
-          id: `wt-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          id: clientId,
+          clientId: clientId,
           status: t.status || "todo",
           priority: ["low", "medium", "high", "urgent"].includes(t.priority)
             ? t.priority
@@ -3088,9 +3200,11 @@ function App() {
   ) => {
     if (!user) return;
     try {
+      // Filter out ID fields to avoid saving them to Firestore fields
+      const { id, clientId, ...rest } = updates as any;
       const taskRef = doc(db, "users", user.uid, "tasks", taskId);
       await updateDoc(taskRef, {
-        ...updates,
+        ...rest,
         updatedAt: Date.now(),
       });
 
@@ -3669,8 +3783,10 @@ function App() {
   // Quick Action Helpers
   const openCreateTask = () => {
     closeMobileDrawer();
+    const draftId = createDraftTaskId();
     setEditingTask({
-      id: "",
+      id: draftId,
+      clientId: draftId,
       title: "",
       assignee:
         profile?.defaultAssigneeName || getUserDisplayName(user, profile),
@@ -3777,11 +3893,11 @@ Nội dung văn bản:\n` + content,
     if (!user) return;
     try {
       const batch = writeBatch(db);
-      tasks.forEach(t => {
+      tasks.forEach((t) => {
         const ref = doc(collection(db, "users", user.uid, "tasks"));
+        const { id, clientId, selected, ...safeTask } = t;
         batch.set(ref, {
-          ...t,
-          id: ref.id,
+          ...safeTask,
           title: t.title || "Công việc không tên",
           priority: t.priority || "medium",
           categoryCode: t.categoryCode || "LV_DH",
@@ -3790,8 +3906,8 @@ Nội dung văn bản:\n` + content,
           description: t.description || "",
           createdAt: Date.now(),
           updatedAt: Date.now(),
-          status: 'todo',
-          source: 'ai'
+          status: "todo",
+          source: "ai",
         });
       });
       await batch.commit();
@@ -4113,15 +4229,44 @@ Nội dung văn bản:\n` + content,
     }
   };
 
+  const getGoogleAuthErrorMessage = (err: unknown): string => {
+    const code =
+      typeof err === "object" && err && "code" in err
+        ? String((err as { code?: unknown }).code)
+        : "";
+
+    switch (code) {
+      case "auth/popup-blocked":
+        return "Trình duyệt đang chặn cửa sổ đăng nhập Google.";
+      case "auth/popup-closed-by-user":
+        return "Cửa sổ đăng nhập Google đã bị đóng trước khi hoàn tất.";
+      case "auth/unauthorized-domain":
+        return "Domain hiện tại chưa được thêm vào Firebase Authorized domains.";
+      case "auth/operation-not-allowed":
+        return "Google provider chưa được bật trong Firebase Authentication.";
+      case "auth/network-request-failed":
+        return "Kết nối mạng không ổn định. Vui lòng tắt VPN hoặc thử lại.";
+      default:
+        return "Đăng nhập Google không thành công. Vui lòng dùng Email/Password hoặc chế độ khách.";
+    }
+  };
+
   const handleGoogleAuth = async () => {
+    if (!FEATURE_FLAGS.GOOGLE_AUTH_ENABLED) {
+      setError("Đăng nhập Google đang được tắt trong môi trường preview.");
+      return;
+    }
+
     setError(null);
     setIsLoading(true);
+
     try {
       const provider = new GoogleAuthProvider();
       await signInWithPopup(auth, provider);
       setActiveModal(null);
-    } catch (err: any) {
-      setError(`Lỗi đăng nhập Google: ${err.message}`);
+    } catch (err) {
+      console.error("[AUTH] Google sign-in failed", err);
+      setError(getGoogleAuthErrorMessage(err));
     } finally {
       setIsLoading(false);
     }
@@ -4458,21 +4603,41 @@ Nội dung văn bản:\n` + content,
     { id: "SLIDE_OUTLINE", label: "Phác thảo Slide" },
   ];
 
-  // Removed early return for bootstrap to allow overlay
-  // Removed full screen backendError to allow degraded mode UI
+  // --- APP LEVEL RENDERING GUARDS ---
+  if (!authReady) {
+    return (
+      <div className="h-screen w-full flex items-center justify-center bg-white flex-col">
+        <Loader2 className="w-10 h-10 animate-spin text-blue-600 mb-4" />
+        <p className="text-sm font-bold text-slate-500 uppercase tracking-[0.2em] animate-pulse">
+          KHỞI TẠO HỆ THỐNG
+        </p>
+      </div>
+    );
+  }
+
+  // Render Overlay/Banner for ALL users during boot or failures
+  const globalOverlays = (
+    <>
+      <StartupOverlay state={startupState} />
+      <DegradedBanner
+        state={startupState}
+        error={backendError}
+        onRetry={() => window.location.reload()}
+      />
+      <Toaster position="top-right" />
+    </>
+  );
+
+  if (startupState === "booting" || startupState === "failed") {
+    return globalOverlays;
+  }
 
   // --- AUTH CHECK: LANDING PAGE ---
   if (!user) {
     return (
       <>
-        <StartupOverlay state={startupState} />
-        <DegradedBanner
-          state={startupState}
-          error={backendError}
-          onRetry={() => window.location.reload()}
-        />
+        {globalOverlays}
         <div className="min-h-screen bg-white font-sans text-slate-900 selection:bg-[#002D56] selection:text-white overflow-x-hidden mesh-gradient">
-          <Toaster position="top-right" />
 
           {/* Navigation / Header */}
           <nav className="fixed top-0 left-0 right-0 z-50 bg-white/80 backdrop-blur-xl border-b border-white/20 px-4 py-3 sm:px-6 sm:py-4">
@@ -4675,28 +4840,32 @@ Nội dung văn bản:\n` + content,
                   </div>
 
                   <div className="space-y-5">
-                    <button
-                      onClick={handleGoogleAuth}
-                      disabled={isLoading}
-                      className="w-full py-3.5 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-center gap-3 hover:bg-white hover:border-blue-400 hover:shadow-lg transition-all group active:scale-95 disabled:opacity-50"
-                    >
-                      <img
-                        src="https://www.google.com/favicon.ico"
-                        alt="Google"
-                        className="w-5 h-5 group-hover:scale-110 transition-transform"
-                      />
-                      <span className="font-bold text-sm text-slate-700">
-                        Tiếp tục với Google
-                      </span>
-                    </button>
+                    {FEATURE_FLAGS.GOOGLE_AUTH_ENABLED && (
+                      <>
+                        <button
+                          onClick={handleGoogleAuth}
+                          disabled={isLoading}
+                          className="w-full py-3.5 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-center gap-3 hover:bg-white hover:border-blue-400 hover:shadow-lg transition-all group active:scale-95 disabled:opacity-50"
+                        >
+                          <img
+                            src="https://www.google.com/favicon.ico"
+                            alt="Google"
+                            className="w-5 h-5 group-hover:scale-110 transition-transform"
+                          />
+                          <span className="font-bold text-sm text-slate-700">
+                            Tiếp tục với Google
+                          </span>
+                        </button>
 
-                    <div className="flex items-center gap-4 my-6">
-                      <div className="flex-1 h-px bg-slate-100" />
-                      <span className="text-[10px] font-bold text-slate-400 tracking-wider uppercase">
-                        Hoặc Email nghiệp vụ
-                      </span>
-                      <div className="flex-1 h-px bg-slate-100" />
-                    </div>
+                        <div className="flex items-center gap-4 my-6">
+                          <div className="flex-1 h-px bg-slate-100" />
+                          <span className="text-[10px] font-bold text-slate-400 tracking-wider uppercase">
+                            Hoặc Email nghiệp vụ
+                          </span>
+                          <div className="flex-1 h-px bg-slate-100" />
+                        </div>
+                      </>
+                    )}
 
                     <form onSubmit={handleAuth} className="space-y-5">
                       <div>
@@ -4887,13 +5056,14 @@ Nội dung văn bản:\n` + content,
 
   // --- MAIN APP LAYOUT (LOGGED IN) ---
   return (
-    <div
-      className={cn(
-        "h-dvh w-full bg-[#F1F5F9] flex font-sans text-slate-900 overflow-hidden",
-        density === "compact" ? "compact-layout" : "",
-      )}
-    >
-      <Toaster position="top-right" />
+    <ErrorBoundary>
+      {globalOverlays}
+      <div
+        className={cn(
+          "h-dvh w-full bg-[#F1F5F9] flex font-sans text-slate-900 overflow-hidden",
+          density === "compact" ? "compact-layout" : "",
+        )}
+      >
 
       {/* Mobile Sidebar Overlay */}
       <AnimatePresence>
@@ -5005,9 +5175,9 @@ Nội dung văn bản:\n` + content,
             ...(profile?.role === "admin"
               ? [{ id: "admin", label: "Admin Workspace", icon: Shield }]
               : []),
-          ].map((item) => (
+          ].map((item, idx) => (
             <button
-              key={item.id}
+              key={staticKey("nav", item.id, idx)}
               onClick={() => {
                 if (item.id === "tasks") {
                   openTaskOverview();
@@ -5117,7 +5287,7 @@ Nội dung văn bản:\n` + content,
               )}
             >
               <div className="w-8 h-8 rounded-md bg-white/10 flex items-center justify-center text-xs font-semibold text-white shrink-0 border border-white/10 uppercase">
-                {profile?.avatarText || user.email?.[0]}
+                {profile?.avatarText || getSafeUserDisplay(user, profile).initial}
               </div>
               {(!isEffectiveSidebarCollapsed || isSidebarOpen) && (
                 <div className="flex-1 min-w-0">
@@ -5316,10 +5486,7 @@ Nội dung văn bản:\n` + content,
                       allTasks={allTasks}
                       createNewSession={createNewSession}
                       setActiveTab={setActiveTab}
-                      openCreateTask={() => {
-                        setEditingTask({} as any);
-                        setActiveModal("task-edit");
-                      }}
+                      openCreateTask={openCreateTask}
                       openAiTaskBuilder={() => {
                         setIsChatOpen(true);
                         setChatInput("Tôi muốn lập kế hoạch công việc cho...");
@@ -5612,6 +5779,7 @@ Nội dung văn bản:\n` + content,
         <AnimatePresence>
           {activeModal === "auth" && (
             <motion.div
+              key="modal-auth"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
@@ -5700,49 +5868,53 @@ Nội dung văn bản:\n` + content,
                         : "TẠO TÀI KHOẢN MỚI"}
                     </button>
 
-                    <div className="relative py-4">
-                      <div className="absolute inset-0 flex items-center">
-                        <div className="w-full border-t border-slate-200"></div>
-                      </div>
-                      <div className="relative flex justify-center text-[10px] uppercase font-semibold tracking-wide">
-                        <span className="bg-white px-4 text-slate-400">
-                          Hoặc tiếp tục với
-                        </span>
-                      </div>
-                    </div>
+                    {FEATURE_FLAGS.GOOGLE_AUTH_ENABLED && (
+                      <>
+                        <div className="relative py-4">
+                          <div className="absolute inset-0 flex items-center">
+                            <div className="w-full border-t border-slate-200"></div>
+                          </div>
+                          <div className="relative flex justify-center text-[10px] uppercase font-semibold tracking-wide">
+                            <span className="bg-white px-4 text-slate-400">
+                              Hoặc tiếp tục với
+                            </span>
+                          </div>
+                        </div>
 
-                    <button
-                      type="button"
-                      onClick={handleGoogleAuth}
-                      disabled={isLoading}
-                      className="w-full bg-white border border-slate-200 text-slate-700 py-3.5 rounded-md font-bold text-sm hover:bg-slate-50 transition-all active:scale-[0.98] flex items-center justify-center gap-3 shadow-sm"
-                    >
-                      <svg className="w-5 h-5" viewBox="0 0 24 24">
-                        <path
-                          fill="#EA4335"
-                          d="M12 5.04c1.94 0 3.68.67 5.05 1.97l3.77-3.77C18.54 1.24 15.48 0 12 0 7.31 0 3.25 2.69 1.2 6.65l4.39 3.4C6.63 7.15 9.08 5.04 12 5.04z"
-                        />
-                        <path
-                          fill="#4285F4"
-                          d="M23.49 12.27c0-.8-.07-1.56-.19-2.27H12v4.51h6.47c-.29 1.48-1.14 2.73-2.4 3.58l3.8 2.94c2.23-2.06 3.62-5.09 3.62-8.76z"
-                        />
-                        <path
-                          fill="#FBBC05"
-                          d="M5.59 14.5c-.24-.72-.38-1.5-.38-2.31s.14-1.59.38-2.31l-4.39-3.4C.45 8.2 0 10.05 0 12c0 1.95.45 3.8 1.2 5.51l4.39-3.41z"
-                        />
-                        <path
-                          fill="#34A853"
-                          d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.8-2.94c-1.08.73-2.47 1.16-4.13 1.16-3.19 0-5.89-2.15-6.85-5.07l-4.4 3.41C3.25 21.31 7.31 24 12 24z"
-                        />
-                      </svg>
-                      TIẾP TỤC VỚI GOOGLE
-                    </button>
+                        <button
+                          type="button"
+                          onClick={handleGoogleAuth}
+                          disabled={isLoading}
+                          className="w-full bg-white border border-slate-200 text-slate-700 py-3.5 rounded-md font-bold text-sm hover:bg-slate-50 transition-all active:scale-[0.98] flex items-center justify-center gap-3 shadow-sm"
+                        >
+                          <svg className="w-5 h-5" viewBox="0 0 24 24">
+                            <path
+                              fill="#EA4335"
+                              d="M12 5.04c1.94 0 3.68.67 5.05 1.97l3.77-3.77C18.54 1.24 15.48 0 12 0 7.31 0 3.25 2.69 1.2 6.65l4.39 3.4C6.63 7.15 9.08 5.04 12 5.04z"
+                            />
+                            <path
+                              fill="#4285F4"
+                              d="M23.49 12.27c0-.8-.07-1.56-.19-2.27H12v4.51h6.47c-.29 1.48-1.14 2.73-2.4 3.58l3.8 2.94c2.23-2.06 3.62-5.09 3.62-8.76z"
+                            />
+                            <path
+                              fill="#FBBC05"
+                              d="M5.59 14.5c-.24-.72-.38-1.5-.38-2.31s.14-1.59.38-2.31l-4.39-3.4C.45 8.2 0 10.05 0 12c0 1.95.45 3.8 1.2 5.51l4.39-3.41z"
+                            />
+                            <path
+                              fill="#34A853"
+                              d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.8-2.94c-1.08.73-2.47 1.16-4.13 1.16-3.19 0-5.89-2.15-6.85-5.07l-4.4 3.41C3.25 21.31 7.31 24 12 24z"
+                            />
+                          </svg>
+                          TIẾP TỤC VỚI GOOGLE
+                        </button>
 
-                    {authMode === "login" && (
-                      <p className="mt-4 text-[10px] text-center text-slate-400 font-medium leading-relaxed">
-                        Lưu ý: Nếu đăng nhập Email bị lỗi, vui lòng sử dụng tài
-                        khoản Google để trải nghiệm hệ thống ổn định nhất.
-                      </p>
+                        {authMode === "login" && (
+                          <p className="mt-4 text-[10px] text-center text-slate-400 font-medium leading-relaxed">
+                            Lưu ý: Nếu đăng nhập Email bị lỗi, vui lòng sử dụng tài
+                            khoản Google để trải nghiệm hệ thống ổn định nhất.
+                          </p>
+                        )}
+                      </>
                     )}
                   </form>
                 </div>
@@ -5771,74 +5943,92 @@ Nội dung văn bản:\n` + content,
           )}
 
           {activeModal === "account" && user && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 z-[100] bg-slate-900/40 backdrop-blur-sm flex justify-end"
-              onClick={() => setActiveModal(null)}
-            >
+            <ErrorBoundary key="modal-account">
               <motion.div
-                initial={{ x: "100%" }}
-                animate={{ x: 0 }}
-                exit={{ x: "100%" }}
-                transition={{ type: "spring", damping: 25, stiffness: 200 }}
-                className="bg-white w-full max-w-sm h-full shadow-2xl p-6 sm:p-6 overflow-y-auto overscroll-contain"
-                onClick={(e) => e.stopPropagation()}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="fixed inset-0 z-[100] bg-slate-900/40 backdrop-blur-sm flex justify-end"
+                onClick={() => setActiveModal(null)}
               >
-                <div className="sticky top-0 bg-white z-20 -mt-6 -mx-6 p-6 pb-4 mb-4 border-b border-slate-100 flex justify-between items-start">
-                  <div className="flex items-center gap-4">
-                    <div className="w-16 h-16 bg-[#002D56] rounded-full flex items-center justify-center text-white text-2xl font-semibold">
-                      {user.email[0].toUpperCase()}
+                <motion.div
+                  initial={{ x: "100%" }}
+                  animate={{ x: 0 }}
+                  exit={{ x: "100%" }}
+                  transition={{ type: "spring", damping: 25, stiffness: 200 }}
+                  className="bg-white w-full max-w-sm h-full shadow-2xl p-6 sm:p-6 overflow-y-auto overscroll-contain"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="sticky top-0 bg-white z-20 -mt-6 -mx-6 p-6 pb-4 mb-4 border-b border-slate-100 flex justify-between items-start">
+                    <div className="flex items-center gap-4">
+                      <div className="w-16 h-16 bg-[#002D56] rounded-full flex items-center justify-center text-white text-2xl font-semibold">
+                        {getSafeUserDisplay(user, profile).initial}
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h2 className="text-xl font-semibold text-slate-800 tracking-tight">
+                            {getSafeUserDisplay(user, profile).displayName}
+                          </h2>
+                          {profile?.role === "admin" && (
+                            <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 text-[9px] font-bold rounded-full uppercase tracking-wider">
+                              Admin
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[10px] font-bold text-slate-500 tracking-normal mt-1">
+                          {getSafeUserDisplay(user, profile).secondaryText}
+                        </p>
+                      </div>
                     </div>
-                    <div>
-                      <h2 className="text-xl font-semibold text-slate-800 tracking-tight">
-                        {user.email}
-                      </h2>
-                      <p className="text-[10px] font-bold text-emerald-600 tracking-normal mt-1">
-                        Trạng thái: Đang hoạt động
+                    <button
+                      onClick={() => setActiveModal(null)}
+                      className="p-2 hover:bg-slate-100 rounded-md"
+                    >
+                      <X className="w-5 h-5 text-slate-400" />
+                    </button>
+                  </div>
+  
+                  <div className="space-y-4">
+                    <div className="p-4 bg-slate-50 rounded-md border border-slate-100">
+                      <p className="text-[10px] font-semibold text-slate-400 tracking-normal mb-1">
+                        Cơ quan / Đơn vị
+                      </p>
+                      <p className="text-sm font-bold text-slate-700">
+                        {profile?.department || "Công ty TNHH MTV Hoa tiêu hàng hải miền Bắc"}
+                      </p>
+                    </div>
+                    <div className="p-4 bg-slate-50 rounded-md border border-slate-100">
+                      <p className="text-[10px] font-semibold text-slate-400 tracking-normal mb-1">
+                        Chức vụ / Vị trí
+                      </p>
+                      <p className="text-sm font-bold text-slate-700">
+                        {profile?.title || "Chưa cập nhật"}
+                      </p>
+                    </div>
+                    <div className="p-4 bg-slate-50 rounded-md border border-slate-100">
+                      <p className="text-[10px] font-semibold text-slate-400 tracking-normal mb-1">
+                        Phân quyền hệ thống
+                      </p>
+                      <p className={cn("text-sm font-bold", profile?.role === "admin" ? "text-emerald-600" : "text-slate-700")}>
+                        {profile?.role === "admin" ? "Admin" : "User"}
                       </p>
                     </div>
                   </div>
+  
                   <button
-                    onClick={() => setActiveModal(null)}
-                    className="p-2 hover:bg-slate-100 rounded-md"
+                    onClick={handleLogout}
+                    className="w-full mt-8 bg-red-50 text-red-600 py-4 rounded-md font-semibold text-sm hover:bg-red-100 transition-all flex items-center justify-center gap-2"
                   >
-                    <X className="w-5 h-5 text-slate-400" />
+                    <LogOut className="w-4 h-4" /> ĐĂNG XUẤT KHỎI HỆ THỐNG
                   </button>
-                </div>
-
-                <div className="space-y-4">
-                  <div className="p-4 bg-slate-50 rounded-md border border-slate-100">
-                    <p className="text-[10px] font-semibold text-slate-400 tracking-normal mb-1">
-                      Cơ quan / Đơn vị
-                    </p>
-                    <p className="text-sm font-bold text-slate-700">
-                      Công ty TNHH MTV Hoa tiêu hàng hải miền Bắc
-                    </p>
-                  </div>
-                  <div className="p-4 bg-slate-50 rounded-md border border-slate-100">
-                    <p className="text-[10px] font-semibold text-slate-400 tracking-normal mb-1">
-                      Chức vụ / Vị trí
-                    </p>
-                    <p className="text-sm font-bold text-slate-700">
-                      Biên tập viên Nghiệp vụ
-                    </p>
-                  </div>
-                </div>
-
-                <button
-                  onClick={handleLogout}
-                  className="w-full mt-8 bg-red-50 text-red-600 py-4 rounded-md font-semibold text-sm hover:bg-red-100 transition-all flex items-center justify-center gap-2"
-                >
-                  <LogOut className="w-4 h-4" /> ĐĂNG XUẤT KHỎI HỆ THỐNG
-                </button>
+                </motion.div>
               </motion.div>
-            </motion.div>
+            </ErrorBoundary>
           )}
 
           {activeModal === "settings" && (
             <motion.div
+              key="modal-settings"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
@@ -6133,7 +6323,7 @@ Nội dung văn bản:\n` + content,
 
         <AnimatePresence>
           {selectingParagraphForImage && (
-            <div role="dialog" aria-modal="true" className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+            <div key="modal-image-para-select" role="dialog" aria-modal="true" className="fixed inset-0 z-[100] flex items-center justify-center p-4">
               <motion.div
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
@@ -6179,7 +6369,7 @@ Nội dung văn bản:\n` + content,
                     .filter((p) => p.trim())
                     .map((para, idx) => (
                       <button
-                        key={idx}
+                        key={`para-select-${idx}`}
                         onClick={() => {
                           handleManualUpload(
                             selectingParagraphForImage.file,
@@ -6205,41 +6395,49 @@ Nội dung văn bản:\n` + content,
             </div>
           )}
 
-          <TaskAICreateModal 
-            isOpen={isAiCreateModalOpen}
-            onClose={() => setIsAiCreateModalOpen(false)}
-            onAnalyze={handleAnalyzeTasks}
-            isAnalyzing={isAnalyzing === "tasks"}
-            onSave={saveAiTasks}
-            setTaskFilters={setTaskFilters}
-          />
-
           {activeModal === "task-edit" && editingTask && (
-            <React.Suspense fallback={null}>
-              <TaskEditModal
-                editingTask={editingTask}
-                setEditingTask={setEditingTask}
-                onClose={() => setActiveModal(null)}
-                onDelete={handleDeleteTask}
-                onSave={(task) => {
-                  if (!task.title) return toast.error("Vui lòng nhập tiêu đề");
-                  if (task.id) {
-                    handleUpdateTask(task.id, task);
-                  } else {
-                    const { id, ...rest } = task;
-                    persistTask(rest);
-                    setActiveModal(null);
-                  }
-                }}
-                documents={documents}
-                setIsPickingFromLibrary={setIsPickingFromLibraryForTask}
-              />
-            </React.Suspense>
+            <ErrorBoundary key={`modal-task-edit-${editingTask.clientId || editingTask.id || "draft"}`}>
+              <React.Suspense fallback={null}>
+                <TaskEditModal
+                  editingTask={editingTask}
+                  setEditingTask={setEditingTask}
+                  onClose={() => setActiveModal(null)}
+                  onDelete={handleDeleteTask}
+                  onSave={async (task) => {
+                    if (!task.title?.trim()) {
+                      toast.error("Vui lòng nhập tiêu đề công việc.");
+                      return;
+                    }
+
+                    const isDraft = task.id?.startsWith('draft-task-') || task.id?.startsWith('wt-ai-');
+
+                    if (task.id && !isDraft) {
+                      await handleUpdateTask(task.id, task);
+                      setActiveModal(null);
+                      setEditingTask(null);
+                      toast.success("Đã cập nhật công việc.");
+                      return;
+                    }
+
+                    const { id, clientId, ...rest } = task as any;
+                    const newId = await persistTask(rest);
+
+                    if (newId) {
+                      setActiveModal(null);
+                      setEditingTask(null);
+                      toast.success("Đã lưu công việc mới.");
+                    }
+                  }}
+                  documents={documents}
+                  setIsPickingFromLibrary={setIsPickingFromLibraryForTask}
+                />
+              </React.Suspense>
+            </ErrorBoundary>
           )}
 
           {/* Library Add Text Modal */}
           {isAddingText && (
-            <div role="dialog" aria-modal="true" className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[110] flex items-center justify-center p-4">
+            <div key="modal-add-text" role="dialog" aria-modal="true" className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[110] flex items-center justify-center p-4">
               <motion.div
                 initial={{ opacity: 0, scale: 0.9 }}
                 animate={{ opacity: 1, scale: 1 }}
@@ -6303,7 +6501,7 @@ Nội dung văn bản:\n` + content,
 
           {/* Library Add Link Modal */}
           {isAddingLink && (
-            <div role="dialog" aria-modal="true" className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[110] flex items-center justify-center p-4">
+            <div key="modal-add-link" role="dialog" aria-modal="true" className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[110] flex items-center justify-center p-4">
               <motion.div
                 initial={{ opacity: 0, scale: 0.9 }}
                 animate={{ opacity: 1, scale: 1 }}
@@ -6354,7 +6552,7 @@ Nội dung văn bản:\n` + content,
 
           {/* Create Collection Modal */}
           {isAddingLibrary && (
-            <div role="dialog" aria-modal="true" className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[110] flex items-center justify-center p-4">
+            <div key="modal-add-library" role="dialog" aria-modal="true" className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[110] flex items-center justify-center p-4">
               <motion.div
                 initial={{ opacity: 0, scale: 0.9 }}
                 animate={{ opacity: 1, scale: 1 }}
@@ -6411,7 +6609,7 @@ Nội dung văn bản:\n` + content,
           )}
           {/* Pick from Library Modal */}
           {isPickingFromLibrary && (
-            <div role="dialog" aria-modal="true" className="fixed inset-0 bg-slate-900/40 backdrop-blur-[2px] z-[120] flex justify-end">
+            <div key="modal-pick-library" role="dialog" aria-modal="true" className="fixed inset-0 bg-slate-900/40 backdrop-blur-[2px] z-[120] flex justify-end">
               <motion.div
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
@@ -6478,9 +6676,9 @@ Nội dung văn bản:\n` + content,
                     <p className="text-[10px] font-semibold text-slate-400 tracking-normal hidden sm:block mb-4 ml-2">
                       Bộ sưu tập
                     </p>
-                    {libraryCollections.map((coll) => (
+                    {libraryCollections.map((coll, idx) => (
                       <button
-                        key={coll.id}
+                        key={getRenderKey("coll", coll, idx)}
                         onClick={() => setActiveLibraryId(coll.id)}
                         className={cn(
                           "w-full sm:w-auto shrink-0 flex items-center gap-3 px-4 py-2 sm:py-3 rounded-md transition-all text-left whitespace-nowrap",
@@ -6526,7 +6724,7 @@ Nội dung văn bản:\n` + content,
 
                           return (
                             <button
-                              key={`${kind}:${doc.id}:${idx}`}
+                              key={getRenderKey("doc-pick", doc, idx)}
                               onClick={() => {
                                 if (pickingMode === "ai") {
                                   toggleDocSelection(doc.id);
@@ -6626,7 +6824,7 @@ Nội dung văn bản:\n` + content,
           )}
           {/* Edit Collection Modal */}
           {editingCollection && (
-            <div role="dialog" aria-modal="true" className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[110] flex items-center justify-center p-4">
+            <div key="modal-edit-collection" role="dialog" aria-modal="true" className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[110] flex items-center justify-center p-4">
               <motion.div
                 initial={{ opacity: 0, scale: 0.9 }}
                 animate={{ opacity: 1, scale: 1 }}
@@ -6686,7 +6884,7 @@ Nội dung văn bản:\n` + content,
           )}
           {/* Task Picker Modal for Documents */}
           {isPickingTaskForDoc && (
-            <div role="dialog" aria-modal="true" className="fixed inset-0 bg-slate-900/80 backdrop-blur-md z-[200] flex items-center justify-center p-4">
+            <div key="modal-pick-task-for-doc" role="dialog" aria-modal="true" className="fixed inset-0 bg-slate-900/80 backdrop-blur-md z-[200] flex items-center justify-center p-4">
               <motion.div
                 initial={{ opacity: 0, scale: 0.95, y: 20 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -6742,9 +6940,9 @@ Nội dung văn bản:\n` + content,
                             .toLowerCase()
                             .includes(taskFilters.search.toLowerCase()),
                       )
-                      .map((task) => (
+                      .map((task, idx) => (
                         <button
-                          key={task.id}
+                          key={getRenderKey("tpick", task, idx)}
                           disabled={task.linkedDocumentIds?.includes(
                             isPickingTaskForDoc.id,
                           )}
@@ -6819,10 +7017,19 @@ Nội dung văn bản:\n` + content,
           )}
         </AnimatePresence>
 
+        <TaskAICreateModal 
+          isOpen={isAiCreateModalOpen}
+          onClose={() => setIsAiCreateModalOpen(false)}
+          onAnalyze={handleAnalyzeTasks}
+          isAnalyzing={isAnalyzing === "tasks"}
+          onSave={saveAiTasks}
+          setTaskFilters={setTaskFilters}
+        />
+
         {/* Document Detail Drawer */}
         <AnimatePresence>
           {previewDocument && (
-            <div role="dialog" aria-modal="true" className="fixed inset-0 z-[250] flex justify-end">
+            <div key="modal-document-preview" role="dialog" aria-modal="true" className="fixed inset-0 z-[250] flex justify-end">
               <motion.div
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
@@ -6887,7 +7094,7 @@ Nội dung văn bản:\n` + content,
                   {["overview", "preview", "ai", "manual", "metadata"].map(
                     (tab) => (
                       <button
-                        key={tab}
+                        key={`doc-tab-${tab}`}
                         onClick={() => setDocumentDetailTab(tab as any)}
                         className={cn(
                           "py-4 text-[10px] font-semibold tracking-normal relative transition-all whitespace-nowrap",
@@ -7285,7 +7492,7 @@ Nội dung văn bản:\n` + content,
                               previewDocument.summary.keyPoints
                             )?.map((point: string, idx: number) => (
                               <div
-                                key={idx}
+                                key={`doc-point-${idx}`}
                                 className="flex gap-4 p-4 bg-white rounded-md border border-slate-100 shadow-sm hover:border-blue-100 transition-colors group"
                               >
                                 <div className="w-6 h-6 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center text-[10px] font-semibold shrink-0 group-hover:bg-[#002D56] group-hover:text-white transition-colors">
@@ -7308,7 +7515,7 @@ Nội dung văn bản:\n` + content,
                                   {previewDocument.summary.actionItems.map(
                                     (item: string, idx: number) => (
                                       <div
-                                        key={idx}
+                                        key={`doc-action-${idx}`}
                                         className="flex gap-3 p-3 bg-emerald-50 rounded-md border border-emerald-100 items-start"
                                       >
                                         <CheckSquare className="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" />
@@ -7332,7 +7539,7 @@ Nội dung văn bản:\n` + content,
                                   {previewDocument.summary.risks.map(
                                     (item: string, idx: number) => (
                                       <div
-                                        key={idx}
+                                        key={`doc-risk-${idx}`}
                                         className="flex gap-3 p-3 bg-rose-50 rounded-md border border-rose-100 items-start"
                                       >
                                         <AlertTriangle className="w-4 h-4 text-rose-500 mt-0.5 shrink-0" />
@@ -7356,7 +7563,7 @@ Nội dung văn bản:\n` + content,
                                   {previewDocument.summary.keywords.map(
                                     (kw: string, kidx: number) => (
                                       <span
-                                        key={kidx}
+                                        key={`doc-kw-${kidx}`}
                                         className="px-3 py-1.5 bg-slate-50 text-slate-500 text-[10px] font-bold rounded-lg border border-slate-100 tracking-tight"
                                       >
                                         #{kw}
@@ -7396,7 +7603,7 @@ Nội dung văn bản:\n` + content,
                                       <div className="flex flex-wrap gap-1">
                                         {vals.map((v, vidx) => (
                                           <span
-                                            key={vidx}
+                                            key={`doc-entity-${key}-${vidx}`}
                                             className="text-[11px] font-bold text-slate-700 bg-white px-2 py-0.5 rounded-md border border-slate-100"
                                           >
                                             {v}
@@ -7646,9 +7853,9 @@ Nội dung văn bản:\n` + content,
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     {documents
                       .filter((d) => matchesSearch(d, librarySearchQuery))
-                      .map((doc) => (
+                      .map((doc, idx) => (
                         <button
-                          key={doc.id}
+                          key={getRenderKey("dpk", doc, idx)}
                           disabled={editingTask.linkedDocumentIds?.includes(
                             doc.id,
                           )}
@@ -7703,7 +7910,7 @@ Nội dung văn bản:\n` + content,
 
         <AnimatePresence>
           {isEditingDocModalOpen && editingDocument && (
-            <div role="dialog" aria-modal="true" className="fixed inset-0 z-[300] flex items-center justify-center p-4">
+            <div key="modal-document-edit-info" role="dialog" aria-modal="true" className="fixed inset-0 z-[300] flex items-center justify-center p-4">
               <motion.div
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
@@ -7849,7 +8056,7 @@ Nội dung văn bản:\n` + content,
 
         <AnimatePresence>
           {documentExplorerFolder && (
-            <div role="dialog" aria-modal="true" className="fixed inset-0 z-[300] flex items-center justify-center p-4">
+            <div key="modal-drive-explorer" role="dialog" aria-modal="true" className="fixed inset-0 z-[300] flex items-center justify-center p-4">
               <motion.div
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
@@ -7901,13 +8108,13 @@ Nội dung văn bản:\n` + content,
                     </div>
                   ) : (
                     <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-                      {explorerFiles.map((file) => {
+                      {explorerFiles.map((file, idx) => {
                         const isFolder =
                           file.mimeType ===
                           "application/vnd.google-apps.folder";
                         return (
                           <div
-                            key={file.id}
+                            key={staticKey("drive-file", file.id, idx)}
                             className="flex flex-col p-4 bg-white border border-slate-100 rounded-md hover:border-blue-200 hover:shadow-sm transition-all group"
                           >
                             <div
@@ -8047,6 +8254,7 @@ Nội dung văn bản:\n` + content,
         <AnimatePresence>
           {isCreateProposalModalOpen && (
             <CreateProposalModal 
+              key="modal-create-proposal"
               userId={user?.uid || ""}
               isOpen={isCreateProposalModalOpen}
               onClose={() => setIsCreateProposalModalOpen(false)}
@@ -8060,7 +8268,7 @@ Nội dung văn bản:\n` + content,
           )}
 
           {confirmDialog && (
-            <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4">
+            <div key="modal-confirm" className="fixed inset-0 z-[9999] flex items-center justify-center p-4">
               <motion.div
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
@@ -8126,7 +8334,8 @@ Nội dung văn bản:\n` + content,
         </AnimatePresence>
       </div>
     </div>
-  );
+  </ErrorBoundary>
+);
 }
 
 export default App;

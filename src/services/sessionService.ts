@@ -92,7 +92,7 @@ export class SessionService {
     const q = query(colRef, orderBy("createdAt", "desc"));
     const snapshot = await getDocs(q);
     
-    return snapshot.docs.map(d => ({ id: d.id, ...d.data() } as ArticleVersion));
+    return snapshot.docs.map(d => ({ ...d.data(), id: d.id } as ArticleVersion));
   }
 
   static async addIllustration(userId: string, sessionId: string, illustration: Omit<SessionIllustration, 'id' | 'createdAt'>): Promise<string> {
@@ -107,7 +107,7 @@ export class SessionService {
   static async getIllustrations(userId: string, sessionId: string): Promise<SessionIllustration[]> {
     const colRef = this.getIllustrationsRef(userId, sessionId);
     const snapshot = await getDocs(colRef);
-    return snapshot.docs.map(d => ({ id: d.id, ...d.data() } as SessionIllustration));
+    return snapshot.docs.map(d => ({ ...d.data(), id: d.id } as SessionIllustration));
   }
 }
 

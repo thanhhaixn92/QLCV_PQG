@@ -13,15 +13,16 @@ import {
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { ProposalExportPreviewContent, ProposalExportStatus } from '../../features/proposals/types';
+import { getRenderKey, staticKey } from '../../utils/listKeys';
 import { cn } from '../../lib/utils';
 
 interface ProposalExportPreviewModalProps {
   isOpen: boolean;
   onClose: () => void;
   preview: ProposalExportPreviewContent | null;
-  onDownload: (fileType: 'docx' | 'pdf' | 'pdf_snapshot') => Promise<void>;
+  onDownload: (fileType: 'docx' | 'pdf') => Promise<void>;
   onRegenerate: () => void;
-  isDownloading: 'docx' | 'pdf' | 'pdf_snapshot' | null;
+  isDownloading: 'docx' | 'pdf' | null;
 }
 
 export const ProposalExportPreviewModal: React.FC<ProposalExportPreviewModalProps> = ({
@@ -119,7 +120,7 @@ export const ProposalExportPreviewModal: React.FC<ProposalExportPreviewModalProp
                       Nội dung theo đề cương
                    </div>
                    {preview.appendices?.map((app, idx) => (
-                      <div key={idx} className="flex items-center gap-2 text-[11px] font-bold text-slate-600">
+                      <div key={getRenderKey("export-appendix", app, idx)} className="flex items-center gap-2 text-[11px] font-bold text-slate-600">
                         <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
                         {app.title}
                       </div>
@@ -155,9 +156,8 @@ export const ProposalExportPreviewModal: React.FC<ProposalExportPreviewModalProp
                    {preview.sections.map((section, idx) => {
                      const isMissing = section.isMissing;
                      const isSection = section.type === 'section';
-                     
                      return (
-                       <div key={idx} className="space-y-4">
+                       <div key={getRenderKey("export-section", section, idx)} className="space-y-4">
                           <h3 className={cn(
                             "font-black text-slate-900 leading-tight",
                             section.level === 1 ? "text-lg uppercase mt-12 mb-6" : 
@@ -175,7 +175,7 @@ export const ProposalExportPreviewModal: React.FC<ProposalExportPreviewModalProp
                             </div>
                           ) : !isSection && (
                             <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100 italic text-slate-400 text-sm">
-                              [Không có nội dung]
+                               [Không có nội dung]
                             </div>
                           )}
                        </div>
@@ -189,7 +189,7 @@ export const ProposalExportPreviewModal: React.FC<ProposalExportPreviewModalProp
                      <h3 className="text-xl font-black text-slate-900 uppercase text-center mb-10">PHỤ LỤC</h3>
                      <div className="space-y-10">
                         {preview.appendices.map((app, idx) => (
-                           <div key={idx} className="space-y-4">
+                           <div key={getRenderKey("export-app-detail", app, idx)} className="space-y-4">
                               <h4 className="font-bold text-slate-900 text-sm italic">
                                 Phụ lục {idx + 1}: {app.title}
                               </h4>
@@ -252,25 +252,6 @@ export const ProposalExportPreviewModal: React.FC<ProposalExportPreviewModalProp
                   <FileDown className="w-4 h-4" />
                 )}
                 XUẤT PDF VĂN BẢN
-              </button>
-
-              <button 
-                onClick={() => onDownload('pdf_snapshot')}
-                disabled={!!isDownloading}
-                className={cn(
-                  "flex items-center gap-3 px-6 py-3.5 rounded-2xl text-xs font-black uppercase tracking-widest transition-all border-2",
-                  isDownloading === 'pdf_snapshot'
-                    ? "border-slate-100 bg-slate-50 text-slate-400"
-                    : "border-red-500/20 text-red-600 hover:bg-red-50"
-                )}
-                title="Tải về bản chụp ảnh nhanh trực tiếp của đề án đề phòng trường hợp khẩn cấp"
-              >
-                {isDownloading === 'pdf_snapshot' ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <FileDown className="w-4 h-4" />
-                )}
-                BẢN CHỤP DỰ PHÒNG (PDF)
               </button>
            </div>
         </div>

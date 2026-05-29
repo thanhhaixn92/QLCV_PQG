@@ -1,9 +1,10 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { FEATURE_FLAGS } from '../config/featureFlags';
 import { motion } from 'motion/react';
-import { X, Save, Edit3, Plus, CheckSquare, Layout, Clock } from 'lucide-react';
+import { X, Save, Edit3, Plus, CheckSquare, Layout, Clock, Trash2, ListChecks } from 'lucide-react';
 import { WorkTask, TASK_CATEGORIES } from '../types';
 import { cn } from '../lib/utils';
+import { getRenderKey, staticKey } from '../utils/listKeys';
 
 interface TaskEditModalProps {
   editingTask: WorkTask;
@@ -24,6 +25,22 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
   documents,
   setIsPickingFromLibrary
 }) => {
+  const isDraft = !editingTask.id || String(editingTask.id).startsWith('draft-task-') || Boolean(editingTask.clientId);
+  const isPersisted = !isDraft && !!editingTask.id;
+
+  useEffect(() => {
+    // [DEBUG] Monitor key-related fields when modal opens
+    console.log("[TASK_MODAL_DEBUG]", {
+      taskId: editingTask?.id,
+      clientId: editingTask?.clientId,
+      isDraft,
+      isPersisted,
+      checklistIds: editingTask?.checklist?.map(item => item.id),
+      linkedDocumentIds: editingTask?.linkedDocumentIds,
+      categoryCode: editingTask?.categoryCode,
+    });
+  }, []);
+
   return (
     <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[100] flex justify-end" onClick={onClose}>
       <motion.div 
@@ -38,11 +55,11 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
         <div className="px-6 py-4 sm:px-8 sm:py-6 bg-slate-50 border-b border-slate-100 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-4">
             <div className="bg-[#002D56] p-2 sm:p-3 rounded-md">
-              {editingTask.id ? <Edit3 className="text-white w-5 h-5" /> : <Plus className="text-white w-5 h-5" />}
+              {isPersisted ? <Edit3 className="text-white w-5 h-5" /> : <Plus className="text-white w-5 h-5" />}
             </div>
             <div>
               <h3 className="text-sm sm:text-lg font-semibold text-slate-800 tracking-tight">
-                {editingTask.id ? 'Chi tiết công việc' : 'Tạo mới công việc'}
+                {isPersisted ? 'Chi tiết công việc' : 'Tạo mới công việc'}
               </h3>
               <p className="text-[10px] text-slate-400 font-bold tracking-normal hidden sm:block">Hoa Tiêu Miền Bắc - Hệ thống Công việc</p>
             </div>
@@ -80,6 +97,71 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
                   />
                 </div>
 
+                {/* Checklist Section */}
+                <div className="space-y-3 pt-2">
+                  <label className="text-xs font-semibold text-slate-600 tracking-normal ml-1 flex items-center gap-2">
+                    <ListChecks className="w-4 h-4" /> Checklist chi tiết ({editingTask.checklist?.length || 0})
+                  </label>
+                  <div className="space-y-2 bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                    {editingTask.checklist?.map((item, idx) => (
+                      <div 
+                        key={getRenderKey("task-checklist", item, idx)}
+                        className="flex items-center gap-3 p-2 hover:bg-slate-50 rounded-lg transition-colors group"
+                      >
+                        <input 
+                          type="checkbox"
+                          checked={item.done}
+                          onChange={e => {
+                            const newChecklist = [...(editingTask.checklist || [])];
+                            newChecklist[idx] = { ...item, done: e.target.checked, updatedAt: Date.now() };
+                            setEditingTask({ ...editingTask, checklist: newChecklist });
+                          }}
+                          className="w-4 h-4 rounded text-[#002D56] border-slate-300 focus:ring-[#002D56]"
+                        />
+                        <input 
+                          type="text"
+                          value={item.title}
+                          onChange={e => {
+                            const newChecklist = [...(editingTask.checklist || [])];
+                            newChecklist[idx] = { ...item, title: e.target.value, updatedAt: Date.now() };
+                            setEditingTask({ ...editingTask, checklist: newChecklist });
+                          }}
+                          className={cn(
+                            "flex-1 bg-transparent border-none p-0 text-sm focus:ring-0",
+                            item.done ? "text-slate-400 line-through" : "text-slate-700 font-medium"
+                          )}
+                        />
+                        <button 
+                          onClick={() => {
+                            const newChecklist = editingTask.checklist?.filter((_, i) => i !== idx);
+                            setEditingTask({ ...editingTask, checklist: newChecklist });
+                          }}
+                          className="p-1 px-2 text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all rounded-md hover:bg-red-50"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                    <button 
+                      onClick={() => {
+                        const newItem = {
+                          id: `checklist-item-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+                          title: '',
+                          done: false,
+                          createdAt: Date.now()
+                        };
+                        setEditingTask({
+                          ...editingTask,
+                          checklist: [...(editingTask.checklist || []), newItem]
+                        });
+                      }}
+                      className="flex items-center gap-2 text-xs font-bold text-[#002D56] hover:text-blue-700 p-2 ml-1 transition-colors"
+                    >
+                      <Plus className="w-4 h-4" /> Thêm mục kiểm tra
+                    </button>
+                  </div>
+                </div>
+
                 {FEATURE_FLAGS.PROPOSAL_MODULE && editingTask.proposalId && (
                   <div className="space-y-3 pt-2">
                     <label className="text-xs font-semibold text-slate-600 tracking-normal ml-1">Đề án liên quan</label>
@@ -97,7 +179,7 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
                       const doc = documents.find(d => d.id === docId);
                       if (!doc) return null;
                       return (
-                        <div key={`${docId}-${idx}`} className="flex items-center gap-2 bg-slate-100/80 border border-slate-200 text-slate-700 px-3 py-2 rounded-lg text-xs font-semibold shadow-sm">
+                        <div key={getRenderKey("task-doc", { id: docId, clientId: docId }, idx)} className="flex items-center gap-2 bg-slate-100/80 border border-slate-200 text-slate-700 px-3 py-2 rounded-lg text-xs font-semibold shadow-sm">
                           <span className="truncate max-w-[150px] sm:max-w-[200px]">{doc.name}</span>
                           <button 
                             onClick={() => setEditingTask({
@@ -141,16 +223,14 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
                     onChange={e => setEditingTask({ ...editingTask, status: e.target.value as any })}
                     className="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/20 transition-all"
                   >
-                    <option value="pending" className="hidden">Cần làm</option>
-                    <option value="todo">Cần làm</option>
-                    <option value="in_progress">Đang xử lý</option>
-                    <option value="doing">Đang làm</option>
-                    <option value="waiting">Chờ phản hồi</option>
-                    <option value="review">Kiểm tra</option>
-                    <option value="done">Hoàn thành</option>
-                    <option value="completed">Đã hoàn thành (Cũ)</option>
-                    <option value="blocked">Vướng mắc</option>
-                    <option value="archived">Lưu trữ</option>
+                    <option key={staticKey("status-opt", "todo-init", 0)} value="todo">Cần làm</option>
+                    <option key={staticKey("status-opt", "in_progress", 1)} value="in_progress">Đang xử lý</option>
+                    <option key={staticKey("status-opt", "doing", 2)} value="doing">Đang làm</option>
+                    <option key={staticKey("status-opt", "waiting", 3)} value="waiting">Chờ phản hồi</option>
+                    <option key={staticKey("status-opt", "review", 4)} value="review">Kiểm tra</option>
+                    <option key={staticKey("status-opt", "done", 5)} value="done">Hoàn thành</option>
+                    <option key={staticKey("status-opt", "blocked", 6)} value="blocked">Vướng mắc</option>
+                    <option key={staticKey("status-opt", "archived", 7)} value="archived">Lưu trữ</option>
                   </select>
                 </div>
 
@@ -161,7 +241,11 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
                     onChange={e => setEditingTask({ ...editingTask, categoryCode: e.target.value })}
                     className="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/20 transition-all"
                   >
-                    {TASK_CATEGORIES.map(c => <option key={c.code} value={c.code}>{c.name}</option>)}
+                    {TASK_CATEGORIES.map((c, cidx) => (
+                      <option key={staticKey("task-cat", c.code, cidx)} value={c.code}>
+                        {c.name}
+                      </option>
+                    ))}
                   </select>
                 </div>
 
@@ -182,10 +266,10 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
                     onChange={e => setEditingTask({ ...editingTask, priority: e.target.value as any })}
                     className="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#002D56]/20 transition-all"
                   >
-                    <option value="low">Thấp</option>
-                    <option value="medium">Trung bình</option>
-                    <option value="high">Cao</option>
-                    <option value="urgent">Khẩn cấp</option>
+                    <option key={staticKey("pri-opt", "low", 0)} value="low">Thấp</option>
+                    <option key={staticKey("pri-opt", "medium", 1)} value="medium">Trung bình</option>
+                    <option key={staticKey("pri-opt", "high", 2)} value="high">Cao</option>
+                    <option key={staticKey("pri-opt", "urgent", 3)} value="urgent">Khẩn cấp</option>
                   </select>
                 </div>
 
@@ -236,7 +320,7 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
         {/* Sticky Footer */}
         <div className="p-4 sm:px-8 sm:py-5 border-t border-slate-200 bg-white flex flex-col sm:flex-row items-center justify-between gap-4 shrink-0 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)] z-10">
           <div className="flex items-center gap-3 w-full sm:w-auto">
-            {editingTask.id && (
+            {isPersisted && (
               <button 
                 onClick={() => {
                   if (window.confirm("Bạn có chắc chắn muốn xóa công việc này?")) {
@@ -260,7 +344,7 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
             className="w-full sm:w-auto bg-[#002D56] text-white px-8 py-3 rounded-lg text-sm font-bold shadow-md hover:shadow-lg hover:bg-blue-900 transition-all active:scale-[0.98] flex items-center justify-center gap-2"
           >
             <Save className="w-5 h-5" />
-            {editingTask.id ? 'Cập nhật công việc' : 'Lưu công việc mới'}
+            {isPersisted ? 'Cập nhật công việc' : 'Lưu công việc mới'}
           </button>
         </div>
       </motion.div>

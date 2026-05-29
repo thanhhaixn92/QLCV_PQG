@@ -4,7 +4,7 @@ import express from "express";
 import cors from "cors";
 import helmet from "helmet";
 import { setupSecurity } from "./server/middleware/security";
-import { aiApiLimiter } from "./server/middleware/rateLimit";
+import { aiApiLimiter, apiLimiter } from "./server/middleware/rateLimit";
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import axios from "axios";
@@ -89,10 +89,10 @@ export interface DocumentSource {
 }
 
 // Initialization constants
-const DEFAULT_TEXT_MODEL = process.env.GEMINI_TEXT_MODEL || "gemini-2.5-flash";
-const DEFAULT_PRO_MODEL = process.env.GEMINI_PRO_MODEL || "gemini-2.5-pro";
+const DEFAULT_TEXT_MODEL = process.env.GEMINI_TEXT_MODEL || "gemini-3.5-flash";
+const DEFAULT_PRO_MODEL = process.env.GEMINI_PRO_MODEL || "gemini-3.1-pro-preview";
 const DEFAULT_FALLBACK_MODEL =
-  process.env.GEMINI_FALLBACK_MODEL || "gemini-2.5-flash-lite";
+  process.env.GEMINI_FALLBACK_MODEL || "gemini-3.5-flash";
 
 // Initialize Firebase Admin
 let targetProjectId = process.env.FIREBASE_PROJECT_ID || "";
@@ -683,6 +683,24 @@ async function logAiUsage(
   }
 }
 
+function getAdminEmails(): string[] {
+  return (process.env.ADMIN_EMAILS || "")
+    .split(",")
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function isBootstrapAdminEmail(email?: string | null): boolean {
+  if (!email) return false;
+  return getAdminEmails().includes(email.toLowerCase());
+}
+
+function getEffectiveUserRole(token: any): "admin" | "user" {
+  if (token?.role === "admin" || token?.admin === true) return "admin";
+  if (isBootstrapAdminEmail(token?.email)) return "admin";
+  return "user";
+}
+
 // Admin Middleware
 async function requireAdmin(
   req: express.Request,
@@ -712,39 +730,25 @@ async function requireAdmin(
         });
     }
 
-    // Check if the user is explicitly set as admin in claims
-    if (token.role !== "admin" && token.admin !== true) {
-      const adminEmails = (process.env.ADMIN_EMAILS || "")
-        .split(",")
-        .map((e) => e.trim().toLowerCase())
-        .filter(Boolean);
+    const effectiveRole = getEffectiveUserRole(token);
+    if (effectiveRole !== "admin") {
+      return res
+        .status(403)
+        .json({
+          success: false,
+          error: "forbidden",
+          message: "Bạn không có quyền quản trị.",
+        });
+    }
 
-      const userEmail = token.email?.toLowerCase();
-      const isBootstrapAdmin = userEmail && adminEmails.includes(userEmail);
-
-      if (!isBootstrapAdmin) {
-        return res
-          .status(403)
-          .json({
-            success: false,
-            error: "forbidden",
-            message: "Bạn không có quyền quản trị.",
-          });
-      } else if (token.role !== "admin") {
-        // Auto-bootstrap setting the claim for the first time
-        const auth =
-          admin.apps.length > 0
-            ? admin.auth()
-            : firebaseApp
-              ? firebaseApp.auth()
-              : null;
-        if (auth) {
-          await auth.setCustomUserClaims(token.uid, { role: "admin" });
-        } else {
-          console.error(
-            "[Admin] Cannot set custom claims: Auth not initialized",
-          );
-        }
+    // Auto-bootstrap: set custom claim if they are bootstrap admin but don't have the role claim yet
+    if (token.role !== "admin" && isBootstrapAdminEmail(token.email)) {
+      if (adminAuth) {
+        await adminAuth.setCustomUserClaims(token.uid, { role: "admin" });
+      } else {
+        console.error(
+          "[Admin] Cannot set custom claims: Auth not initialized",
+        );
       }
     }
 
@@ -788,7 +792,7 @@ async function resolveActiveAIConfig(userId: string | null): Promise<{
   const systemApiKey = getSystemGeminiApiKey();
   const systemConfig = {
     apiKey: systemApiKey,
-    model: normalizeModelName(DEFAULT_TEXT_MODEL, "gemini-2.5-flash"),
+    model: normalizeModelName(DEFAULT_TEXT_MODEL, "gemini-3.5-flash"),
     provider: "gemini",
     source: "system",
   };
@@ -873,6 +877,9 @@ async function assertSafeUrl(rawUrl: string) {
 }
 
 const ALLOWED_MODELS = [
+  "gemini-3.5-flash",
+  "gemini-3.1-pro-preview",
+  "gemini-3.1-flash-lite",
   "gemini-2.5-flash-lite",
   "gemini-2.5-flash",
   "gemini-2.5-pro",
@@ -1480,9 +1487,9 @@ function getDynamicModel(content: string, taskType: string): string {
   );
 
   if (isComplexType || isLong || hasComplexityKeywords) {
-    return normalizeModelName(process.env.GEMINI_PRO_MODEL, "gemini-2.5-pro");
+    return normalizeModelName(process.env.GEMINI_PRO_MODEL, "gemini-3.1-pro-preview");
   }
-  return normalizeModelName(process.env.GEMINI_TEXT_MODEL, "gemini-2.5-flash");
+  return normalizeModelName(process.env.GEMINI_TEXT_MODEL, "gemini-3.5-flash");
 }
 
 function classifyGeminiError(error: any) {
@@ -1617,7 +1624,7 @@ async function analyzeDocumentContent(
     const aiConfig = await resolveActiveAIConfig(userId);
     const ai = getAI(aiConfig.apiKey);
     const model = ai.getGenerativeModel({
-      model: aiConfig.model || "gemini-2.5-flash",
+      model: aiConfig.model || "gemini-3.5-flash",
       systemInstruction:
         "Bạn là chuyên gia phân tích và tóm tắt tài liệu nghiệp vụ hàng hải. Luôn trích xuất dữ kiện khách quan, không bịa đặt.",
     });
@@ -1840,16 +1847,21 @@ async function generateChatWithFallback(
   try {
     return await runModel(primaryModelId);
   } catch (primaryError: any) {
+    const errorMsg = String(primaryError?.message || "").toLowerCase();
     const classified = classifyGeminiError(primaryError);
     const shouldFallback =
       classified.errorType === "high_demand" ||
       classified.errorType === "model_not_found" ||
       classified.errorType === "permission_denied" ||
-      classified.errorType === "quota_exceeded";
+      classified.errorType === "quota_exceeded" ||
+      classified.errorType === "bad_response" ||
+      errorMsg.includes("json") ||
+      errorMsg.includes("validation") ||
+      errorMsg.includes("parse");
 
     let fallbackModel = normalizeModelName(
       DEFAULT_FALLBACK_MODEL,
-      "gemini-1.5-flash",
+      "gemini-3.5-flash",
     );
 
     if (!shouldFallback || fallbackModel === primaryModelId) {
@@ -2177,6 +2189,8 @@ async function startServer() {
     next();
   });
 
+  app.use("/api", apiLimiter);
+
   app.use("/api/ai/", aiApiLimiter);
   app.use("/api/tasks/build", aiApiLimiter);
   app.use("/api/editorial-images/plan", aiApiLimiter);
@@ -2206,7 +2220,7 @@ async function startServer() {
   );
 
   app.get("/api/health", async (req, res) => {
-    console.log("[HEALTH] request");
+    if (process.env.DEBUG_HEALTH === "true") console.log("[HEALTH] request");
     // Attempt verification only if potentially ready
     if (
       !firestoreReady &&
@@ -2265,7 +2279,7 @@ async function startServer() {
       }
     }
 
-    console.log("[HEALTH] response");
+    if (process.env.DEBUG_HEALTH === "true") console.log("[HEALTH] response");
     res.json(healthData);
   });
 
@@ -3350,7 +3364,7 @@ async function startServer() {
         });
       }
 
-      const testModel = req.body.model || aiConfig.model || process.env.GEMINI_TEXT_MODEL || "gemini-2.0-flash";
+      const testModel = req.body.model || aiConfig.model || process.env.GEMINI_TEXT_MODEL || "gemini-3.5-flash";
       
       const ai = getAI(aiConfig.apiKey);
       const model = ai.getGenerativeModel({ model: testModel });
@@ -3407,7 +3421,7 @@ async function startServer() {
       const aiConfig = await resolveActiveAIConfig(userId);
       const textModel =
         aiConfig.model ||
-        normalizeModelName(DEFAULT_TEXT_MODEL, "gemini-2.5-flash");
+        normalizeModelName(DEFAULT_TEXT_MODEL, "gemini-3.5-flash");
 
       let ai;
       try {
@@ -3574,7 +3588,7 @@ async function startServer() {
 
       if (provider === "gemini") {
         const testAI = new GoogleGenerativeAI(apiKey);
-        const testModel = normalizeModelName(model, "gemini-2.5-flash");
+        const testModel = normalizeModelName(model, "gemini-3.5-flash");
         const generativeModel = testAI.getGenerativeModel({ model: testModel });
         const result = await generativeModel.generateContent({
           contents: [
@@ -3669,7 +3683,7 @@ async function startServer() {
 
       // Re-test before saving to be safe
       const testAI = new GoogleGenerativeAI(apiKey);
-      const testModel = normalizeModelName(model, "gemini-2.5-flash");
+      const testModel = normalizeModelName(model, "gemini-3.5-flash");
       const generativeModel = testAI.getGenerativeModel({ model: testModel });
       await generativeModel.generateContent({
         contents: [{ role: "user", parts: [{ text: "OK" }] }],
@@ -3769,6 +3783,15 @@ async function startServer() {
       const token = await getUserTokenFromRequest(req);
       if (!token) return; // Should not happen if userId is set
 
+      const effectiveRole = getEffectiveUserRole(token);
+
+      // Auto-bootstrap set claim if needed
+      if (effectiveRole === "admin" && token.role !== "admin") {
+        if (adminAuth) {
+          await adminAuth.setCustomUserClaims(token.uid, { role: "admin" });
+        }
+      }
+
       if (!firestoreReady) {
         return res.json({
           success: true,
@@ -3777,6 +3800,7 @@ async function startServer() {
             email: token.email || "",
             displayName: token.name || "Người dùng Offline",
             photoURL: token.picture || "",
+            role: effectiveRole,
             createdAt: Date.now(),
             updatedAt: Date.now(),
           },
@@ -3795,7 +3819,9 @@ async function startServer() {
           success: true,
           profile: {
             ...profileSnap.data(),
-            role: token.role || token.admin ? "admin" : "user",
+            uid: token.uid,
+            email: token.email || "",
+            role: effectiveRole,
           },
         });
       }
@@ -3806,7 +3832,7 @@ async function startServer() {
         email: token.email || "",
         displayName: token.name || "",
         photoURL: token.picture || "",
-        role: token.role || token.admin ? "admin" : "user",
+        role: effectiveRole,
         createdAt: Date.now(),
         updatedAt: Date.now(),
       };
@@ -4903,7 +4929,7 @@ TRẢ VỀ DUY NHẤT 1 FILE JSON THEO ĐÚNG CẤU TRÚC SAU (không code block
             ? aiConfig.model
             : normalizeModelName(
                 process.env.GEMINI_PRO_MODEL,
-                "gemini-1.5-pro",
+                "gemini-3.1-pro-preview",
               );
         const model = ai.getGenerativeModel({
           model: usedModel,
@@ -4984,7 +5010,7 @@ TRẢ VỀ DUY NHẤT 1 FILE JSON THEO ĐÚNG CẤU TRÚC SAU (không code block
       const fallbackModels = [
         preferredModel,
         process.env.GEMINI_TEXT_MODEL,
-        "gemini-2.0-flash"
+        "gemini-3.5-flash"
       ].filter(Boolean) as string[];
 
       const uniqueModels = [...new Set(fallbackModels)];
@@ -5552,7 +5578,7 @@ Trả về kết quả dưới định dạng JSON, gồm slide đã được c�
       const textModel =
         aiConfig.model && aiConfig.provider === "gemini"
           ? aiConfig.model
-          : "gemini-2.5-flash";
+          : "gemini-3.5-flash";
       const modelConfig = {
         model: textModel,
         systemInstruction: AI_SAFETY_NOTE,
@@ -5664,7 +5690,7 @@ Chỉ trả về JSON hợp lệ theo schema sau, KHÔNG prefix với markdown:
       const textModel =
         aiConfig.model && aiConfig.provider === "gemini"
           ? aiConfig.model
-          : "gemini-2.5-flash";
+          : "gemini-3.5-flash";
       const modelConfig = {
         model: textModel,
         systemInstruction: AI_SAFETY_NOTE,
@@ -5754,7 +5780,7 @@ Trả về kết quả dưới định dạng JSON:
       const textModel =
         aiConfig.model && aiConfig.provider === "gemini"
           ? aiConfig.model
-          : "gemini-2.5-flash";
+          : "gemini-3.5-flash";
       const modelConfig = {
         model: textModel,
         systemInstruction: AI_SAFETY_NOTE,
@@ -5851,7 +5877,7 @@ Hãy xuất ra MỘT file HTML hoàn chỉnh, không tách rời CSS/JS, để t
       const textModel =
         aiConfig.model && aiConfig.provider === "gemini"
           ? aiConfig.model
-          : "gemini-2.5-pro";
+          : "gemini-3.1-pro-preview";
       const modelConfig = {
         model: textModel,
         systemInstruction: AI_SAFETY_NOTE,
@@ -6447,34 +6473,125 @@ Hãy phản hồi theo ĐÚNG định dạng JSON sau:
 
   // Proposal Statistics for Dashboard Linkage
   app.get("/api/proposals/:proposalId/checklist/stats", async (req, res) => {
-    console.log(`[DEBUG] /checklist/stats ENTER ${req.params.proposalId}`);
-    // Temporarily bypassing DB to test if it fixes the 408 Timeout issue
-    return res.json({ 
-      success: true, 
-      stats: { total: 0, passCount: 0, failCount: 0, needsReviewCount: 0 },
-      isMock: true
-    });
+    try {
+      const userId = await getUserIdFromRequest(req, res);
+      if (!userId || userId === "AUTH_AUDIENCE_MISMATCH" || userId === "AUTH_ERROR") return;
+
+      const { proposalId } = req.params;
+
+      const snapshot = await db
+        .collection("users")
+        .doc(userId)
+        .collection("proposals")
+        .doc(proposalId)
+        .collection("checklistItems")
+        .get();
+
+      let total = 0;
+      let passCount = 0;
+      let failCount = 0;
+      let needsReviewCount = 0;
+
+      snapshot.forEach(doc => {
+        total++;
+        const data = doc.data();
+        const status = data.status || "";
+        if (status === "pass" || status === "completed") {
+          passCount++;
+        } else if (status === "fail" || status === "blocker") {
+          failCount++;
+        } else if (status === "needs_review") {
+          needsReviewCount++;
+        }
+      });
+
+      return res.json({
+        success: true,
+        stats: { total, passCount, failCount, needsReviewCount }
+      });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, message: error.message });
+    }
   });
 
   app.get("/api/proposals/:proposalId/data-requirements/stats", async (req, res) => {
-    console.log(`[DEBUG] /data-req/stats ENTER ${req.params.proposalId}`);
-    // Temporarily bypassing DB to test if it fixes the 408 Timeout issue
-    return res.json({ 
-      success: true, 
-      stats: { total: 0, collectedCount: 0, missingCount: 0, needsVerificationCount: 0 },
-      isMock: true
-    });
+    try {
+      const userId = await getUserIdFromRequest(req, res);
+      if (!userId || userId === "AUTH_AUDIENCE_MISMATCH" || userId === "AUTH_ERROR") return;
+
+      const { proposalId } = req.params;
+
+      const snapshot = await db
+        .collection("users")
+        .doc(userId)
+        .collection("proposals")
+        .doc(proposalId)
+        .collection("dataRequirements")
+        .get();
+
+      let total = 0;
+      let collectedCount = 0;
+      let missingCount = 0;
+      let needsVerificationCount = 0;
+
+      snapshot.forEach(doc => {
+        total++;
+        const data = doc.data();
+        const status = data.status || "";
+        if (status === "collected" || status === "verified") {
+          collectedCount++;
+        } else if (status === "missing") {
+          missingCount++;
+        } else if (status === "needs_verification") {
+          needsVerificationCount++;
+        }
+      });
+
+      return res.json({
+        success: true,
+        stats: { total, collectedCount, missingCount, needsVerificationCount }
+      });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, message: error.message });
+    }
   });
 
   app.get("/api/proposals/:proposalId/tasks/stats", async (req, res) => {
-    console.log(`[DEBUG] /tasks/stats ENTER ${req.params.proposalId}`);
-    // Temporarily bypassing DB to test if it fixes the 408 Timeout issue
-    return res.json({ 
-      success: true, 
-      stats: { total: 0, doneCount: 0, activeCount: 0 }, 
-      activeCount: 0,
-      isMock: true
-    });
+    try {
+      const userId = await getUserIdFromRequest(req, res);
+      if (!userId || userId === "AUTH_AUDIENCE_MISMATCH" || userId === "AUTH_ERROR") return;
+
+      const { proposalId } = req.params;
+
+      const snapshot = await db
+        .collection("users")
+        .doc(userId)
+        .collection("tasks")
+        .where("proposalId", "==", proposalId)
+        .get();
+
+      let total = 0;
+      let doneCount = 0;
+      let activeCount = 0;
+
+      snapshot.forEach(doc => {
+        total++;
+        const data = doc.data();
+        if (data.status === "done") {
+          doneCount++;
+        } else {
+          activeCount++;
+        }
+      });
+
+      return res.json({
+        success: true,
+        stats: { total, doneCount, activeCount },
+        activeCount
+      });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, message: error.message });
+    }
   });
 
   app.post("/api/proposals/:proposalId/data/analyze", async (req, res) => {
@@ -6630,14 +6747,14 @@ Schema bắt buộc:
       const configuredDataModel = process.env.GEMINI_DATA_ANALYSIS_MODEL;
       const allowProForData = process.env.ALLOW_PRO_FOR_DATA_ANALYSIS === "true";
 
-      let modelName = configuredDataModel || process.env.GEMINI_TEXT_MODEL || "gemini-2.5-flash";
+      let modelName = configuredDataModel || process.env.GEMINI_TEXT_MODEL || "gemini-3.5-flash";
 
       if (!allowProForData && /pro|preview/i.test(modelName)) {
-        console.warn("[DATA_ANALYZE] Pro/Preview model is disabled for data analysis. Falling back to gemini-2.5-flash.");
-        modelName = "gemini-2.5-flash";
+        console.warn("[DATA_ANALYZE] Pro/Preview model is disabled for data analysis. Falling back to gemini-3.5-flash.");
+        modelName = "gemini-3.5-flash";
       }
 
-      usedModel = normalizeModelName(modelName, "gemini-2.5-flash");
+      usedModel = normalizeModelName(modelName, "gemini-3.5-flash");
       
       const modelConfig = {
         model: usedModel,
@@ -6850,7 +6967,7 @@ Schema bắt buộc:
       const aiConfig = await resolveActiveAIConfig(userId);
       const ai = getAI(aiConfig.apiKey);
       
-      usedModel = normalizeModelName(DEFAULT_TEXT_MODEL, "gemini-2.5-flash");
+      usedModel = normalizeModelName(DEFAULT_TEXT_MODEL, "gemini-3.5-flash");
 
       const prompt = `Bạn là Trợ lý Biên tập Đề án chuyên nghiệp cho "VMS Navigator".
 Nhiệm vụ: Đọc nội dung file trích xuất và phân bổ nội dung vào các mục đề cương của đề án "${proposal?.name}".
@@ -7098,7 +7215,7 @@ Hãy phản hồi theo ĐÚNG định dạng JSON:
           ? aiConfig.model
           : normalizeModelName(
               process.env.GEMINI_TEXT_MODEL,
-              "gemini-2.5-flash",
+              "gemini-3.5-flash",
             );
       const model = ai.getGenerativeModel({
         model: textModel,
