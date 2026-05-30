@@ -25,7 +25,7 @@ export interface ValidationResult {
 const VALID_PAGE_BREAK_POLICIES: ArticlePageBreakPolicy[] = ["auto", "avoid", "before", "after"];
 const HTML_PATTERN = /<\/?[a-z][\s\S]*>/i;
 const DRAFT_MARKER_PATTERN = /\[(?:\s*Bổ sung\s*:|\s*Cần\s+(?:bổ sung|bổ sung\/kiểm chứng|kiểm chứng)\s*:?|\s*PLACEHOLDER\b|\s*[—-]+\s*(?:ẢNH|PLACEHOLDER)\s*[—-]+\s*)[^\]]*\]/i;
-const DRAFT_MARKER_WARNING = "Bản thảo còn dữ liệu cần bổ sung trước khi xuất bản chính thức.";
+const DRAFT_MARKER_WARNING = "Bản thảo còn dữ liệu cần bổ sung/kiểm chứng trước khi xuất bản chính thức.";
 const LONG_CAPTION_WARNING = "Chú thích ảnh hơi dài, nên rút gọn trước khi xuất bản chính thức.";
 
 function hasHtml(value: string): boolean {
@@ -42,9 +42,9 @@ function isLeadInItem(value: unknown): value is ArticleLeadInItem {
 }
 
 function addDraftMarkerWarning(value: string, path: string, warnings: ArticleValidationIssue[]): void {
+  DRAFT_MARKER_PATTERN.lastIndex = 0;
   if (!DRAFT_MARKER_PATTERN.test(value)) return;
-  if (warnings.some((warning) => warning.message === DRAFT_MARKER_WARNING)) return;
-  warnings.push({ path, message: DRAFT_MARKER_WARNING });
+  warnings.push({ path, message: DRAFT_MARKER_WARNING, detail: `Marker nằm tại ${path}.` });
 }
 
 function maxLengthWarning(path: string, maxChars: number): string {

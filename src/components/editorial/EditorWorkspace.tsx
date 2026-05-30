@@ -61,6 +61,7 @@ export const EditorWorkspace = (props: any) => {
   }, [articleDocument, requestConfirmAsync, setError, toast]);
 
   const [cooldownRemaining, setCooldownRemaining] = React.useState(0);
+  const [exportingFormat, setExportingFormat] = React.useState<null | "pdf" | "docx">(null);
   React.useEffect(() => {
     if (!aiCooldownUntil) {
       setCooldownRemaining(0);
@@ -1209,12 +1210,17 @@ export const EditorWorkspace = (props: any) => {
                                       <>
                                         <button
                                           onClick={async () => {
+                                            if (exportingFormat) return;
+                                            setExportingFormat("pdf");
                                             const audit = auditEditorialPublish(illustrations);
                                             if (audit.suggestedCount > 0) {
                                               const confirmed = await requestConfirmAsync(
                                                 `Còn ${audit.suggestedCount} hình ảnh chưa được duyệt. Bạn có muốn tiếp tục xuất bản PDF mà không có các hình này?`,
                                               );
-                                              if (!confirmed) return;
+                                              if (!confirmed) {
+                                                setExportingFormat(null);
+                                                return;
+                                              }
                                             }
                                             try {
                                               if (!(await validateArticleBeforeExport())) return;
@@ -1258,11 +1264,13 @@ export const EditorWorkspace = (props: any) => {
                                                 });
                                               }
                                             } catch (err: any) {
-                                              console.error("PDF Export Error:", err);
-                                              toast.error("Không tạo được file PDF. Vui lòng kiểm tra console.");
+                                              toast.error(err?.message || "Không tạo được file PDF.");
                                               setError(err.message);
+                                            } finally {
+                                              setExportingFormat(null);
                                             }
                                           }}
+                                          disabled={Boolean(exportingFormat)}
                                           className="flex items-center gap-2 px-3 py-2.5 rounded-md text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100/80 transition-all shrink-0 active:scale-[0.98] shadow-sm disabled:opacity-50"
                                           title="Xuất bản PDF chất lượng cao có thể tìm kiếm và chọn được văn bản"
                                         >
@@ -1275,12 +1283,17 @@ export const EditorWorkspace = (props: any) => {
                                         {(currentTool?.allowWordExport !== false) && (
                                       <button
                                         onClick={async () => {
+                                          if (exportingFormat) return;
+                                          setExportingFormat("docx");
                                           const audit = auditEditorialPublish(illustrations);
                                           if (audit.suggestedCount > 0) {
                                             const confirmed = await requestConfirmAsync(
                                               `Còn ${audit.suggestedCount} hình ảnh chưa được duyệt. Bạn có muốn tiếp tục xuất bản Word mà không có các hình này?`,
                                             );
-                                            if (!confirmed) return;
+                                            if (!confirmed) {
+                                              setExportingFormat(null);
+                                              return;
+                                            }
                                           }
                                           try {
                                             if (!(await validateArticleBeforeExport())) return;
@@ -1318,9 +1331,13 @@ export const EditorWorkspace = (props: any) => {
                                               });
                                             }
                                           } catch (err: any) {
+                                            toast.error(err?.message || "Không tạo được file Word.");
                                             setError(err.message);
+                                          } finally {
+                                            setExportingFormat(null);
                                           }
                                         }}
+                                        disabled={Boolean(exportingFormat)}
                                         className="flex items-center gap-2 px-3 py-2.5 rounded-md text-[10px] font-semibold bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100/80 transition-all shrink-0 active:scale-[0.98] shadow-sm disabled:opacity-50"
                                         title="Xuất Word (DOCX)"
                                       >

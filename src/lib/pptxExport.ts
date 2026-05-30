@@ -2,6 +2,13 @@ import PptxGenJS from "pptxgenjs";
 import { SlideOutlineResult, SlideDeckExportOptions } from "../types/slideOutline";
 import { SLIDE_THEMES } from "./slideThemes";
 
+const VIETNAMESE_SAFE_FONT = "Arial";
+
+const resolveVietnameseFont = (font?: string) => {
+  if (!font) return VIETNAMESE_SAFE_FONT;
+  return /^(Arial|Calibri|Aptos|Tahoma|Verdana)$/i.test(font) ? font : VIETNAMESE_SAFE_FONT;
+};
+
 const sanitizeFileName = (str: string) => {
   // Translate Vietnamese characters to Latin
   const noAccents = str.normalize('NFD')
@@ -52,12 +59,12 @@ export async function exportSlideOutlineToPptx(
   const titleSlide = pptx.addSlide({ masterName: "TITLE_SLIDE" });
   titleSlide.addText(outline.title, {
     x: 1, y: 2, w: 8, h: 1.5,
-    fontSize: 44, color: "FFFFFF", bold: true, align: "center", valign: "middle", fontFace: theme.fonts.heading
+    fontSize: 44, color: "FFFFFF", bold: true, align: "center", valign: "middle", fontFace: resolveVietnameseFont(theme.fonts.heading)
   });
   if (outline.subtitle) {
     titleSlide.addText(outline.subtitle, {
       x: 1, y: 3.5, w: 8, h: 1,
-      fontSize: 24, color: "E2E8F0", align: "center", valign: "top", fontFace: theme.fonts.body
+      fontSize: 24, color: "E2E8F0", align: "center", valign: "top", fontFace: resolveVietnameseFont(theme.fonts.body)
     });
   }
 
@@ -68,7 +75,7 @@ export async function exportSlideOutlineToPptx(
     // Slide Title
     s.addText(slide.title, {
       x: 0.5, y: 0.4, w: 9, h: 0.8,
-      fontSize: 32, color: theme.colors.primary, bold: true, fontFace: theme.fonts.heading
+      fontSize: 32, color: theme.colors.primary, bold: true, fontFace: resolveVietnameseFont(theme.fonts.heading)
     });
 
     // Content logic
@@ -92,7 +99,7 @@ export async function exportSlideOutlineToPptx(
     if (slide.keyMessage) {
         s.addText(slide.keyMessage, {
             x: contentX, y: contentY, w: contentW, h: 0.5,
-            fontSize: 16, color: theme.colors.accent, bold: true, italic: true, fontFace: theme.fonts.body
+            fontSize: 16, color: theme.colors.accent, bold: true, italic: true, fontFace: resolveVietnameseFont(theme.fonts.body)
         });
         contentY += 0.8;
     }
@@ -114,13 +121,13 @@ export async function exportSlideOutlineToPptx(
         s.addText(displayBullets.map(b => ({ text: b })), {
             x: contentX, y: contentY, w: contentW, h: 3.5,
             fontSize: fontSize, color: theme.colors.text, bullet: true,
-            valign: "top", fontFace: theme.fonts.body, lineSpacing: 24
+            valign: "top", fontFace: resolveVietnameseFont(theme.fonts.body), lineSpacing: 24
         });
         
         if (showWarning) {
             s.addText("⚠️ Slide bị giới hạn dòng để đảm bảo tính thẩm mỹ.", {
                 x: contentX, y: 4.8, w: contentW, h: 0.3,
-                fontSize: 12, color: "FF0000", italic: true, fontFace: theme.fonts.body
+                fontSize: 12, color: "FF0000", italic: true, fontFace: resolveVietnameseFont(theme.fonts.body)
             });
         }
     }
@@ -148,7 +155,7 @@ export async function exportSlideOutlineToPptx(
   const closingSlide = pptx.addSlide({ masterName: "TITLE_SLIDE" });
   closingSlide.addText(closingSlideText, {
     x: 1, y: 2, w: 8, h: 2,
-    fontSize: 40, color: "FFFFFF", bold: true, align: "center", valign: "middle", fontFace: theme.fonts.heading
+    fontSize: 40, color: "FFFFFF", bold: true, align: "center", valign: "middle", fontFace: resolveVietnameseFont(theme.fonts.heading)
   });
 
   // Save the presentation
