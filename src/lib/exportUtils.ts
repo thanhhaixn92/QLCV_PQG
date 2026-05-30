@@ -1,7 +1,7 @@
-import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, ImageRun, Table, TableRow, TableCell, BorderStyle, WidthType } from "docx";
+import { Document, Packer, AlignmentType } from "docx";
 import { saveAs } from "file-saver";
 import { normalizeExportDom, normalizeVietnameseText } from "./exportContentNormalizer";
-import { buildExportArticleModel, exportArticleModelToDocx } from "./exportArticleModel";
+import { ARTICLE_EXPORT_STYLE, buildExportArticleModel, cmToTwip, exportArticleModelToDocx } from "./exportArticleModel";
 
 export interface WordFromElementOptions {
   title?: string;
@@ -18,25 +18,60 @@ export async function exportWordFromElement(
     throw new Error(`Không tìm thấy vùng nội dung có ID: "${elementId}" để xuất Word.`);
   }
 
-  const normalizedClone = normalizeExportDom(element);
-  const articleModel = buildExportArticleModel(normalizedClone);
+  let children;
+  try {
+    const normalizedClone = normalizeExportDom(element);
+    const articleModel = buildExportArticleModel(normalizedClone);
 
-  if (articleModel.length === 0) {
-    throw new Error("Nội dung bài viết trống, không thể xuất Word.");
+    if (articleModel.length === 0) {
+      throw new Error("Nội dung bài viết trống, không thể xuất Word.");
+    }
+
+    children = exportArticleModelToDocx(articleModel);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Không thể chuẩn hóa nội dung để xuất Word.";
+    throw new Error(message);
   }
-
-  const children = exportArticleModelToDocx(articleModel);
 
   const doc = new Document({
     creator: "VMS Navigator",
     title: options.title || "Bài viết",
     description: "Tài liệu xuất từ VMS Navigator",
     styles: {
+      paragraphStyles: [
+        {
+          id: "Heading1",
+          name: "Heading 1",
+          basedOn: "Normal",
+          next: "Normal",
+          quickFormat: true,
+          run: { font: ARTICLE_EXPORT_STYLE.font.body, size: ARTICLE_EXPORT_STYLE.sizePt.h1 * 2, bold: true, color: "0F172A", underline: { type: "none" } },
+          paragraph: { spacing: { before: 280, after: 200 }, keepNext: true, keepLines: true, alignment: AlignmentType.CENTER },
+        },
+        {
+          id: "Heading2",
+          name: "Heading 2",
+          basedOn: "Normal",
+          next: "Normal",
+          quickFormat: true,
+          run: { font: ARTICLE_EXPORT_STYLE.font.body, size: ARTICLE_EXPORT_STYLE.sizePt.h2 * 2, bold: true, color: "0F172A", underline: { type: "none" } },
+          paragraph: { spacing: { before: 240, after: 160 }, keepNext: true, keepLines: true },
+        },
+        {
+          id: "Heading3",
+          name: "Heading 3",
+          basedOn: "Normal",
+          next: "Normal",
+          quickFormat: true,
+          run: { font: ARTICLE_EXPORT_STYLE.font.body, size: ARTICLE_EXPORT_STYLE.sizePt.h3 * 2, bold: true, color: "0F172A", underline: { type: "none" } },
+          paragraph: { spacing: { before: 200, after: 120 }, keepNext: true, keepLines: true },
+        },
+      ],
       default: {
         document: {
           run: {
-            font: "Times New Roman",
-            size: 28,
+            font: ARTICLE_EXPORT_STYLE.font.body,
+            size: ARTICLE_EXPORT_STYLE.sizePt.body * 2,
             color: "000000",
           },
         },
@@ -46,46 +81,49 @@ export async function exportWordFromElement(
       config: [
         {
           reference: "vms-bullet",
-          levels: [
-            {
-              level: 0,
-              format: "bullet",
-              text: "\u2022",
-              alignment: AlignmentType.LEFT,
-              style: {
-                paragraph: {
-                  indent: { left: 720, hanging: 360 },
+          levels: Array.from({ length: 5 }, (_, level) => ({
+            level,
+            format: "bullet" as const,
+            text: level % 2 === 0 ? "\u2022" : "○",
+            alignment: AlignmentType.LEFT,
+            style: {
+              paragraph: {
+                indent: {
+                  left: cmToTwip(ARTICLE_EXPORT_STYLE.indentCm.listLeft + level * ARTICLE_EXPORT_STYLE.indentCm.nestedStep),
+                  hanging: cmToTwip(ARTICLE_EXPORT_STYLE.indentCm.listHanging),
                 },
               },
             },
-          ],
+          })),
         },
         {
           reference: "vms-numbered",
-          levels: [
-            {
-              level: 0,
-              format: "decimal",
-              text: "%1.",
-              alignment: AlignmentType.LEFT,
-              style: {
-                paragraph: {
-                  indent: { left: 720, hanging: 360 },
+          levels: Array.from({ length: 5 }, (_, level) => ({
+            level,
+            format: "decimal" as const,
+            text: `%${level + 1}.`,
+            alignment: AlignmentType.LEFT,
+            style: {
+              paragraph: {
+                indent: {
+                  left: cmToTwip(ARTICLE_EXPORT_STYLE.indentCm.listLeft + level * ARTICLE_EXPORT_STYLE.indentCm.nestedStep),
+                  hanging: cmToTwip(ARTICLE_EXPORT_STYLE.indentCm.listHanging),
                 },
               },
             },
-          ],
+          })),
         },
       ],
     },
     sections: [{
       properties: {
         page: {
+          size: { width: cmToTwip(ARTICLE_EXPORT_STYLE.page.widthCm), height: cmToTwip(ARTICLE_EXPORT_STYLE.page.heightCm), orientation: "portrait" },
           margin: {
-            top: "2cm",
-            right: "2cm",
-            bottom: "2cm",
-            left: "2.5cm",
+            top: cmToTwip(ARTICLE_EXPORT_STYLE.page.marginsCm.top),
+            right: cmToTwip(ARTICLE_EXPORT_STYLE.page.marginsCm.right),
+            bottom: cmToTwip(ARTICLE_EXPORT_STYLE.page.marginsCm.bottom),
+            left: cmToTwip(ARTICLE_EXPORT_STYLE.page.marginsCm.left),
           },
         },
       },
@@ -101,6 +139,7 @@ export async function exportWordFromElement(
 export function extractExportTitle(input: string, output: string): { title: string, body: string } {
   let title = "BÀI VIẾT";
   let bodyLines = output.split('\n');
+  const isBulletLike = (line: string) => /^\s*(?:[-*+]\s+|\d+[.)]\s+)/u.test(line);
 
   // Find first H1
   const h1Index = bodyLines.findIndex(l => l.trim().startsWith('# '));
@@ -113,12 +152,12 @@ export function extractExportTitle(input: string, output: string): { title: stri
     }
   } else {
     // Find first non-empty line
-    const nonEmptyIndex = bodyLines.findIndex(l => l.trim().length > 0 && !l.trim().startsWith('!'));
+    const nonEmptyIndex = bodyLines.findIndex(l => l.trim().length > 0 && !l.trim().startsWith('!') && !isBulletLike(l));
     if (nonEmptyIndex !== -1) {
       let rawTitle = bodyLines[nonEmptyIndex];
       rawTitle = rawTitle.replace(/^[#-]+\s*/, '').replace(/\*\*/g, '').replace(/\*/g, '').replace(/!\[.*?\]\(.*?\)/g, '').trim();
       if (rawTitle) {
-        title = rawTitle;
+        title = rawTitle.slice(0, 180);
         bodyLines.splice(nonEmptyIndex, 1);
       }
     }

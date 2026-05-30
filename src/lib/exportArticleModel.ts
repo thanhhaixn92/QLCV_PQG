@@ -1,5 +1,5 @@
 import { normalizeVietnameseUnicode } from "./unicodeNormalizer";
-import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, ImageRun, Table, TableRow, TableCell, BorderStyle, WidthType, FileChild } from "docx";
+import { Paragraph, TextRun, HeadingLevel, AlignmentType, Table, TableRow, TableCell, BorderStyle, WidthType, FileChild, PageBreak } from "docx";
 
 export interface ExportTextRun {
   text: string;
@@ -17,13 +17,58 @@ export interface ExportLeadInItem {
   body: ExportTextRun[];
 }
 
+export interface ExportListItem {
+  runs: ExportTextRun[];
+  level: number;
+}
+
+export const ARTICLE_EXPORT_STYLE = {
+  page: {
+    widthCm: 21,
+    heightCm: 29.7,
+    marginsCm: { top: 3, right: 2, bottom: 3, left: 3.5 },
+  },
+  font: {
+    body: "Times New Roman",
+    pdfFallback: "Roboto",
+  },
+  sizePt: {
+    body: 14,
+    h1: 18,
+    h2: 16,
+    h3: 14,
+    caption: 13,
+    placeholder: 13,
+  },
+  lineHeight: { body: 1.5, heading: 1.25, caption: 1.35 },
+  indentCm: { firstLine: 1, listLeft: 1.25, listHanging: 0.5, nestedStep: 0.65 },
+  figure: { heightPt: 150 },
+} as const;
+
+export function cmToTwip(cm: number): number {
+  return Math.round((cm / 2.54) * 1440);
+}
+
+export function cmToPt(cm: number): number {
+  return Math.round((cm / 2.54) * 72 * 100) / 100;
+}
+
+export function ptToHalfPoints(pt: number): number {
+  return Math.round(pt * 2);
+}
+
+export function lineSpacingTwip(fontSizePt: number = ARTICLE_EXPORT_STYLE.sizePt.body, lineHeight: number = ARTICLE_EXPORT_STYLE.lineHeight.body): number {
+  return Math.round(fontSizePt * lineHeight * 20);
+}
+
 export type ExportArticleBlock =
   | { type: "heading"; level: 1 | 2 | 3; runs: ExportTextRun[] }
   | { type: "paragraph"; runs: ExportTextRun[] }
   | { type: "leadInList"; items: ExportLeadInItem[] }
-  | { type: "figurePlaceholder"; label: string; caption?: string }
+  | { type: "figurePlaceholder"; label: string; caption?: string; note?: string }
   | { type: "kpiTable"; rows: { label: string; value: string }[] }
-  | { type: "list"; ordered: boolean; items: ExportTextRun[][] }
+  | { type: "list"; ordered: boolean; items: ExportListItem[] }
+  | { type: "pageBreak" }
   | { type: "table"; rows: ExportTableCell[][] };
 
 const KPI_LABEL_RE =
@@ -113,7 +158,7 @@ function normalizeRunsForRender(runs: ExportTextRun[]): ExportTextRun[] {
 
 export function isCaptionText(text: string): boolean {
   const value = normalizeComparableText(text);
-  return /^(?:Hình\s*\d*|Ảnh\s*\d*|Chú thích ảnh|Ghi chú hình|Caption)\s*[:.：-]\s+.{2,}$/iu.test(value);
+  return /^(?:Hình\s*\d*|Ảnh\s*\d*|Chú thích ảnh|Ghi chú hình|Caption)\s*[:.：-]\s*.{2,}$/iu.test(value);
 }
 
 export function isFigurePlaceholderText(text: string): boolean {
@@ -179,12 +224,14 @@ function cleanFigureCaption(caption: string | undefined, label: string | undefin
 function createFigurePlaceholderBlock(
   label?: string,
   caption?: string,
+  note?: string,
 ): Extract<ExportArticleBlock, { type: "figurePlaceholder" }> {
   const normalizedLabel = normalizeDisplayText(label || "") || FIGURE_PLACEHOLDER_LABEL;
   return {
     type: "figurePlaceholder",
     label: normalizedLabel,
     caption: cleanFigureCaption(caption, normalizedLabel),
+    note: normalizeDisplayText(note || "") || undefined,
   };
 }
 
@@ -221,12 +268,30 @@ function tableFromElement(table: HTMLTableElement): ExportArticleBlock | null {
   return rows.length ? { type: "table", rows } : null;
 }
 
-function listFromElement(list: HTMLElement): ExportArticleBlock | null {
+function listFromElement(list: HTMLElement, level = 0): ExportArticleBlock | null {
   const ordered = list.tagName.toLowerCase() === "ol";
-  const items = Array.from(list.children)
+  const items: ExportListItem[] = [];
+
+  Array.from(list.children)
     .filter((child) => child.tagName.toLowerCase() === "li")
-    .map((li) => normalizeRunsForRender(renderRunsFromNode(li)))
-    .filter((runs) => runsToPlainText(runs).length > 0);
+    .forEach((li) => {
+      const directRuns = Array.from(li.childNodes)
+        .filter((node) => {
+          if (node.nodeType !== Node.ELEMENT_NODE) return true;
+          const tag = (node as HTMLElement).tagName.toLowerCase();
+          return tag !== "ul" && tag !== "ol";
+        })
+        .flatMap((node) => renderRunsFromNode(node));
+      const runs = normalizeRunsForRender(directRuns);
+      if (runsToPlainText(runs).length > 0) items.push({ runs, level });
+
+      Array.from(li.children)
+        .filter((child) => ["ul", "ol"].includes(child.tagName.toLowerCase()))
+        .forEach((child) => {
+          const nested = listFromElement(child as HTMLElement, Math.min(level + 1, 4));
+          if (nested?.type === "list") items.push(...nested.items);
+        });
+    });
 
   return items.length ? { type: "list", ordered, items } : null;
 }
@@ -324,7 +389,13 @@ function appendElementToModel(
   const text = normalizeComparableText(el.textContent || "");
   const className = el.className?.toString() || "";
 
-  if (!text && tag !== "table" && tag !== "ul" && tag !== "ol") return;
+  if (!text && tag !== "table" && tag !== "ul" && tag !== "ol" && tag !== "img" && !className.includes("page-break")) return;
+
+  if (className.includes("a4-block-page-break") || className.includes("page-break") || el.dataset.exportPageBreak === "true") {
+    pushPendingKpis(blocks, pendingKpis);
+    blocks.push({ type: "pageBreak" });
+    return;
+  }
 
   if (tag === "h1" || tag === "h2" || tag === "h3") {
     pushPendingKpis(blocks, pendingKpis);
@@ -353,7 +424,8 @@ function appendElementToModel(
         .join(" "),
     );
 
-    blocks.push(createFigurePlaceholderBlock(boxText, caption));
+    const note = normalizeDisplayText(el.querySelector("[data-figure-note], .a4-figure-note, .figure-note")?.textContent || "");
+    blocks.push(createFigurePlaceholderBlock(boxText, caption, note));
     return;
   }
 
@@ -365,7 +437,9 @@ function appendElementToModel(
   }
 
   if (tag === "img") {
-    // V4.2 intentionally does not embed real images. Placeholder boxes are the target.
+    pushPendingKpis(blocks, pendingKpis);
+    const alt = normalizeDisplayText(el.getAttribute("alt") || el.getAttribute("title") || "");
+    blocks.push(createFigurePlaceholderBlock(alt || FIGURE_PLACEHOLDER_LABEL));
     return;
   }
 
@@ -386,7 +460,8 @@ function appendElementToModel(
           .map((child) => child.textContent || "")
           .join(" "),
       );
-      blocks.push(createFigurePlaceholderBlock(boxText || text, nestedCaption));
+      const note = normalizeDisplayText(el.querySelector("[data-figure-note], .a4-figure-note, .figure-note")?.textContent || "");
+      blocks.push(createFigurePlaceholderBlock(boxText || text, nestedCaption, note));
       return;
     }
 
@@ -505,7 +580,7 @@ function normalizeArticleBlocks(blocks: ExportArticleBlock[]): ExportArticleBloc
       if (leadInItems.length === numberedItems.length) {
         normalized.push({ type: "leadInList", items: leadInItems });
       } else {
-        normalized.push({ type: "list", ordered: true, items: numberedItems });
+        normalized.push({ type: "list", ordered: true, items: numberedItems.map((runs) => ({ runs, level: 0 })) });
       }
       index = cursor - 1;
       continue;
@@ -518,20 +593,23 @@ function normalizeArticleBlocks(blocks: ExportArticleBlock[]): ExportArticleBloc
 }
 
 function pdfRuns(runs: ExportTextRun[]): any[] {
-  return runs.map((run) => ({
-    text: run.text,
-    bold: run.bold,
-    italics: run.italics,
-  }));
+  return runs
+    .filter((run) => typeof run.text === "string" && run.text.length > 0)
+    .map((run) => ({
+      text: run.text,
+      bold: run.bold,
+      italics: run.italics,
+    }));
 }
 
 function pdfFigure(block: Extract<ExportArticleBlock, { type: "figurePlaceholder" }>): any[] {
   const caption = cleanFigureCaption(block.caption, block.label);
   const content: any[] = [
     {
+      unbreakable: true,
       table: {
         widths: ["*"],
-        heights: [160],
+        heights: [ARTICLE_EXPORT_STYLE.figure.heightPt],
         body: [
           [
             {
@@ -575,6 +653,7 @@ export function exportArticleModelToPdfmake(blocks: ExportArticleBlock[]): any[]
       content.push({
         text: pdfRuns(block.runs),
         style: `h${block.level}`,
+        headlineLevel: block.level,
       });
       return;
     }
@@ -627,11 +706,17 @@ export function exportArticleModelToPdfmake(blocks: ExportArticleBlock[]): any[]
     if (block.type === "list") {
       content.push({
         [block.ordered ? "ol" : "ul"]: block.items.map((item) => ({
-          text: pdfRuns(item),
+          text: pdfRuns(item.runs),
           style: "listItem",
+          margin: [item.level * cmToPt(ARTICLE_EXPORT_STYLE.indentCm.nestedStep), 0, 0, 3],
         })),
-        margin: [16, 4, 0, 12],
+        margin: [cmToPt(ARTICLE_EXPORT_STYLE.indentCm.listLeft), 4, 0, 12],
       });
+      return;
+    }
+
+    if (block.type === "pageBreak") {
+      content.push({ text: "", pageBreak: "before", margin: [0, 0, 0, 0] });
       return;
     }
 
@@ -656,17 +741,21 @@ export function exportArticleModelToPdfmake(blocks: ExportArticleBlock[]): any[]
   return content;
 }
 
-function docxRuns(runs: ExportTextRun[]): TextRun[] {
-  return runs.map(
-    (run) =>
-      new TextRun({
-        text: run.text,
-        bold: run.bold,
-        italics: run.italics,
-        font: "Times New Roman",
-        size: 28,
-      }),
-  );
+function docxRuns(runs: ExportTextRun[], sizePt: number = ARTICLE_EXPORT_STYLE.sizePt.body): TextRun[] {
+  const output = runs
+    .filter((run) => typeof run.text === "string" && run.text.length > 0)
+    .map(
+      (run) =>
+        new TextRun({
+          text: run.text,
+          bold: run.bold,
+          italics: run.italics,
+          font: ARTICLE_EXPORT_STYLE.font.body,
+          size: ptToHalfPoints(sizePt),
+        }),
+    );
+
+  return output.length ? output : [new TextRun({ text: "", font: ARTICLE_EXPORT_STYLE.font.body, size: ptToHalfPoints(sizePt) })];
 }
 
 export type ExportDocxBlock = FileChild;
@@ -678,14 +767,16 @@ export function exportArticleModelToDocx(blocks: ExportArticleBlock[]): ExportDo
     if (block.type === "heading") {
       children.push(
         new Paragraph({
-          children: docxRuns(block.runs),
+          children: docxRuns(block.runs, block.level === 1 ? ARTICLE_EXPORT_STYLE.sizePt.h1 : block.level === 2 ? ARTICLE_EXPORT_STYLE.sizePt.h2 : ARTICLE_EXPORT_STYLE.sizePt.h3),
           heading:
             block.level === 1
               ? HeadingLevel.HEADING_1
               : block.level === 2
                 ? HeadingLevel.HEADING_2
                 : HeadingLevel.HEADING_3,
-          spacing: { before: 280, after: 240, line: 360 },
+          spacing: { before: 280, after: 200, line: lineSpacingTwip(ARTICLE_EXPORT_STYLE.sizePt.body) },
+          keepNext: true,
+          keepLines: true,
         }),
       );
       return;
@@ -695,14 +786,14 @@ export function exportArticleModelToDocx(blocks: ExportArticleBlock[]): ExportDo
       const isCaption = block.runs.length > 0 && block.runs.every((run) => run.italics);
       children.push(
         new Paragraph({
-          children: docxRuns(block.runs),
+          children: docxRuns(block.runs, isCaption ? ARTICLE_EXPORT_STYLE.sizePt.caption : ARTICLE_EXPORT_STYLE.sizePt.body),
           alignment: isCaption ? AlignmentType.CENTER : AlignmentType.JUSTIFIED,
           spacing: {
-            line: 360,
+            line: lineSpacingTwip(),
             before: isCaption ? 60 : 0,
             after: isCaption ? 240 : 220,
           },
-          indent: isCaption ? undefined : { firstLine: 567 },
+          indent: isCaption ? undefined : { firstLine: cmToTwip(ARTICLE_EXPORT_STYLE.indentCm.firstLine) },
         }),
       );
       return;
@@ -716,14 +807,14 @@ export function exportArticleModelToDocx(blocks: ExportArticleBlock[]): ExportDo
               new TextRun({
                 text: `${item.label}: `,
                 bold: true,
-                font: "Times New Roman",
-                size: 28,
+                font: ARTICLE_EXPORT_STYLE.font.body,
+                size: ptToHalfPoints(ARTICLE_EXPORT_STYLE.sizePt.body),
               }),
               ...docxRuns(item.body),
             ],
             alignment: AlignmentType.JUSTIFIED,
-            spacing: { line: 360, after: 180 },
-            indent: { firstLine: 567 },
+            spacing: { line: lineSpacingTwip(), after: 180 },
+            indent: { firstLine: cmToTwip(ARTICLE_EXPORT_STYLE.indentCm.firstLine) },
           }),
         );
       });
@@ -744,14 +835,15 @@ export function exportArticleModelToDocx(blocks: ExportArticleBlock[]): ExportDo
                       children: [
                         new TextRun({
                           text: figurePlaceholderBoxText(),
-                          font: "Times New Roman",
-                          size: 26,
+                          font: ARTICLE_EXPORT_STYLE.font.body,
+                          size: ptToHalfPoints(ARTICLE_EXPORT_STYLE.sizePt.placeholder),
                           bold: true,
                           color: "334155",
                         }),
                       ],
                       alignment: AlignmentType.CENTER,
-                      spacing: { before: 360, after: 360, line: 320 },
+                      spacing: { before: 340, after: 340, line: lineSpacingTwip(ARTICLE_EXPORT_STYLE.sizePt.placeholder, 1.2) },
+                      keepLines: true,
                     }),
                   ],
                   shading: { fill: "F8FAFC" },
@@ -775,17 +867,28 @@ export function exportArticleModelToDocx(blocks: ExportArticleBlock[]): ExportDo
             children: [
               new TextRun({
                 text: caption,
-                font: "Times New Roman",
-                size: 22,
+                font: ARTICLE_EXPORT_STYLE.font.body,
+                size: ptToHalfPoints(ARTICLE_EXPORT_STYLE.sizePt.caption),
                 italics: true,
                 color: "475569",
               }),
             ],
             alignment: AlignmentType.CENTER,
-            spacing: { before: 80, after: 240, line: 320 },
+            spacing: { before: 80, after: 240, line: lineSpacingTwip(ARTICLE_EXPORT_STYLE.sizePt.caption, ARTICLE_EXPORT_STYLE.lineHeight.caption) },
+            keepLines: true,
           }),
         );
-      } else {
+      }
+
+      if (block.note) {
+        children.push(
+          new Paragraph({
+            children: [new TextRun({ text: block.note, font: ARTICLE_EXPORT_STYLE.font.body, size: ptToHalfPoints(12), italics: true, color: "64748B" })],
+            alignment: AlignmentType.CENTER,
+            spacing: { before: 0, after: 180, line: lineSpacingTwip(12, 1.25) },
+          }),
+        );
+      } else if (!caption) {
         children.push(new Paragraph({ spacing: { after: 220 } }));
       }
       return;
@@ -836,16 +939,22 @@ export function exportArticleModelToDocx(blocks: ExportArticleBlock[]): ExportDo
       block.items.forEach((item) => {
         children.push(
           new Paragraph({
-            children: docxRuns(item),
+            children: docxRuns(item.runs),
             numbering: {
               reference: block.ordered ? "vms-numbered" : "vms-bullet",
-              level: 0,
+              level: item.level,
             },
             alignment: AlignmentType.JUSTIFIED,
-            spacing: { after: 100, line: 360 },
+            spacing: { after: 100, line: lineSpacingTwip() },
+            indent: { left: cmToTwip(ARTICLE_EXPORT_STYLE.indentCm.listLeft + item.level * ARTICLE_EXPORT_STYLE.indentCm.nestedStep), hanging: cmToTwip(ARTICLE_EXPORT_STYLE.indentCm.listHanging) },
           }),
         );
       });
+      return;
+    }
+
+    if (block.type === "pageBreak") {
+      children.push(new Paragraph({ children: [new PageBreak()] }));
       return;
     }
 

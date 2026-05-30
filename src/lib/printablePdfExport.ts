@@ -4,7 +4,7 @@
  */
 
 import { normalizeExportDom, validateExportContent } from "./exportContentNormalizer";
-import { buildExportArticleModel, exportArticleModelToPdfmake } from "./exportArticleModel";
+import { ARTICLE_EXPORT_STYLE, buildExportArticleModel, cmToPt, exportArticleModelToPdfmake } from "./exportArticleModel";
 
 async function getPdfMakeClient() {
   const pdfMakeModule = await import("pdfmake/build/pdfmake");
@@ -68,26 +68,39 @@ export async function exportPrintablePdfFromElement(elementId: string, options: 
     options.onValidationWarning(warnings[0].message);
   }
 
-  // Normalize DOM on a clone only.
-  const normalizedClone = normalizeExportDom(element);
+  let pdfmakeContent;
+  try {
+    // Normalize DOM on a clone only.
+    const normalizedClone = normalizeExportDom(element);
 
-  const articleModel = buildExportArticleModel(normalizedClone);
-  if (articleModel.length === 0) {
-    throw new Error("Nội dung bài viết trống sau khi chuẩn hóa, không thể xuất PDF.");
+    const articleModel = buildExportArticleModel(normalizedClone);
+    if (articleModel.length === 0) {
+      throw new Error("Nội dung bài viết trống sau khi chuẩn hóa, không thể xuất PDF.");
+    }
+    pdfmakeContent = exportArticleModelToPdfmake(articleModel);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Không thể chuẩn hóa nội dung để xuất PDF.";
+    if (options.onValidationError) options.onValidationError(message);
+    throw new Error(message);
   }
-  const pdfmakeContent = exportArticleModelToPdfmake(articleModel);
 
   // Prepare document definition.
   const docDefinition = {
     content: pdfmakeContent,
     defaultStyle: {
-      font: 'Roboto',
-      fontSize: 13,
-      lineHeight: 1.45,
+      font: ARTICLE_EXPORT_STYLE.font.pdfFallback,
+      fontSize: ARTICLE_EXPORT_STYLE.sizePt.body,
+      lineHeight: ARTICLE_EXPORT_STYLE.lineHeight.body,
       color: '#000000',
     },
     pageSize: 'A4',
-    pageMargins: [70, 56, 42, 56] as any, // [left, top, right, bottom]
+    pageOrientation: 'portrait',
+    pageMargins: [
+      cmToPt(ARTICLE_EXPORT_STYLE.page.marginsCm.left),
+      cmToPt(ARTICLE_EXPORT_STYLE.page.marginsCm.top),
+      cmToPt(ARTICLE_EXPORT_STYLE.page.marginsCm.right),
+      cmToPt(ARTICLE_EXPORT_STYLE.page.marginsCm.bottom),
+    ] as any, // [left, top, right, bottom]
     footer: function(currentPage: number, pageCount: number) {
       return {
         text: `Trang ${currentPage} / ${pageCount}`,
@@ -98,12 +111,17 @@ export async function exportPrintablePdfFromElement(elementId: string, options: 
       };
     },
     styles: {
-      h1: { fontSize: 16, bold: true, alignment: 'center', margin: [0, 12, 0, 16], color: '#002D56' },
-      h2: { fontSize: 14, bold: true, alignment: 'left', margin: [0, 14, 0, 6], color: '#002D56' },
-      h3: { fontSize: 13, bold: true, alignment: 'left', margin: [0, 10, 0, 5] },
-      paragraph: { fontSize: 13, margin: [0, 4, 0, 14], alignment: 'justify', lineHeight: 1.45 },
-      listItem: { fontSize: 13, margin: [0, 2, 0, 6], alignment: 'justify', lineHeight: 1.45 },
-      caption: { fontSize: 10, italics: true, color: '#475569', alignment: 'center', margin: [0, 0, 0, 12] },
+      h1: { fontSize: ARTICLE_EXPORT_STYLE.sizePt.h1, bold: true, alignment: 'center', margin: [0, 12, 0, 16], color: '#0F172A', lineHeight: ARTICLE_EXPORT_STYLE.lineHeight.heading },
+      h2: { fontSize: ARTICLE_EXPORT_STYLE.sizePt.h2, bold: true, alignment: 'left', margin: [0, 14, 0, 6], color: '#0F172A', lineHeight: ARTICLE_EXPORT_STYLE.lineHeight.heading },
+      h3: { fontSize: ARTICLE_EXPORT_STYLE.sizePt.h3, bold: true, alignment: 'left', margin: [0, 10, 0, 5], color: '#0F172A', lineHeight: ARTICLE_EXPORT_STYLE.lineHeight.heading },
+      paragraph: { fontSize: ARTICLE_EXPORT_STYLE.sizePt.body, margin: [0, 4, 0, 12], alignment: 'justify', lineHeight: ARTICLE_EXPORT_STYLE.lineHeight.body },
+      listItem: { fontSize: ARTICLE_EXPORT_STYLE.sizePt.body, margin: [0, 2, 0, 6], alignment: 'justify', lineHeight: ARTICLE_EXPORT_STYLE.lineHeight.body },
+      caption: { fontSize: ARTICLE_EXPORT_STYLE.sizePt.caption, italics: true, color: '#475569', alignment: 'center', margin: [0, 0, 0, 12], lineHeight: ARTICLE_EXPORT_STYLE.lineHeight.caption },
+    },
+    pageBreakBefore: function(currentNode: any, followingNodesOnPage: any[]) {
+      const styles = Array.isArray(currentNode?.style) ? currentNode.style : [currentNode?.style].filter(Boolean);
+      const isHeading = Boolean(currentNode?.headlineLevel) || styles.some((style: string) => /^h[1-3]$/.test(style));
+      return isHeading && followingNodesOnPage.length === 0;
     },
     info: {
       title: options.title || 'Tai_Lieu_Xuat_Ban'
@@ -115,7 +133,6 @@ export async function exportPrintablePdfFromElement(elementId: string, options: 
     const { createPdf } = await getPdfMakeClient();
     createPdf(docDefinition).download(`${options.title || 'Tai_Lieu_Xuat_Ban'}.pdf`);
   } catch (err) {
-    console.error("pdfmake error:", err);
     throw new Error("Không thể khởi tạo trình xuất PDF. Vui lòng thử lại hoặc xuất Word.");
   }
 }

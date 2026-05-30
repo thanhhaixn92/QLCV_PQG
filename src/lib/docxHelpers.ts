@@ -1,10 +1,11 @@
-import { Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell, WidthType, AlignmentType, BorderStyle } from "docx";
+import { Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell, WidthType, AlignmentType, BorderStyle, PageBreak } from "docx";
+import { ARTICLE_EXPORT_STYLE, cmToTwip, lineSpacingTwip, ptToHalfPoints } from "./exportArticleModel";
 
 export const parseTextRuns = (text: string): TextRun[] => {
   const textWithoutImages = text.replace(/!\[.*?\]\(.*?\)/g, '');
   const tokenRegex = /(\*\*.*?\*\*|\*[^*]+\*|_{1,2}[^_]+_{1,2})/g;
   const parts = textWithoutImages.split(tokenRegex);
-  
+
   return parts.reduce((acc: TextRun[], part) => {
     if (!part) return acc;
     let bold = false;
@@ -26,12 +27,12 @@ export const parseTextRuns = (text: string): TextRun[] => {
     }
 
     if (cleanText) {
-      acc.push(new TextRun({ 
-        text: cleanText, 
+      acc.push(new TextRun({
+        text: cleanText,
         bold,
         italics,
-        font: "Times New Roman", 
-        size: 28 
+        font: ARTICLE_EXPORT_STYLE.font.body,
+        size: ptToHalfPoints(ARTICLE_EXPORT_STYLE.sizePt.body)
       }));
     }
     return acc;
@@ -39,8 +40,13 @@ export const parseTextRuns = (text: string): TextRun[] => {
 };
 
 export const processDocxLine = (line: string): Paragraph | null => {
+  const leadingWhitespace = line.match(/^[\t ]*/)?.[0] || "";
+  const level = Math.min(4, Math.floor(leadingWhitespace.replace(/\t/g, "  ").length / 2));
   const trimmed = line.trim();
   if (!trimmed) return null;
+  if (/^---\s*page-break\s*---$/i.test(trimmed) || /^\[\s*page-break\s*\]$/i.test(trimmed)) {
+    return new Paragraph({ children: [new PageBreak()] });
+  }
 
   let heading: any = undefined;
   let text = trimmed;
@@ -71,17 +77,21 @@ export const processDocxLine = (line: string): Paragraph | null => {
     children: textRuns,
     heading,
     alignment: AlignmentType.JUSTIFIED,
-    spacing: { line: 360, before: heading ? 400 : 0, after: isBullet || isNumbered ? 100 : 200 }
+    spacing: { line: lineSpacingTwip(), before: heading ? 320 : 0, after: isBullet || isNumbered ? 100 : 200 },
+    keepNext: Boolean(heading),
+    keepLines: Boolean(heading)
   };
 
   if (!heading && !isBullet && !isNumbered && !text.startsWith('Tên báo cáo:') && !text.startsWith('THÔNG BÁO')) {
-      pOptions.indent = { firstLine: 567 }; // 1cm approx
+      pOptions.indent = { firstLine: cmToTwip(ARTICLE_EXPORT_STYLE.indentCm.firstLine) };
   }
 
   if (isBullet) {
-    pOptions.numbering = { reference: "vms-bullet", level: 0 };
+    pOptions.numbering = { reference: "vms-bullet", level };
+    pOptions.indent = { left: cmToTwip(ARTICLE_EXPORT_STYLE.indentCm.listLeft + level * ARTICLE_EXPORT_STYLE.indentCm.nestedStep), hanging: cmToTwip(ARTICLE_EXPORT_STYLE.indentCm.listHanging) };
   } else if (isNumbered) {
-    pOptions.numbering = { reference: "vms-numbered", level: 0 };
+    pOptions.numbering = { reference: "vms-numbered", level };
+    pOptions.indent = { left: cmToTwip(ARTICLE_EXPORT_STYLE.indentCm.listLeft + level * ARTICLE_EXPORT_STYLE.indentCm.nestedStep), hanging: cmToTwip(ARTICLE_EXPORT_STYLE.indentCm.listHanging) };
   }
 
   return new Paragraph(pOptions);
@@ -90,31 +100,31 @@ export const processDocxLine = (line: string): Paragraph | null => {
 export const processMarkdownToDocxChildren = (content: string): any[] => {
   const children: any[] = [];
   const paragraphs = content.split(/\n\s*\n/);
-  
+
   for (let i = 0; i < paragraphs.length; i++) {
     const p = paragraphs[i].trim();
     if (!p) continue;
-    
+
     if (p) {
       const lines = p.split('\n').filter(l => l.trim());
       const looksLikeTable = lines.length >= 2 && lines[1].includes('|') && lines[1].includes('-');
-      
+
       if (looksLikeTable) {
         try {
           const tableRows = lines.filter((_, idx) => idx !== 1).map((line, rIndex) => {
             const cells = line.split('|').map(c => c.trim());
             if (cells.length > 0 && cells[0] === '') cells.shift();
             if (cells.length > 0 && cells[cells.length - 1] === '') cells.pop();
-            
+
             return new TableRow({
               children: cells.map(c => new TableCell({
                 children: [
-                  new Paragraph({ 
-                    children: [new TextRun({ 
-                      text: c.replace(/\*\*/g, ""), 
-                      bold: rIndex === 0, 
-                      font: "Times New Roman", 
-                      size: 28 
+                  new Paragraph({
+                    children: [new TextRun({
+                      text: c.replace(/\*\*/g, ""),
+                      bold: rIndex === 0,
+                      font: ARTICLE_EXPORT_STYLE.font.body,
+                      size: ptToHalfPoints(ARTICLE_EXPORT_STYLE.sizePt.body)
                     })],
                     alignment: rIndex === 0 ? AlignmentType.CENTER : AlignmentType.LEFT
                   })
@@ -124,7 +134,7 @@ export const processMarkdownToDocxChildren = (content: string): any[] => {
               }))
             });
           });
-          
+
           children.push(new Table({
             rows: tableRows,
             width: { size: 100, type: WidthType.PERCENTAGE },

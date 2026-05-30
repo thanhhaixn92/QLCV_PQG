@@ -11,6 +11,7 @@ import {
 } from "../features/proposals/types";
 import { jsPDF } from "jspdf";
 import { normalizeVietnameseText } from "./exportContentNormalizer";
+import { ARTICLE_EXPORT_STYLE, cmToTwip } from "./exportArticleModel";
 import { processMarkdownToDocxChildren } from "./docxHelpers";
 
 /**
@@ -213,19 +214,78 @@ export async function exportProposalToWord(
     creator: "VMS Navigator",
     title: proposal.name,
     styles: {
+      paragraphStyles: [
+        {
+          id: "Heading1",
+          name: "Heading 1",
+          basedOn: "Normal",
+          next: "Normal",
+          quickFormat: true,
+          run: { font: ARTICLE_EXPORT_STYLE.font.body, size: ARTICLE_EXPORT_STYLE.sizePt.h1 * 2, bold: true, color: "0F172A", underline: { type: "none" } },
+          paragraph: { spacing: { before: 280, after: 200 }, keepNext: true, keepLines: true, alignment: AlignmentType.CENTER },
+        },
+        {
+          id: "Heading2",
+          name: "Heading 2",
+          basedOn: "Normal",
+          next: "Normal",
+          quickFormat: true,
+          run: { font: ARTICLE_EXPORT_STYLE.font.body, size: ARTICLE_EXPORT_STYLE.sizePt.h2 * 2, bold: true, color: "0F172A", underline: { type: "none" } },
+          paragraph: { spacing: { before: 240, after: 160 }, keepNext: true, keepLines: true },
+        },
+        {
+          id: "Heading3",
+          name: "Heading 3",
+          basedOn: "Normal",
+          next: "Normal",
+          quickFormat: true,
+          run: { font: ARTICLE_EXPORT_STYLE.font.body, size: ARTICLE_EXPORT_STYLE.sizePt.h3 * 2, bold: true, color: "0F172A", underline: { type: "none" } },
+          paragraph: { spacing: { before: 200, after: 120 }, keepNext: true, keepLines: true },
+        },
+      ],
       default: {
         document: {
           run: {
-            font: "Times New Roman",
-            size: 28,
+            font: ARTICLE_EXPORT_STYLE.font.body,
+            size: ARTICLE_EXPORT_STYLE.sizePt.body * 2,
           },
         },
       },
     },
+    numbering: {
+      config: [
+        {
+          reference: "vms-bullet",
+          levels: Array.from({ length: 5 }, (_, level) => ({
+            level,
+            format: "bullet" as const,
+            text: level % 2 === 0 ? "\u2022" : "○",
+            alignment: AlignmentType.LEFT,
+            style: { paragraph: { indent: { left: cmToTwip(ARTICLE_EXPORT_STYLE.indentCm.listLeft + level * ARTICLE_EXPORT_STYLE.indentCm.nestedStep), hanging: cmToTwip(ARTICLE_EXPORT_STYLE.indentCm.listHanging) } } },
+          })),
+        },
+        {
+          reference: "vms-numbered",
+          levels: Array.from({ length: 5 }, (_, level) => ({
+            level,
+            format: "decimal" as const,
+            text: `%${level + 1}.`,
+            alignment: AlignmentType.LEFT,
+            style: { paragraph: { indent: { left: cmToTwip(ARTICLE_EXPORT_STYLE.indentCm.listLeft + level * ARTICLE_EXPORT_STYLE.indentCm.nestedStep), hanging: cmToTwip(ARTICLE_EXPORT_STYLE.indentCm.listHanging) } } },
+          })),
+        },
+      ],
+    },
     sections: [{
       properties: {
         page: {
-          margin: { top: "2cm", right: "2cm", bottom: "2cm", left: "3cm" }
+          size: { width: cmToTwip(ARTICLE_EXPORT_STYLE.page.widthCm), height: cmToTwip(ARTICLE_EXPORT_STYLE.page.heightCm), orientation: "portrait" },
+          margin: {
+            top: cmToTwip(ARTICLE_EXPORT_STYLE.page.marginsCm.top),
+            right: cmToTwip(ARTICLE_EXPORT_STYLE.page.marginsCm.right),
+            bottom: cmToTwip(ARTICLE_EXPORT_STYLE.page.marginsCm.bottom),
+            left: cmToTwip(ARTICLE_EXPORT_STYLE.page.marginsCm.left),
+          }
         }
       },
       children: children
@@ -245,6 +305,11 @@ export async function exportProposalToPDF(
   outlineItems: ProposalOutlineItem[],
   drafts: ProposalDraft[]
 ) {
+  const exportText = [proposal.name, ...outlineItems.map((item) => `${item.code || ""} ${item.title}`), ...drafts.map((draft) => draft.content || "")].join("\n");
+  if (/[^\u0000-\u007f]/.test(exportText)) {
+    throw new Error("Xuất PDF đề án bằng jsPDF legacy chưa hỗ trợ Unicode tiếng Việt ổn định. Vui lòng dùng xuất Word hoặc PDF văn bản từ vùng A4.");
+  }
+
   const doc = new jsPDF();
   let y = 20;
   const margin = 20;

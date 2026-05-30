@@ -32,9 +32,13 @@ export function normalizeVietnameseText(input: string): string {
     .trim();
 }
 
+function stripControlCharacters(input: string): string {
+  return input.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '');
+}
+
 function normalizeVietnameseTextNode(input: string): string {
   // DOM text nodes must preserve leading/trailing whitespace around inline elements.
-  let output = normalizeVietnameseUnicode(input || '')
+  let output = stripControlCharacters(normalizeVietnameseUnicode(input || ''))
     .replace(/Bản xem nhanh\s*\(Visual Snapshot\)/gi, '')
     .replace(/Visual Snapshot/gi, '')
     .replace(/Bản chụp nhanh PDF/gi, '');
@@ -69,11 +73,11 @@ function buildCleanPlaceholderLabel(index: string | undefined, description: stri
 }
 
 export function extractImagePlaceholderBlock(input: string): ExportImagePlaceholderBlock | null {
-  const text = input.trim();
+  const text = stripControlCharacters(input).trim();
   if (!text) return null;
 
   const bracketMatch = text.match(
-    /^\s*\[\s*(?:PLACEHOLDER\s+)?(?:ẢNH|HÌNH)\s*(\d+)?\s*:\s*([^\]]+?)\s*\]\s*(?:(Chú thích ảnh|Ghi chú hình|Caption)\s*:?\s*(.+))?\s*$/iu,
+    /^\s*\[\s*(?:PLACEHOLDER\s+)?(?:ẢNH|HÌNH)\s*(\d+)?\s*:\s*([^\]]+?)\s*\]\s*(?:(Chú thích ảnh|Ghi chú hình|Caption)\s*[:.：-]?\s*(.+))?\s*$/iu,
   );
 
   if (bracketMatch) {
@@ -86,7 +90,7 @@ export function extractImagePlaceholderBlock(input: string): ExportImagePlacehol
   }
 
   const cleanMatch = text.match(
-    /^(KHUNG\s+(?:GIỮ\s+CHỖ\s+)?ẢNH(?:\s+\d+)?\s*:?\s*.*?)(?:\s+(Chú thích ảnh|Ghi chú hình|Caption)\s*:?\s*(.+))?$/iu,
+    /^(KHUNG\s+(?:GIỮ\s+CHỖ\s+)?ẢNH(?:\s+\d+)?\s*:?\s*.*?)(?:\s+(Chú thích ảnh|Ghi chú hình|Caption)\s*[:.：-]?\s*(.+))?$/iu,
   );
 
   if (cleanMatch && /^KHUNG/iu.test(cleanMatch[1])) {
@@ -109,7 +113,7 @@ function removeDebugMarkers(input: string): string {
 
 function replaceBracketedPlaceholders(input: string): string {
   const attachedCaptionPattern =
-    /\[\s*(?:PLACEHOLDER\s+)?(?:ẢNH|HÌNH)\s*(\d+)?\s*:\s*([^\]]+?)\s*\]\s*(Chú thích ảnh|Ghi chú hình|Caption)\s*:?\s*([^\n]+)/giu;
+    /\[\s*(?:PLACEHOLDER\s+)?(?:ẢNH|HÌNH)\s*(\d+)?\s*:\s*([^\]]+?)\s*\]\s*(Chú thích ảnh|Ghi chú hình|Caption)\s*[:.：-]?\s*([^\n]+)/giu;
 
   const standalonePattern =
     /\[\s*(?:PLACEHOLDER\s+)?(?:ẢNH|HÌNH)\s*(\d+)?\s*:\s*([^\]]+?)\s*\]/giu;
@@ -132,7 +136,7 @@ function replaceBracketedPlaceholders(input: string): string {
 }
 
 export function normalizeExportTextContent(input: string): string {
-  const { text, urls } = protectUrls(input);
+  const { text, urls } = protectUrls(stripControlCharacters(input));
 
   let output = removeDebugMarkers(text);
   output = replaceBracketedPlaceholders(output)
@@ -186,7 +190,9 @@ export function stripExportArtifacts(root: HTMLElement): HTMLElement {
     el.style.position = el.style.position === 'fixed' || el.style.position === 'sticky' ? 'static' : el.style.position;
     el.style.transform = 'none';
     el.style.animation = 'none';
-    el.style.overflow = el.style.overflow === 'hidden' ? 'visible' : el.style.overflow;
+    if (['hidden', 'auto', 'scroll'].includes(el.style.overflow)) {
+      el.style.overflow = 'visible';
+    }
   });
 
   return clone;
@@ -279,12 +285,22 @@ export function normalizeExportDom(root: HTMLElement): HTMLElement {
   fixColonSpacingAcrossDomBoundaries(clone);
   normalizeImagePlaceholderElements(clone);
 
+  clone.querySelectorAll<HTMLImageElement>('img').forEach((img) => {
+    const placeholder = createExportParagraph(
+      document,
+      img.getAttribute('alt') || img.getAttribute('title') || 'Vị trí chèn ảnh minh họa',
+      'export-image-placeholder',
+      'text-align:center;font-weight:700;border:1px dashed #64748b;background:#f8fafc;padding:10px;margin:12px 0 4px 0;color:#334155;',
+    );
+    img.replaceWith(placeholder);
+  });
+
   return clone;
 }
 
 export function validateExportContent(root: HTMLElement): ExportValidationResult {
   const issues: ExportValidationIssue[] = [];
-  const text = root.innerText || root.textContent || '';
+  const text = stripControlCharacters(root.innerText || root.textContent || '');
 
   if (!text.trim()) {
     issues.push({
@@ -311,6 +327,17 @@ export function validateExportContent(root: HTMLElement): ExportValidationResult
       severity: 'error',
       code: 'IMAGE_ONLY_EXPORT',
       message: 'Vùng xuất có dấu hiệu là ảnh chụp, không phải nội dung văn bản thật.',
+    });
+  }
+
+
+
+  const draftMarkers = text.match(/\[\s*(?:Cần bổ sung|Cần kiểm chứng|Bổ sung)\s*:[^\]]+\]|\[\s*(?:PLACEHOLDER|—\s*(?:ẢNH|PLACEHOLDER)\s*—)[^\]]*\]/giu) || [];
+  if (draftMarkers.length > 0) {
+    issues.push({
+      severity: 'warning',
+      code: 'DRAFT_MARKERS_PRESENT',
+      message: `Còn ${draftMarkers.length} marker bản nháp/cần bổ sung trong nội dung xuất. Chỉ nên xuất như bản nháp sau khi xác nhận.`,
     });
   }
 
