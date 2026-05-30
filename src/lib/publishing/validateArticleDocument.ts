@@ -23,6 +23,8 @@ export interface ValidationResult {
 
 const VALID_PAGE_BREAK_POLICIES: ArticlePageBreakPolicy[] = ["auto", "avoid", "before", "after"];
 const HTML_PATTERN = /<\/?[a-z][\s\S]*>/i;
+const DRAFT_MARKER_PATTERN = /\[(?:\s*Bổ sung\s*:|\s*Cần\s+(?:bổ sung\/kiểm chứng|kiểm chứng)|\s*PLACEHOLDER\b|\s*[—-]+\s*(?:ẢNH|PLACEHOLDER)\s*[—-]+\s*)[^\]]*\]/i;
+const DRAFT_MARKER_WARNING = "Bản thảo còn dữ liệu cần bổ sung trước khi xuất bản.";
 
 function hasHtml(value: string): boolean {
   return HTML_PATTERN.test(value);
@@ -37,16 +39,24 @@ function isLeadInItem(value: unknown): value is ArticleLeadInItem {
   );
 }
 
+function addDraftMarkerWarning(value: string, path: string, warnings: ArticleValidationIssue[]): void {
+  if (!DRAFT_MARKER_PATTERN.test(value)) return;
+  if (warnings.some((warning) => warning.message === DRAFT_MARKER_WARNING)) return;
+  warnings.push({ path, message: DRAFT_MARKER_WARNING });
+}
+
 function validatePlainText(
   value: unknown,
   path: string,
   maxChars: number | undefined,
   errors: ArticleValidationIssue[],
+  warnings: ArticleValidationIssue[],
 ): void {
   if (typeof value !== "string" || value.trim().length === 0) {
     errors.push({ path, message: "Slot plain text phải là chuỗi không rỗng." });
     return;
   }
+  addDraftMarkerWarning(value, path, warnings);
   if (hasHtml(value)) {
     errors.push({ path, message: "Slot plain text không được chứa HTML." });
   }
@@ -89,7 +99,7 @@ function validateBlock(block: ArticleBlock, index: number, document: ArticleDocu
     if (value === undefined || value === null) return;
 
     if (slotType === "plainText") {
-      validatePlainText(value, `${path}.slots.${slot}`, definition.maxChars, result.errors);
+      validatePlainText(value, `${path}.slots.${slot}`, definition.maxChars, result.errors, result.warnings);
       return;
     }
 
@@ -107,15 +117,15 @@ function validateBlock(block: ArticleBlock, index: number, document: ArticleDocu
 
     value.forEach((item, itemIndex) => {
       if (slotType === "plainTextArray") {
-        validatePlainText(item, `${path}.slots.${slot}[${itemIndex}]`, definition.maxChars, result.errors);
+        validatePlainText(item, `${path}.slots.${slot}[${itemIndex}]`, definition.maxChars, result.errors, result.warnings);
         return;
       }
       if (!isLeadInItem(item)) {
         result.errors.push({ path: `${path}.slots.${slot}[${itemIndex}]`, message: "Lead-in item phải có label và body." });
         return;
       }
-      validatePlainText(item.label, `${path}.slots.${slot}[${itemIndex}].label`, definition.maxChars, result.errors);
-      validatePlainText(item.body, `${path}.slots.${slot}[${itemIndex}].body`, definition.maxChars, result.errors);
+      validatePlainText(item.label, `${path}.slots.${slot}[${itemIndex}].label`, definition.maxChars, result.errors, result.warnings);
+      validatePlainText(item.body, `${path}.slots.${slot}[${itemIndex}].body`, definition.maxChars, result.errors, result.warnings);
     });
   });
 
@@ -145,6 +155,12 @@ export function validateArticleDocument(document: ArticleDocument): ValidationRe
 
   if (!document.metadata?.title) {
     result.errors.push({ path: "metadata.title", message: "metadata.title là bắt buộc." });
+  } else {
+    addDraftMarkerWarning(document.metadata.title, "metadata.title", result.warnings);
+  }
+
+  if (document.metadata?.sapo) {
+    addDraftMarkerWarning(document.metadata.sapo, "metadata.sapo", result.warnings);
   }
 
   if (!Array.isArray(document.blocks)) {
