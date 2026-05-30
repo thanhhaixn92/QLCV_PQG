@@ -6,6 +6,7 @@ import { validateArticleDocument } from "../../lib/publishing/validateArticleDoc
 interface A4PrintPreviewProps {
   document: ArticleDocument;
   className?: string;
+  rootId?: string;
   showValidationSummary?: boolean;
 }
 
@@ -95,13 +96,14 @@ function renderBlock(block: ArticleBlock): React.ReactNode {
       );
     }
     case "figure-placeholder": {
-      const title = typeof block.slots.title === "string" ? block.slots.title : "Vị trí ảnh minh họa";
-      const caption = typeof block.slots.caption === "string" ? block.slots.caption : "";
-      const note = typeof block.slots.note === "string" ? block.slots.note : "";
+      const title = typeof block.slots.title === "string" ? block.slots.title.trim() : "";
+      const caption = typeof block.slots.caption === "string" ? block.slots.caption.trim() : "";
+      const note = typeof block.slots.note === "string" ? block.slots.note.trim() : "";
+      const boxLabel = title && title !== caption ? title : "Vị trí chèn ảnh minh họa";
       return (
         <figure className={className}>
           <div className="a4-figure-placeholder-box">
-            <span>{title}</span>
+            <span>{boxLabel}</span>
             {note && <small>{note}</small>}
           </div>
           {caption && <figcaption>{caption}</figcaption>}
@@ -122,14 +124,19 @@ export function renderArticleDocumentToHtmlA4(document: ArticleDocument): React.
 export const A4PrintPreview = ({
   document,
   className = "",
+  rootId,
   showValidationSummary = true,
 }: A4PrintPreviewProps) => {
   const validation = React.useMemo(() => validateArticleDocument(document), [document]);
 
   return (
-    <article className={["print-layout", "a4-preview", className].filter(Boolean).join(" ")} data-template-id={document.templateId}>
+    <>
       {showValidationSummary && (!validation.valid || validation.warnings.length > 0) && (
-        <aside className="a4-validation-summary" aria-label="Kiểm tra ArticleDocument">
+        <aside
+          className="a4-validation-summary"
+          aria-label="Kiểm tra ArticleDocument"
+          data-export-exclude="true"
+        >
           {!validation.valid && <strong>ArticleDocument cần kiểm tra trước khi xuất bản.</strong>}
           {validation.errors.map((error) => (
             <p key={`error-${error.path}`}>Lỗi {error.path}: {error.message}</p>
@@ -139,7 +146,14 @@ export const A4PrintPreview = ({
           ))}
         </aside>
       )}
-      {renderArticleDocumentToHtmlA4(document)}
-    </article>
+      {/* MVP hiện là A4 styled continuous article; paginated preview sẽ làm sau. */}
+      <article
+        id={rootId}
+        className={["print-layout", "a4-preview", className].filter(Boolean).join(" ")}
+        data-template-id={document.templateId}
+      >
+        {renderArticleDocumentToHtmlA4(document)}
+      </article>
+    </>
   );
 };

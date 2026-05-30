@@ -1613,18 +1613,17 @@ export const EditorWorkspace = (props: any) => {
                                   </div>
                                 )}
 
-                                <div
-                                  className="p-6 md:p-12 bg-[#FCFDFF] printable-article"
-                                  id="printable-article"
-                                >
+                                <div className="p-4 sm:p-6 md:p-10 bg-[#FCFDFF] printable-article-shell">
                                   {contentReview && (
-                                    <ContentReviewDisplay
-                                      review={contentReview}
-                                    />
+                                    <div data-export-exclude="true">
+                                      <ContentReviewDisplay
+                                        review={contentReview}
+                                      />
+                                    </div>
                                   )}
 
-                                  <div className="prose prose-slate max-w-none prose-headings:text-[#002D56] prose-headings:font-semibold prose-p:text-slate-700 prose-p:text-lg prose-p:leading-relaxed prose-li:text-slate-600 font-serif">
-                                    {isEditing ? (
+                                  {isEditing ? (
+                                    <div className="prose prose-slate max-w-none prose-headings:text-[#002D56] prose-headings:font-semibold prose-p:text-slate-700 prose-p:text-lg prose-p:leading-relaxed prose-li:text-slate-600 font-serif">
                                       <textarea
                                         value={output}
                                         onChange={(e) =>
@@ -1632,10 +1631,10 @@ export const EditorWorkspace = (props: any) => {
                                         }
                                         className="w-full h-[600px] p-6 bg-slate-50 border border-dashed border-slate-200 rounded-lg text-lg leading-relaxed font-serif focus:outline-none focus:border-[#002D56] transition-all"
                                       />
-                                    ) : (
-                                      <A4PrintPreview document={articleDocument} />
-                                    )}
-                                  </div>
+                                    </div>
+                                  ) : (
+                                    <A4PrintPreview document={articleDocument} rootId="printable-article" />
+                                  )}
                                 </div>
 
                                 {/* Versions Quick Access */}
