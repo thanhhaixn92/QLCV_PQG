@@ -7,6 +7,7 @@ import {
   type ArticlePageBreakPolicy,
 } from "./articleDocument";
 import { ARTICLE_BLOCK_REGISTRY } from "./blockRegistry";
+import { getDefaultArticleLayout, getArticleLayout, type ArticleLayoutDefinition } from "./layoutRegistry";
 import { getArticleTemplate } from "./templateRegistry";
 import { hasArticleStyle } from "./styleRegistry";
 
@@ -82,7 +83,13 @@ function validatePlainText(
   }
 }
 
-function validateBlock(block: ArticleBlock, index: number, document: ArticleDocument, result: ValidationResult): void {
+function validateBlock(
+  block: ArticleBlock,
+  index: number,
+  document: ArticleDocument,
+  result: ValidationResult,
+  layout: ArticleLayoutDefinition | undefined,
+): void {
   const path = `blocks[${index}]`;
   const definition = ARTICLE_BLOCK_REGISTRY[block.type];
   if (!definition) {
@@ -93,6 +100,10 @@ function validateBlock(block: ArticleBlock, index: number, document: ArticleDocu
   const template = getArticleTemplate(document.templateId, document.templateVersion);
   if (template && !template.allowedBlocks.includes(block.type)) {
     result.errors.push({ path: `${path}.type`, message: `Template không cho phép block type: ${block.type}` });
+  }
+
+  if (layout && !layout.allowedBlocks.includes(block.type)) {
+    result.errors.push({ path: `${path}.type`, message: `Layout không cho phép block type: ${block.type}` });
   }
 
   if (!block.id || typeof block.id !== "string") {
@@ -155,6 +166,39 @@ function validateBlock(block: ArticleBlock, index: number, document: ArticleDocu
   }
 }
 
+function resolveDocumentLayout(document: ArticleDocument, result: ValidationResult): ArticleLayoutDefinition | undefined {
+  const hasLayoutId = Boolean(document.layoutId);
+  const hasLayoutVersion = Boolean(document.layoutVersion);
+
+  if (!hasLayoutId && !hasLayoutVersion) {
+    const fallbackLayout = getDefaultArticleLayout();
+    result.warnings.push({
+      path: "layoutId",
+      message: "Tài liệu cũ chưa có layoutId/layoutVersion; validation dùng layout mặc định để tương thích ngược.",
+      detail: `${fallbackLayout.layoutId}@${fallbackLayout.layoutVersion}`,
+    });
+    return fallbackLayout;
+  }
+
+  if (!hasLayoutId || !hasLayoutVersion) {
+    result.errors.push({ path: "layoutId", message: "layoutId/layoutVersion phải được khai báo đầy đủ." });
+    return undefined;
+  }
+
+  const layout = getArticleLayout(document.layoutId as string, document.layoutVersion as string);
+  if (!layout) {
+    result.errors.push({ path: "layoutId", message: "layoutId/layoutVersion không tồn tại trong layout registry." });
+  }
+  return layout;
+}
+
+function validateEstimatedPages(document: ArticleDocument, result: ValidationResult): void {
+  if (document.estimatedPages === undefined) return;
+  if (!Number.isFinite(document.estimatedPages) || document.estimatedPages < 1 || document.estimatedPages > 10) {
+    result.warnings.push({ path: "estimatedPages", message: "estimatedPages nên nằm trong khoảng 1–10 trang A4." });
+  }
+}
+
 export function validateArticleDocument(document: ArticleDocument): ValidationResult {
   const result: ValidationResult = { valid: false, errors: [], warnings: [] };
 
@@ -165,6 +209,9 @@ export function validateArticleDocument(document: ArticleDocument): ValidationRe
   if (!getArticleTemplate(document.templateId, document.templateVersion)) {
     result.errors.push({ path: "templateId", message: "templateId/templateVersion không tồn tại trong registry." });
   }
+
+  const layout = resolveDocumentLayout(document, result);
+  validateEstimatedPages(document, result);
 
   if (!SUPPORTED_ARTICLE_LOCALES.includes(document.locale)) {
     result.errors.push({ path: "locale", message: "locale không hợp lệ." });
@@ -186,7 +233,7 @@ export function validateArticleDocument(document: ArticleDocument): ValidationRe
     if (document.blocks.length === 0) {
       result.errors.push({ path: "blocks", message: "Tài liệu chưa có nội dung chính." });
     }
-    document.blocks.forEach((block, index) => validateBlock(block, index, document, result));
+    document.blocks.forEach((block, index) => validateBlock(block, index, document, result, layout));
 
     const hasMainContent = document.blocks.some((block) =>
       ["sapo", "paragraph", "lead-in-list", "bullet-list", "conclusion"].includes(block.type),

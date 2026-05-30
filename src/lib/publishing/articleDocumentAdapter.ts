@@ -6,6 +6,7 @@ import {
   type ArticleLeadInItem,
 } from "./articleDocument";
 import { ARTICLE_BLOCK_REGISTRY } from "./blockRegistry";
+import { getDefaultArticleLayout } from "./layoutRegistry";
 import { getDefaultArticleTemplate } from "./templateRegistry";
 
 export interface CreateArticleDocumentOptions {
@@ -19,6 +20,9 @@ export interface CreateArticleDocumentOptions {
   status?: "draft" | "reviewed" | "published";
   templateId?: string;
   templateVersion?: string;
+  layoutId?: string;
+  layoutVersion?: string;
+  estimatedPages?: number;
 }
 
 interface ParsedLine {
@@ -189,8 +193,12 @@ export function createArticleDocumentFromCurrentContent(
   options: CreateArticleDocumentOptions = {},
 ): ArticleDocument {
   const fallbackTemplate = getDefaultArticleTemplate();
+  const fallbackLayout = getDefaultArticleLayout();
   const templateId = options.templateId || fallbackTemplate.templateId;
   const templateVersion = options.templateVersion || fallbackTemplate.templateVersion;
+  const layoutId = options.layoutId || fallbackLayout.layoutId;
+  const layoutVersion = options.layoutVersion || fallbackLayout.layoutVersion;
+  const estimatedPages = options.estimatedPages ?? fallbackLayout.estimatedPages;
   const parsedLines = parseMarkdownLines(content);
   const blocks: ArticleBlock[] = [];
   let blockIndex = 0;
@@ -328,6 +336,9 @@ export function createArticleDocumentFromCurrentContent(
     documentVersion: 1,
     templateId,
     templateVersion,
+    layoutId,
+    layoutVersion,
+    estimatedPages,
     locale: "vi-VN",
     metadata: {
       title: resolvedTitle,
