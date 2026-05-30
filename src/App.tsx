@@ -395,6 +395,70 @@ import { TasksTabWorkspace } from "./components/tasks/TasksTabWorkspace";
 import { TaskAICreateModal } from "./components/tasks/TaskAICreateModal";
 import { StartupOverlay, DegradedBanner } from "./components/layout/StartupBoundary";
 
+type WorkspaceTab =
+  | "home"
+  | "tasks"
+  | "editor"
+  | "library"
+  | "history"
+  | "proposals"
+  | "settings"
+  | "activity"
+  | "admin";
+
+const WORKSPACE_TAB_HASHES: Record<WorkspaceTab, string> = {
+  home: "home",
+  tasks: "tasks",
+  editor: "editorial",
+  library: "library",
+  history: "article-history",
+  proposals: "proposals",
+  settings: "settings",
+  activity: "activity-log",
+  admin: "admin",
+};
+
+const HASH_TO_WORKSPACE_TAB = Object.entries(WORKSPACE_TAB_HASHES).reduce(
+  (acc, [tab, hash]) => {
+    acc[hash] = tab as WorkspaceTab;
+    return acc;
+  },
+  {} as Record<string, WorkspaceTab>,
+);
+
+const CURRENT_MODULE_STORAGE_PREFIX = "vms:workspace:current-module";
+const DRAFT_STORAGE_PREFIX = "vms:workspace:draft";
+const UI_STORAGE_PREFIX = "vms:workspace:ui";
+
+type PendingDraftRestore = {
+  editorial?: any;
+  task?: WorkTask;
+};
+
+const normalizeWorkspaceHash = (value: string) =>
+  value.replace(/^#?\/?/, "").split("?")[0].trim().toLowerCase();
+
+const getWorkspaceTabFromHash = (): WorkspaceTab | null => {
+  if (typeof window === "undefined") return null;
+  const normalized = normalizeWorkspaceHash(window.location.hash);
+  return HASH_TO_WORKSPACE_TAB[normalized] || null;
+};
+
+const getCurrentModuleStorageKey = (uid: string) =>
+  `${CURRENT_MODULE_STORAGE_PREFIX}:${uid}`;
+
+const getDraftStorageKey = (uid: string, module: string, draftKey: string) =>
+  `${DRAFT_STORAGE_PREFIX}:${uid}:${module}:${draftKey}`;
+
+const getUiStorageKey = (uid: string, key: string) =>
+  `${UI_STORAGE_PREFIX}:${uid}:${key}`;
+
+const hasMeaningfulDraftValue = (value: unknown): boolean => {
+  if (typeof value === "string") return value.trim().length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  return value !== null && value !== undefined && value !== false;
+};
+
 function App() {
   const [inactiveTime, setInactiveTime] = useState(0);
   const [backgroundTasks, setBackgroundTasks] = useState<BackgroundTask[]>([]);
@@ -414,17 +478,7 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [aiCooldownUntil, setAiCooldownUntil] = useState<number | null>(null);
   const [copySuccess, setCopySuccess] = useState(false);
-  const [activeTab, setActiveTab] = useState<
-    | "home"
-    | "tasks"
-    | "editor"
-    | "library"
-    | "history"
-    | "proposals"
-    | "settings"
-    | "activity"
-    | "admin"
-  >("home");
+  const [activeTab, setActiveTab] = useState<WorkspaceTab>("home");
   const [selectedProposalId, setSelectedProposalId] = useState<string | null>(null);
   const [proposalChatContext, setProposalChatContext] = useState<ProposalChatContext | null>(null);
   const [density, setDensity] = useState<"comfortable" | "compact">(
@@ -445,24 +499,14 @@ function App() {
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [profileReady, setProfileReady] = useState(false);
+  const [restoredModuleForUid, setRestoredModuleForUid] = useState<string | null>(null);
+  const [restoredDraftsForUid, setRestoredDraftsForUid] = useState<string | null>(null);
+  const [restoredUiForUid, setRestoredUiForUid] = useState<string | null>(null);
+  const [pendingDraftRestore, setPendingDraftRestore] = useState<PendingDraftRestore | null>(null);
   const [activeModal, setActiveModal] = useState<
     "auth" | "account" | "settings" | "task-edit" | null
   >(null);
-
-  // App Render State Logging (Diagnostic - Runs once on mount)
-  useEffect(() => {
-    console.log("[ROOT_RENDER_DECISION]", {
-      startupState,
-      backendReady,
-      firestoreReady,
-      authReady,
-      hasUser: !!user,
-      userEmail: user?.email || null,
-      hasProfile: !!profile,
-      profileRole: profile?.role || null,
-      activeTab,
-    });
-  }, []);
 
   // Document & Library State
   const [documents, setDocuments] = useState<DocumentSource[]>([]);
@@ -541,6 +585,55 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (!user) {
+      setRestoredModuleForUid(null);
+      setRestoredDraftsForUid(null);
+      setRestoredUiForUid(null);
+      setPendingDraftRestore(null);
+      setActiveTab("home");
+      if (!getWorkspaceTabFromHash()) {
+        updateWorkspaceHash("home", "replace");
+      }
+      return;
+    }
+
+    if (!profileReady || restoredModuleForUid === user.uid) return;
+
+    const storedModule = localStorage.getItem(getCurrentModuleStorageKey(user.uid));
+    const storedTab = storedModule
+      ? HASH_TO_WORKSPACE_TAB[normalizeWorkspaceHash(storedModule)] || null
+      : null;
+    const requestedTab = getWorkspaceTabFromHash() || storedTab;
+    const nextTab = resolveSafeWorkspaceTab(requestedTab);
+
+    setActiveTab(nextTab);
+    updateWorkspaceHash(nextTab, "replace");
+    localStorage.setItem(getCurrentModuleStorageKey(user.uid), WORKSPACE_TAB_HASHES[nextTab]);
+    setRestoredModuleForUid(user.uid);
+  }, [user?.uid, profileReady, profile?.role, restoredModuleForUid]);
+
+  useEffect(() => {
+    if (!user || restoredModuleForUid !== user.uid) return;
+    const safeTab = resolveSafeWorkspaceTab(activeTab);
+    if (safeTab !== activeTab) {
+      setActiveTab(safeTab);
+      return;
+    }
+    localStorage.setItem(getCurrentModuleStorageKey(user.uid), WORKSPACE_TAB_HASHES[activeTab]);
+    updateWorkspaceHash(activeTab);
+  }, [activeTab, user?.uid, profile?.role, restoredModuleForUid]);
+
+  useEffect(() => {
+    if (!user || restoredModuleForUid !== user.uid) return;
+    const handleHashChange = () => {
+      const nextTab = resolveSafeWorkspaceTab(getWorkspaceTabFromHash());
+      setActiveTab(nextTab);
+    };
+    window.addEventListener("hashchange", handleHashChange);
+    return () => window.removeEventListener("hashchange", handleHashChange);
+  }, [user?.uid, profile?.role, restoredModuleForUid]);
+
+  useEffect(() => {
     let activityTimer: NodeJS.Timeout;
     const resetActivity = () => {
       setInactiveTime(0);
@@ -576,6 +669,61 @@ function App() {
     });
     setActiveTab("tasks");
     closeMobileDrawer();
+  };
+
+  const isWorkspaceTabAllowed = (tab: WorkspaceTab) => {
+    if (tab === "proposals") return FEATURE_FLAGS.PROPOSAL_MODULE;
+    if (tab === "admin") return profile?.role === "admin";
+    return true;
+  };
+
+  const resolveSafeWorkspaceTab = (candidate: WorkspaceTab | null): WorkspaceTab => {
+    if (!candidate || !isWorkspaceTabAllowed(candidate)) return "home";
+    return candidate;
+  };
+
+  const updateWorkspaceHash = (tab: WorkspaceTab, mode: "push" | "replace" = "push") => {
+    if (typeof window === "undefined") return;
+    const nextHash = `#/${WORKSPACE_TAB_HASHES[tab]}`;
+    if (window.location.hash === nextHash) return;
+    const nextUrl = `${window.location.pathname}${window.location.search}${nextHash}`;
+    if (mode === "replace") {
+      window.history.replaceState(null, "", nextUrl);
+    } else {
+      window.history.pushState(null, "", nextUrl);
+    }
+  };
+
+  const clearEditorialDraft = () => {
+    if (!user) return;
+    localStorage.removeItem(getDraftStorageKey(user.uid, "editorial", "main"));
+  };
+
+  const clearTaskDraft = () => {
+    if (!user) return;
+    localStorage.removeItem(getDraftStorageKey(user.uid, "tasks", "task-edit"));
+  };
+
+  const applyEditorialDraft = (draft: any) => {
+    if (!draft) return;
+    if (typeof draft.input === "string") setInput(draft.input);
+    if (typeof draft.output === "string") setOutput(draft.output);
+    if (typeof draft.newTextName === "string") setNewTextName(draft.newTextName);
+    if (typeof draft.newTextContent === "string") setNewTextContent(draft.newTextContent);
+    if (typeof draft.newLinkUrl === "string") setNewLinkUrl(draft.newLinkUrl);
+    if (typeof draft.selectedEditorialToolId === "string") {
+      handleToolChange(draft.selectedEditorialToolId);
+    }
+    if (typeof draft.editorialKind === "string") setEditorialKind(draft.editorialKind as any);
+    if (typeof draft.taskType === "string") setTaskType(draft.taskType as TaskType);
+    if (typeof draft.outputFormat === "string") setOutputFormat(draft.outputFormat as OutputFormat);
+    setActiveTab("editor");
+  };
+
+  const applyTaskDraft = (task: WorkTask) => {
+    setEditingTask(task);
+    setActiveTab("tasks");
+    setActiveModal("task-edit");
   };
   const repairLegacyDriveLinks = async () => {
     if (!user) return;
@@ -832,8 +980,6 @@ function App() {
     const handleResize = () => {
       if (window.innerWidth < 1180) {
         setIsSidebarCollapsed(true);
-      } else {
-        setIsSidebarCollapsed(false);
       }
     };
     handleResize(); // Initial check
@@ -1487,6 +1633,98 @@ function App() {
     kind: string;
     status: string;
   }>({ kind: "all", status: "all" });
+
+  useEffect(() => {
+    if (!user || restoredUiForUid === user.uid) return;
+
+    try {
+      const savedDensity = localStorage.getItem(getUiStorageKey(user.uid, "density"));
+      if (savedDensity === "comfortable" || savedDensity === "compact") {
+        setDensity(savedDensity);
+      }
+
+      const savedSidebar = localStorage.getItem(
+        getUiStorageKey(user.uid, "sidebar-collapsed"),
+      );
+      if (savedSidebar === "true" || savedSidebar === "false") {
+        setIsSidebarCollapsed(savedSidebar === "true");
+      }
+
+      const savedTasks = localStorage.getItem(getUiStorageKey(user.uid, "tasks"));
+      if (savedTasks) {
+        const parsed = JSON.parse(savedTasks);
+        if (parsed?.filters && typeof parsed.filters === "object") {
+          setTaskFilters((prev) => ({ ...prev, ...parsed.filters }));
+        }
+      }
+
+      const savedLibrary = localStorage.getItem(getUiStorageKey(user.uid, "library"));
+      if (savedLibrary) {
+        const parsed = JSON.parse(savedLibrary);
+        if (typeof parsed?.activeLibraryId === "string") {
+          setActiveLibraryId(parsed.activeLibraryId);
+        }
+        if (parsed?.filters && typeof parsed.filters === "object") {
+          setLibraryFilters((prev) => ({ ...prev, ...parsed.filters }));
+        }
+        if (typeof parsed?.search === "string") {
+          setLibrarySearchQuery(parsed.search);
+        }
+      }
+    } catch (err) {
+      console.warn("Không thể khôi phục trạng thái giao diện cục bộ", err);
+    } finally {
+      setRestoredUiForUid(user.uid);
+    }
+  }, [user?.uid, restoredUiForUid]);
+
+  useEffect(() => {
+    if (!user || restoredUiForUid !== user.uid) return;
+    localStorage.setItem(getUiStorageKey(user.uid, "density"), density);
+  }, [user?.uid, restoredUiForUid, density]);
+
+  useEffect(() => {
+    if (!user || restoredUiForUid !== user.uid) return;
+    localStorage.setItem(
+      getUiStorageKey(user.uid, "sidebar-collapsed"),
+      String(isSidebarCollapsed),
+    );
+  }, [user?.uid, restoredUiForUid, isSidebarCollapsed]);
+
+  useEffect(() => {
+    if (!user || restoredUiForUid !== user.uid) return;
+    const key = getUiStorageKey(user.uid, "tasks");
+    let previous: any = {};
+    try {
+      previous = JSON.parse(localStorage.getItem(key) || "{}");
+    } catch {
+      previous = {};
+    }
+    localStorage.setItem(
+      key,
+      JSON.stringify({ ...previous, filters: taskFilters, updatedAt: Date.now() }),
+    );
+  }, [user?.uid, restoredUiForUid, taskFilters]);
+
+  useEffect(() => {
+    if (!user || restoredUiForUid !== user.uid) return;
+    localStorage.setItem(
+      getUiStorageKey(user.uid, "library"),
+      JSON.stringify({
+        activeLibraryId,
+        filters: libraryFilters,
+        search: librarySearchQuery,
+        updatedAt: Date.now(),
+      }),
+    );
+  }, [
+    user?.uid,
+    restoredUiForUid,
+    activeLibraryId,
+    libraryFilters,
+    librarySearchQuery,
+  ]);
+
   const [historySearchQuery, setHistorySearchQuery] = useState("");
   const [isSearching, setIsSearching] = useState(false);
   const [searchResults, setSearchResults] = useState<{
@@ -1955,12 +2193,15 @@ function App() {
   useEffect(() => {
     if (!user || !db) {
       setProfile(null);
+      setProfileReady(true);
       return;
     }
+    setProfileReady(false);
     const profileRef = doc(db, "users", user.uid, "profile", "main");
     const unsub = onSnapshot(
       profileRef,
       (docSnap) => {
+        setProfileReady(true);
         if (docSnap.exists()) {
           const firestoreProfile = docSnap.data() as UserProfile;
           setProfile((prevProfile) => {
@@ -1982,6 +2223,7 @@ function App() {
       },
       (error) => {
         console.warn("[Profile Snapshot Error]", error);
+        setProfileReady(true);
       },
     );
     return () => unsub();
@@ -2794,6 +3036,121 @@ function App() {
     localStorage.setItem("vms_sessions", JSON.stringify(lightSessions));
   }, [sessions]);
 
+  useEffect(() => {
+    if (!user || restoredDraftsForUid === user.uid) return;
+
+    const editorialDraftKey = getDraftStorageKey(user.uid, "editorial", "main");
+    const taskDraftKey = getDraftStorageKey(user.uid, "tasks", "task-edit");
+    const pending: PendingDraftRestore = {};
+
+    try {
+      const rawEditorialDraft = localStorage.getItem(editorialDraftKey);
+      if (rawEditorialDraft) {
+        const draft = JSON.parse(rawEditorialDraft);
+        const hasDraft = [
+          draft.input,
+          draft.output,
+          draft.newTextName,
+          draft.newTextContent,
+          draft.newLinkUrl,
+        ].some(hasMeaningfulDraftValue);
+
+        const canRestore =
+          hasDraft &&
+          ![input, output, newTextName, newTextContent, newLinkUrl].some(
+            hasMeaningfulDraftValue,
+          );
+
+        if (canRestore) {
+          pending.editorial = draft;
+        }
+      }
+
+      const rawTaskDraft = localStorage.getItem(taskDraftKey);
+      if (rawTaskDraft) {
+        const draft = JSON.parse(rawTaskDraft);
+        if (draft?.task) {
+          pending.task = draft.task as WorkTask;
+        }
+      }
+
+      if (pending.editorial || pending.task) {
+        setPendingDraftRestore(pending);
+      }
+    } catch (err) {
+      console.warn("Không thể khôi phục bản nháp cục bộ", err);
+    } finally {
+      setRestoredDraftsForUid(user.uid);
+    }
+  }, [user?.uid, restoredDraftsForUid]);
+
+  useEffect(() => {
+    if (!user || restoredDraftsForUid !== user.uid) return;
+
+    const timeout = window.setTimeout(() => {
+      const draft = {
+        input,
+        output,
+        newTextName,
+        newTextContent,
+        newLinkUrl,
+        selectedEditorialToolId,
+        editorialKind,
+        taskType,
+        outputFormat,
+        updatedAt: Date.now(),
+      };
+      const hasDraft = [input, output, newTextName, newTextContent, newLinkUrl].some(
+        hasMeaningfulDraftValue,
+      );
+      const key = getDraftStorageKey(user.uid, "editorial", "main");
+      if (hasDraft) {
+        localStorage.setItem(key, JSON.stringify(draft));
+      } else {
+        localStorage.removeItem(key);
+      }
+    }, 700);
+
+    return () => window.clearTimeout(timeout);
+  }, [
+    user?.uid,
+    restoredDraftsForUid,
+    input,
+    output,
+    newTextName,
+    newTextContent,
+    newLinkUrl,
+    selectedEditorialToolId,
+    editorialKind,
+    taskType,
+    outputFormat,
+  ]);
+
+  useEffect(() => {
+    if (!user || restoredDraftsForUid !== user.uid) return;
+
+    const timeout = window.setTimeout(() => {
+      const key = getDraftStorageKey(user.uid, "tasks", "task-edit");
+      const hasTaskDraft =
+        activeModal === "task-edit" &&
+        editingTask &&
+        (String(editingTask.id || "").startsWith("draft-task-") ||
+          Boolean(editingTask.clientId)) &&
+        [editingTask.title, editingTask.description, editingTask.checklist].some(
+          hasMeaningfulDraftValue,
+        );
+
+      if (hasTaskDraft) {
+        localStorage.setItem(
+          key,
+          JSON.stringify({ task: editingTask, updatedAt: Date.now() }),
+        );
+      }
+    }, 700);
+
+    return () => window.clearTimeout(timeout);
+  }, [user?.uid, restoredDraftsForUid, activeModal, editingTask]);
+
   const saveCurrentToSession = async (newOutput?: string) => {
     let finalOutput = newOutput ?? output;
     if (!finalOutput) return;
@@ -2856,6 +3213,8 @@ function App() {
       const newFullSession = { ...sessionData, id: newId || 'temp', versions: [newVersion] };
       setSessions(prev => [newFullSession as ProjectSession, ...prev]);
     }
+
+    clearEditorialDraft();
   };
 
   const loadSession = async (session: ProjectSession) => {
@@ -2906,6 +3265,7 @@ function App() {
     setIllustrations([]);
     setSelectedSourceDocIds([]);
     setIsEditing(false);
+    clearEditorialDraft();
     setActiveTab("editor"); // Switch to editor for new article
   };
 
@@ -4278,7 +4638,10 @@ Nội dung văn bản:\n` + content,
       setDocuments([]);
       setSessions([]);
       setCurrentSessionId(null);
+      setEditingTask(null);
       setActiveModal(null);
+      setActiveTab("home");
+      updateWorkspaceHash("home", "replace");
       
       // Clear sensitive local cache
       localStorage.removeItem('vms_documents');
@@ -4316,6 +4679,7 @@ Nội dung văn bản:\n` + content,
         );
         setNewTextName("");
         setNewTextContent("");
+        localStorage.removeItem(getDraftStorageKey(user.uid, "editorial", "main"));
         setSourceActiveTab(null);
       }
     }
@@ -5058,6 +5422,74 @@ Nội dung văn bản:\n` + content,
   return (
     <ErrorBoundary>
       {globalOverlays}
+      {pendingDraftRestore && (
+        <div className="fixed bottom-4 left-4 right-4 z-[120] flex justify-center pointer-events-none">
+          <div className="w-full max-w-2xl rounded-2xl border border-amber-200 bg-white shadow-2xl p-4 pointer-events-auto">
+            <div className="flex items-start gap-3">
+              <div className="mt-0.5 rounded-xl bg-amber-50 p-2 text-amber-600">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-bold text-slate-800">
+                  Có bản nháp cục bộ chưa lưu
+                </p>
+                <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                  Bản nháp chỉ lưu trên thiết bị này theo tài khoản hiện tại và chưa được ghi lên Firestore.
+                </p>
+                <div className="mt-3 flex flex-col sm:flex-row flex-wrap gap-2">
+                  {pendingDraftRestore.editorial && (
+                    <button
+                      onClick={() => {
+                        applyEditorialDraft(pendingDraftRestore.editorial);
+                        setPendingDraftRestore((prev) => {
+                          const next = { ...(prev || {}), editorial: undefined };
+                          return next.task ? next : null;
+                        });
+                        toast.success("Đã khôi phục bản nháp biên tập cục bộ.");
+                      }}
+                      className="px-3 py-2 rounded-lg bg-[#002D56] text-white text-xs font-bold hover:bg-blue-900 transition-colors"
+                    >
+                      Khôi phục biên tập
+                    </button>
+                  )}
+                  {pendingDraftRestore.task && (
+                    <button
+                      onClick={() => {
+                        applyTaskDraft(pendingDraftRestore.task!);
+                        setPendingDraftRestore((prev) => {
+                          const next = { ...(prev || {}), task: undefined };
+                          return next.editorial ? next : null;
+                        });
+                        toast.success("Đã khôi phục bản nháp công việc cục bộ.");
+                      }}
+                      className="px-3 py-2 rounded-lg bg-[#002D56] text-white text-xs font-bold hover:bg-blue-900 transition-colors"
+                    >
+                      Khôi phục công việc
+                    </button>
+                  )}
+                  <button
+                    onClick={() => setPendingDraftRestore(null)}
+                    className="px-3 py-2 rounded-lg border border-slate-200 text-slate-600 text-xs font-bold hover:bg-slate-50 transition-colors"
+                  >
+                    Bỏ qua
+                  </button>
+                  <button
+                    onClick={() => {
+                      clearEditorialDraft();
+                      clearTaskDraft();
+                      setPendingDraftRestore(null);
+                      toast.success("Đã xóa bản nháp cục bộ.");
+                    }}
+                    className="px-3 py-2 rounded-lg border border-red-200 text-red-600 text-xs font-bold hover:bg-red-50 transition-colors"
+                  >
+                    Xóa bản nháp
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       <div
         className={cn(
           "h-dvh w-full bg-[#F1F5F9] flex font-sans text-slate-900 overflow-hidden",
@@ -6401,7 +6833,14 @@ Nội dung văn bản:\n` + content,
                 <TaskEditModal
                   editingTask={editingTask}
                   setEditingTask={setEditingTask}
-                  onClose={() => setActiveModal(null)}
+                  onClose={() => {
+                    setActiveModal(null);
+                  }}
+                  onDiscardDraft={() => {
+                    clearTaskDraft();
+                    setEditingTask(null);
+                    setActiveModal(null);
+                  }}
                   onDelete={handleDeleteTask}
                   onSave={async (task) => {
                     if (!task.title?.trim()) {
@@ -6413,6 +6852,7 @@ Nội dung văn bản:\n` + content,
 
                     if (task.id && !isDraft) {
                       await handleUpdateTask(task.id, task);
+                      clearTaskDraft();
                       setActiveModal(null);
                       setEditingTask(null);
                       toast.success("Đã cập nhật công việc.");
@@ -6423,6 +6863,7 @@ Nội dung văn bản:\n` + content,
                     const newId = await persistTask(rest);
 
                     if (newId) {
+                      clearTaskDraft();
                       setActiveModal(null);
                       setEditingTask(null);
                       toast.success("Đã lưu công việc mới.");

@@ -1,5 +1,5 @@
 import { normalizeVietnameseUnicode } from "./unicodeNormalizer";
-import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, ImageRun, Table, TableRow, TableCell, BorderStyle, WidthType } from "docx";
+import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, ImageRun, Table, TableRow, TableCell, BorderStyle, WidthType, type FileChild } from "docx";
 
 export interface ExportTextRun {
   text: string;
@@ -514,8 +514,8 @@ function docxRuns(runs: ExportTextRun[]): TextRun[] {
   );
 }
 
-export function exportArticleModelToDocx(blocks: ExportArticleBlock[]): Paragraph[] {
-  const children: Paragraph[] = [];
+export function exportArticleModelToDocx(blocks: ExportArticleBlock[]): FileChild[] {
+  const children: FileChild[] = [];
 
   blocks.forEach((block) => {
     if (block.type === "heading") {

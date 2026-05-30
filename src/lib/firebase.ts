@@ -84,11 +84,11 @@ export interface FirestoreErrorInfo {
   operationType: 'create' | 'update' | 'delete' | 'list' | 'get' | 'write';
   path: string | null;
   authInfo: {
-    userId: string;
-    email: string;
-    emailVerified: boolean;
-    isAnonymous: boolean;
-    providerInfo: { providerId: string; displayName: string; email: string; }[];
+    authenticated: boolean;
+    userId?: string;
+    emailVerified?: boolean;
+    isAnonymous?: boolean;
+    providerIds: string[];
   }
 }
 
@@ -99,17 +99,18 @@ export function handleFirestoreError(error: any, operationType: FirestoreErrorIn
       error: error.message,
       operationType,
       path,
-      authInfo: {
-        userId: currentUser?.uid || 'no-uid',
-        email: currentUser?.email || 'no-email',
-        emailVerified: currentUser?.emailVerified || false,
-        isAnonymous: currentUser?.isAnonymous || false,
-        providerInfo: currentUser?.providerData.map(p => ({
-          providerId: p.providerId,
-          displayName: p.displayName || '',
-          email: p.email || ''
-        })) || []
-      }
+      authInfo: currentUser
+        ? {
+            authenticated: true,
+            userId: currentUser.uid,
+            emailVerified: currentUser.emailVerified,
+            isAnonymous: currentUser.isAnonymous,
+            providerIds: currentUser.providerData.map((p) => p.providerId),
+          }
+        : {
+            authenticated: false,
+            providerIds: [],
+          }
     };
     console.error(`Firestore Permission Denied [${operationType}] at ${path}:`, errorInfo);
     throw new Error(JSON.stringify(errorInfo));

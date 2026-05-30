@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { FEATURE_FLAGS } from "../../config/featureFlags";
 import { 
   ListTodo, 
@@ -47,8 +47,47 @@ export const TasksTabWorkspace = ({
   user,
   setIsAiCreateModalOpen
 }: TasksTabWorkspaceProps) => {
+  const taskUiStorageKey = user?.uid
+    ? `vms:workspace:ui:${user.uid}:tasks`
+    : null;
   const [viewMode, setViewMode] = useState<"list" | "board">("list");
+  const [viewModeRestored, setViewModeRestored] = useState(false);
   const [boardSearch, setBoardSearch] = useState("");
+
+  useEffect(() => {
+    setViewModeRestored(false);
+    if (!taskUiStorageKey) {
+      setViewModeRestored(true);
+      return;
+    }
+    try {
+      const saved = localStorage.getItem(taskUiStorageKey);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed?.viewMode === "list" || parsed?.viewMode === "board") {
+          setViewMode(parsed.viewMode);
+        }
+      }
+    } catch {
+      // Ignore malformed local UI state.
+    } finally {
+      setViewModeRestored(true);
+    }
+  }, [taskUiStorageKey]);
+
+  useEffect(() => {
+    if (!taskUiStorageKey || !viewModeRestored) return;
+    try {
+      const previous = localStorage.getItem(taskUiStorageKey);
+      const parsed = previous ? JSON.parse(previous) : {};
+      localStorage.setItem(
+        taskUiStorageKey,
+        JSON.stringify({ ...parsed, viewMode, updatedAt: Date.now() }),
+      );
+    } catch {
+      // Ignore local storage quota or malformed state errors.
+    }
+  }, [taskUiStorageKey, viewModeRestored, viewMode]);
 
   const handleSearch = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
