@@ -26,6 +26,7 @@ interface ParsedLine {
   level?: number;
   number?: number;
   text: string;
+  caption?: string;
 }
 
 const PLACEHOLDER_MARKER_PATTERN = /\[(?:\s*PLACEHOLDER[^\]]*|\s*[—-]+\s*(?:ẢNH|ANH|PLACEHOLDER)\s*[—-]+\s*)\]/gi;
@@ -73,21 +74,37 @@ function stripInlineMarkdown(value: string): string {
     .trim();
 }
 
-function figureTextFromLine(line: string): string | null {
+function explicitCaptionFromText(value: string): string | undefined {
+  const text = stripInlineMarkdown(value);
+  const match = text.match(/^(Hình\s*\d*|Ảnh\s*\d*|Chú thích ảnh|Caption)\s*[:.：-]?\s+(.{2,})$/iu);
+  if (!match) return undefined;
+
+  return collapseDuplicatedCaption(`${match[1].trim()}: ${match[2].trim()}`);
+}
+
+function figureFromLine(line: string): { title: string; caption?: string } | null {
   const imageMatch = line.match(/^!\[([^\]]*)\]\(([^)]*)\)\s*$/);
   if (imageMatch) {
-    return collapseDuplicatedCaption(stripInlineMarkdown(imageMatch[1] || "Hình minh họa"));
+    const altText = stripInlineMarkdown(imageMatch[1] || "");
+    return {
+      title: "Vị trí chèn ảnh minh họa",
+      caption: altText ? collapseDuplicatedCaption(altText) : undefined,
+    };
   }
 
-  const placeholderMatch = line.match(/\[([^\]]*(?:PLACEHOLDER|ẢNH|ANH)[^\]]*)\]/i);
+  const placeholderMatch = line.match(/\[([^\]]*(?:PLACEHOLDER|ẢNH|ANH|HÌNH)[^\]]*)\]/i);
   if (placeholderMatch) {
-    const markerCaption = placeholderMatch[1]
+    const markerTitle = placeholderMatch[1]
       .replace(/PLACEHOLDER|ẢNH|ANH|HÌNH|MINH HỌA|[—-]/gi, " ")
       .replace(/[:：]+/g, " ")
       .replace(/\s+/g, " ")
       .trim();
-    const visibleCaption = stripInlineMarkdown(line.replace(placeholderMatch[0], markerCaption));
-    return collapseDuplicatedCaption(visibleCaption || markerCaption || "Hình minh họa");
+    const afterMarker = line.slice((placeholderMatch.index || 0) + placeholderMatch[0].length).trim();
+
+    return {
+      title: markerTitle || "Vị trí chèn ảnh minh họa",
+      caption: explicitCaptionFromText(afterMarker),
+    };
   }
 
   return null;
@@ -98,9 +115,9 @@ function parseMarkdownLines(content: string): ParsedLine[] {
     const line = rawLine.trim();
     if (!line) return { kind: "blank", text: "" };
 
-    const figureText = figureTextFromLine(line);
-    if (figureText !== null) {
-      return { kind: "figure", text: figureText };
+    const figure = figureFromLine(line);
+    if (figure !== null) {
+      return { kind: "figure", text: figure.title, caption: figure.caption };
     }
 
     const headingMatch = line.match(/^(#{1,3})\s+(.+)$/);
@@ -159,11 +176,11 @@ function isDuplicateCaption(candidate: string, previousFigureCaption: string): b
   return Boolean(previousFigureCaption && normalizeComparableText(candidate) === normalizeComparableText(previousFigureCaption));
 }
 
-function createFigureBlock(index: number, captionText: string): ArticleBlock {
-  const caption = collapseDuplicatedCaption(captionText || "Hình minh họa");
+function createFigureBlock(index: number, titleText: string, captionText?: string): ArticleBlock {
+  const caption = captionText ? collapseDuplicatedCaption(captionText) : undefined;
   return createBlock("figure-placeholder", index, {
-    title: "Vị trí chèn ảnh minh họa",
-    caption,
+    title: titleText || "Vị trí chèn ảnh minh họa",
+    ...(caption ? { caption } : {}),
   });
 }
 
@@ -266,10 +283,8 @@ export function createArticleDocumentFromCurrentContent(
     }
 
     if (line.kind === "figure") {
-      if (line.text && !isDuplicateCaption(line.text, previousFigureCaption)) {
-        blocks.push(createFigureBlock(blockIndex++, line.text));
-        previousFigureCaption = line.text;
-      }
+      blocks.push(createFigureBlock(blockIndex++, line.text, line.caption));
+      previousFigureCaption = line.caption || "";
       return;
     }
 
