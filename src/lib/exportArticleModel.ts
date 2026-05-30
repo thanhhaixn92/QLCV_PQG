@@ -157,6 +157,41 @@ export function parseFigurePlaceholderText(text: string): { label: string; capti
   };
 }
 
+
+const FIGURE_PLACEHOLDER_LABEL = "Vị trí chèn ảnh minh họa";
+
+function isGenericFigurePlaceholderLabel(input: string | undefined): boolean {
+  const value = normalizeComparableText(input || "").toLocaleLowerCase("vi-VN");
+  if (!value) return false;
+
+  return value === FIGURE_PLACEHOLDER_LABEL.toLocaleLowerCase("vi-VN")
+    || /^khung\s+(?:giữ\s+chỗ\s+)?ảnh(?:\s+\d+)?(?:\s*[:：-].*)?$/iu.test(value)
+    || /^vị trí\s+chèn\s+ảnh\s+minh\s+họa$/iu.test(value);
+}
+
+function cleanFigureCaption(caption: string | undefined, label: string | undefined): string | undefined {
+  const value = normalizeDisplayText(caption || "");
+  if (!value) return undefined;
+  if (sameDisplayText(value, label) || isGenericFigurePlaceholderLabel(value)) return undefined;
+  return value;
+}
+
+function createFigurePlaceholderBlock(
+  label?: string,
+  caption?: string,
+): Extract<ExportArticleBlock, { type: "figurePlaceholder" }> {
+  const normalizedLabel = normalizeDisplayText(label || "") || FIGURE_PLACEHOLDER_LABEL;
+  return {
+    type: "figurePlaceholder",
+    label: normalizedLabel,
+    caption: cleanFigureCaption(caption, normalizedLabel),
+  };
+}
+
+function figurePlaceholderBoxText(): string {
+  return FIGURE_PLACEHOLDER_LABEL;
+}
+
 function parseKpiCandidateFromText(text: string): { label: string; value: string } | null {
   const value = normalizeComparableText(text);
   const match = value.match(/^([^:\n]{3,90})\s*:\s*(.{2,})$/u);
@@ -318,12 +353,7 @@ function appendElementToModel(
         .join(" "),
     );
 
-    const label = boxText || "Vị trí chèn ảnh minh họa";
-    blocks.push({
-      type: "figurePlaceholder",
-      label,
-      caption: caption && !sameDisplayText(label, caption) ? caption : undefined,
-    });
+    blocks.push(createFigurePlaceholderBlock(boxText, caption));
     return;
   }
 
@@ -339,16 +369,29 @@ function appendElementToModel(
     return;
   }
 
-  if (className.includes("export-image-placeholder") || isFigurePlaceholderText(text)) {
+  if (
+    className.includes("export-image-placeholder")
+    || className.includes("a4-figure-placeholder-box")
+    || className.includes("a4-figure-placeholder")
+    || isFigurePlaceholderText(text)
+    || isGenericFigurePlaceholderLabel(text)
+  ) {
     pushPendingKpis(blocks, pendingKpis);
-    const parsed = parseFigurePlaceholderText(text);
-    if (parsed) {
-      blocks.push({
-        type: "figurePlaceholder",
-        label: parsed.label,
-        caption: parsed.caption,
-      });
+
+    const nestedCaption = normalizeDisplayText(el.querySelector("figcaption")?.textContent || "");
+    if (nestedCaption) {
+      const boxText = normalizeDisplayText(
+        Array.from(el.children)
+          .filter((child) => child.tagName.toLowerCase() !== "figcaption")
+          .map((child) => child.textContent || "")
+          .join(" "),
+      );
+      blocks.push(createFigurePlaceholderBlock(boxText || text, nestedCaption));
+      return;
     }
+
+    const parsed = parseFigurePlaceholderText(text);
+    blocks.push(createFigurePlaceholderBlock(parsed?.label || text, parsed?.caption));
     return;
   }
 
@@ -397,7 +440,7 @@ function attachCaptionsToPreviousFigures(blocks: ExportArticleBlock[]): ExportAr
         isCaptionText(paragraphText);
 
       if (!previous.caption && captionLike) {
-        previous.caption = normalizeDisplayText(paragraphText);
+        previous.caption = cleanFigureCaption(paragraphText, previous.label);
         return;
       }
 
@@ -483,6 +526,7 @@ function pdfRuns(runs: ExportTextRun[]): any[] {
 }
 
 function pdfFigure(block: Extract<ExportArticleBlock, { type: "figurePlaceholder" }>): any[] {
+  const caption = cleanFigureCaption(block.caption, block.label);
   const content: any[] = [
     {
       table: {
@@ -491,7 +535,7 @@ function pdfFigure(block: Extract<ExportArticleBlock, { type: "figurePlaceholder
         body: [
           [
             {
-              text: block.label,
+              text: figurePlaceholderBoxText(),
               alignment: "center",
               bold: true,
               color: "#334155",
@@ -507,13 +551,13 @@ function pdfFigure(block: Extract<ExportArticleBlock, { type: "figurePlaceholder
         hLineStyle: () => ({ dash: { length: 4, space: 3 } }),
         vLineStyle: () => ({ dash: { length: 4, space: 3 } }),
       },
-      margin: [0, 10, 0, block.caption ? 4 : 12],
+      margin: [0, 10, 0, caption ? 4 : 12],
     },
   ];
 
-  if (block.caption) {
+  if (caption) {
     content.push({
-      text: block.caption,
+      text: caption,
       style: "caption",
       alignment: "center",
       margin: [0, 0, 0, 12],
@@ -687,42 +731,62 @@ export function exportArticleModelToDocx(blocks: ExportArticleBlock[]): ExportDo
     }
 
     if (block.type === "figurePlaceholder") {
+      const caption = cleanFigureCaption(block.caption, block.label);
+
       children.push(
-        new Paragraph({
-          children: [
-            new TextRun({
-              text: block.label,
-              font: "Times New Roman",
-              size: 26,
-              bold: true,
+        new Table({
+          rows: [
+            new TableRow({
+              children: [
+                new TableCell({
+                  children: [
+                    new Paragraph({
+                      children: [
+                        new TextRun({
+                          text: figurePlaceholderBoxText(),
+                          font: "Times New Roman",
+                          size: 26,
+                          bold: true,
+                          color: "334155",
+                        }),
+                      ],
+                      alignment: AlignmentType.CENTER,
+                      spacing: { before: 360, after: 360, line: 320 },
+                    }),
+                  ],
+                  shading: { fill: "F8FAFC" },
+                  borders: {
+                    top: { style: BorderStyle.DASHED, size: 8, color: "94A3B8" },
+                    bottom: { style: BorderStyle.DASHED, size: 8, color: "94A3B8" },
+                    left: { style: BorderStyle.DASHED, size: 8, color: "94A3B8" },
+                    right: { style: BorderStyle.DASHED, size: 8, color: "94A3B8" },
+                  },
+                }),
+              ],
             }),
           ],
-          alignment: AlignmentType.CENTER,
-          spacing: { before: 220, after: 120, line: 320 },
-          border: {
-            top: { style: BorderStyle.DASHED, size: 6, color: "94A3B8" },
-            bottom: { style: BorderStyle.DASHED, size: 6, color: "94A3B8" },
-            left: { style: BorderStyle.DASHED, size: 6, color: "94A3B8" },
-            right: { style: BorderStyle.DASHED, size: 6, color: "94A3B8" },
-          },
-          shading: { fill: "F8FAFC" },
-        } as any),
+          width: { size: 100, type: WidthType.PERCENTAGE },
+        }),
       );
-      if (block.caption) {
+
+      if (caption) {
         children.push(
           new Paragraph({
             children: [
               new TextRun({
-                text: block.caption,
+                text: caption,
                 font: "Times New Roman",
                 size: 22,
                 italics: true,
+                color: "475569",
               }),
             ],
             alignment: AlignmentType.CENTER,
-            spacing: { before: 60, after: 240, line: 320 },
+            spacing: { before: 80, after: 240, line: 320 },
           }),
         );
+      } else {
+        children.push(new Paragraph({ spacing: { after: 220 } }));
       }
       return;
     }
