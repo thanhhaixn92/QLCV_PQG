@@ -190,7 +190,6 @@ import {
   User as FirebaseUser,
   GoogleAuthProvider,
   signInWithPopup,
-  signInAnonymously,
 } from "firebase/auth";
 import {
   collection,
@@ -247,6 +246,11 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { EditorialToolSelector } from "./components/editorial/EditorialToolSelector";
 
 import { getStableEntityId, getRenderKey, dedupeByStableId, staticKey } from "./utils/listKeys";
+
+
+function isWorkspaceFirebaseUser(user: FirebaseUser | null | undefined): user is FirebaseUser {
+  return Boolean(user?.uid && !user.isAnonymous);
+}
 
 function getUserDisplayName(user: FirebaseUser | null, profile?: any) {
   if (profile?.displayName) return profile.displayName;
@@ -444,6 +448,7 @@ function App() {
   // Authentication & Global User State
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [authReady, setAuthReady] = useState(false);
+  const validWorkspaceUser = isWorkspaceFirebaseUser(user) ? user : null;
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [activeModal, setActiveModal] = useState<
     "auth" | "account" | "settings" | "task-edit" | null
@@ -708,37 +713,32 @@ function App() {
       return;
     }
 
-    let anonymousLoginStarted = false;
-
     const unsubscribe = onAuthStateChanged(
       auth,
       async (firebaseUser) => {
-        if (firebaseUser) {
+        if (firebaseUser?.isAnonymous) {
+          logDebug("[BOOT] ignoring anonymous auth session", {
+            uid: firebaseUser.uid,
+            isAnonymous: true,
+          });
+          setUser(null);
+          setAuthReady(true);
+          try {
+            await signOut(auth);
+          } catch (err) {
+            console.error("[BOOT] failed to clear anonymous auth session", err);
+          }
+          return;
+        }
+
+        if (isWorkspaceFirebaseUser(firebaseUser)) {
           setUser(firebaseUser);
           setAuthReady(true);
           logDebug("[BOOT] auth ready", {
             uid: firebaseUser.uid,
-            isAnonymous: firebaseUser.isAnonymous,
+            isAnonymous: false,
           });
           return;
-        }
-
-        if (FEATURE_FLAGS.ANONYMOUS_AUTH_ENABLED && !anonymousLoginStarted) {
-          anonymousLoginStarted = true;
-
-          try {
-            logDebug("[BOOT] starting anonymous auth");
-            await signInAnonymously(auth);
-            return;
-          } catch (err) {
-            console.error("[BOOT] anonymous auth failed", err);
-            setUser(null);
-            setAuthReady(true);
-            setError(
-              "Không thể vào chế độ khách. Vui lòng bật Anonymous provider trong Firebase Authentication."
-            );
-            return;
-          }
         }
 
         setUser(null);
@@ -849,7 +849,9 @@ function App() {
 
   // --- PROFILE LOGIC ---
   const fetchProfile = async () => {
-    const currentUser = auth.currentUser || user;
+    const currentUser = isWorkspaceFirebaseUser(auth.currentUser)
+      ? auth.currentUser
+      : validWorkspaceUser;
     if (!backendReady || !firestoreReady || !authReady || !currentUser) return;
     try {
       const token = await currentUser.getIdToken();
@@ -878,7 +880,9 @@ function App() {
   };
 
   const handleSaveProfile = async (data: Partial<UserProfile>) => {
-    const currentUser = auth.currentUser || user;
+    const currentUser = isWorkspaceFirebaseUser(auth.currentUser)
+      ? auth.currentUser
+      : validWorkspaceUser;
     if (!currentUser) {
       toast.error("Vui lòng đăng nhập để thực hiện.");
       return;
@@ -901,10 +905,10 @@ function App() {
   };
 
   useEffect(() => {
-    if (backendReady && firestoreReady && authReady && user) {
+    if (backendReady && firestoreReady && authReady && validWorkspaceUser) {
       fetchProfile();
     }
-  }, [backendReady, firestoreReady, authReady, user?.uid]);
+  }, [backendReady, firestoreReady, authReady, validWorkspaceUser?.uid]);
 
   // --- FLOATING CHAT LOGIC ---
   const getChatAuthToken = async () => {
@@ -913,7 +917,9 @@ function App() {
         "Đang kiểm tra trạng thái đăng nhập. Vui lòng thử lại sau vài giây.",
       );
     }
-    const currentUser = auth.currentUser || user;
+    const currentUser = isWorkspaceFirebaseUser(auth.currentUser)
+      ? auth.currentUser
+      : validWorkspaceUser;
     if (!currentUser) {
       throw new Error(
         "Bạn chưa đăng nhập hoặc phiên làm việc đã hết hạn. Vui lòng đăng nhập lại.",
@@ -1580,6 +1586,26 @@ function App() {
   const [recentLogs, setRecentLogs] = useState<any[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
 
+  const clearUserScopedState = () => {
+    setProfile(null);
+    setDocuments([]);
+    setSessions([]);
+    setRecentLogs([]);
+    setAllTasks([]);
+    setProposals([]);
+    setSelectedProposalId(null);
+    setProposalChatContext(null);
+    setCurrentSessionId(null);
+    setPersonalAIStatus({ hasKey: false, useSystem: true });
+    setChatMessages([]);
+  };
+
+  useEffect(() => {
+    if (authReady && !validWorkspaceUser) {
+      clearUserScopedState();
+    }
+  }, [authReady, validWorkspaceUser?.uid]);
+
   const activeTasks = useMemo(() => {
     const map = new Map<string, WorkTask>();
     allTasks.forEach((t) => {
@@ -1762,7 +1788,9 @@ function App() {
   };
 
   const fetchAIKeyStatus = async () => {
-    const currentUser = auth.currentUser || user;
+    const currentUser = isWorkspaceFirebaseUser(auth.currentUser)
+      ? auth.currentUser
+      : validWorkspaceUser;
     if (!backendReady || !firestoreReady || !authReady || !currentUser) return;
     try {
       const token = await currentUser.getIdToken();
@@ -1794,10 +1822,10 @@ function App() {
   };
 
   useEffect(() => {
-    if (backendReady && firestoreReady && authReady && user) {
+    if (backendReady && firestoreReady && authReady && validWorkspaceUser) {
       fetchAIKeyStatus();
     }
-  }, [backendReady, firestoreReady, authReady, user?.uid]);
+  }, [backendReady, firestoreReady, authReady, validWorkspaceUser?.uid]);
 
   const testPersonalKey = async () => {
     if (!aiKeyForm.apiKey) {
@@ -1810,7 +1838,9 @@ function App() {
       return;
     }
 
-    const currentUser = auth.currentUser || user;
+    const currentUser = isWorkspaceFirebaseUser(auth.currentUser)
+      ? auth.currentUser
+      : validWorkspaceUser;
     if (!currentUser) {
       toast.error(
         "Không xác định được người dùng. Vui lòng thử đăng nhập lại.",
@@ -1856,7 +1886,9 @@ function App() {
   };
 
   const savePersonalKey = async () => {
-    const currentUser = auth.currentUser || user;
+    const currentUser = isWorkspaceFirebaseUser(auth.currentUser)
+      ? auth.currentUser
+      : validWorkspaceUser;
     if (!currentUser || !keyTestResult?.success) {
       if (!currentUser) toast.error("Vui lòng đăng nhập để thực hiện.");
       return;
@@ -1900,7 +1932,9 @@ function App() {
   };
 
   const deletePersonalKey = async () => {
-    const currentUser = auth.currentUser || user;
+    const currentUser = isWorkspaceFirebaseUser(auth.currentUser)
+      ? auth.currentUser
+      : validWorkspaceUser;
     if (!currentUser) {
       toast.error("Vui lòng đăng nhập để thực hiện.");
       return;
@@ -1953,11 +1987,11 @@ function App() {
 
   // Sync Profile
   useEffect(() => {
-    if (!user || !db) {
+    if (!validWorkspaceUser || !db) {
       setProfile(null);
       return;
     }
-    const profileRef = doc(db, "users", user.uid, "profile", "main");
+    const profileRef = doc(db, "users", validWorkspaceUser.uid, "profile", "main");
     const unsub = onSnapshot(
       profileRef,
       (docSnap) => {
@@ -1985,7 +2019,7 @@ function App() {
       },
     );
     return () => unsub();
-  }, [user, db]);
+  }, [validWorkspaceUser?.uid, db]);
 
   // Helper for debug logging
   const ENABLE_DEBUG_LOGS = import.meta.env.DEV && import.meta.env.VITE_ENABLE_DEBUG_LOGS === "true";
@@ -1998,8 +2032,8 @@ function App() {
 
   // Sync Library Collections
   useEffect(() => {
-    if (!user || !db) return;
-    const collsRef = collection(db, "users", user.uid, "libraryCollections");
+    if (!validWorkspaceUser || !db) return;
+    const collsRef = collection(db, "users", validWorkspaceUser.uid, "libraryCollections");
     const unsub = onSnapshot(collsRef, (snapshot) => {
       const fbColls: LibraryCollection[] = [];
       snapshot.forEach((d) =>
@@ -2013,7 +2047,7 @@ function App() {
       });
     });
     return () => unsub();
-  }, [user?.uid, db]);
+  }, [validWorkspaceUser?.uid, db]);
 
   // Sync Documents
   useEffect(() => {
@@ -2021,8 +2055,8 @@ function App() {
   }, [activeModal, isChatOpen]);
 
   useEffect(() => {
-    if (!user || !db) return;
-    const docsRef = collection(db, "users", user.uid, "documents");
+    if (!validWorkspaceUser || !db) return;
+    const docsRef = collection(db, "users", validWorkspaceUser.uid, "documents");
     const unsub = onSnapshot(docsRef, (snapshot) => {
       const fbDocs: DocumentSource[] = [];
       snapshot.forEach((d) =>
@@ -2034,13 +2068,13 @@ function App() {
       });
     });
     return () => unsub();
-  }, [user?.uid, db]);
+  }, [validWorkspaceUser?.uid, db]);
 
   // Sync Sessions
   useEffect(() => {
-    if (!user || !db) return;
+    if (!validWorkspaceUser || !db) return;
     const sessionsRef = query(
-      collection(db, "users", user.uid, "sessions"),
+      collection(db, "users", validWorkspaceUser.uid, "sessions"),
       orderBy("updatedAt", "desc"),
     );
     const unsub = onSnapshot(sessionsRef, (snapshot) => {
@@ -2051,17 +2085,17 @@ function App() {
       setSessions(dedupeByStableId(fbSessions, "session"));
     });
     return () => unsub();
-  }, [user?.uid, db]);
+  }, [validWorkspaceUser?.uid, db]);
 
   // Separate effect for real-time tasks to properly manage subscription lifecycle
   useEffect(() => {
-    if (!user || !db) return;
+    if (!validWorkspaceUser || !db) return;
 
     let unsubscribeLogs: () => void = () => {};
 
     try {
       const logsQuery = query(
-        collection(db, "users", user.uid, "activityLogs"),
+        collection(db, "users", validWorkspaceUser.uid, "activityLogs"),
         orderBy("createdAt", "desc"),
         limit(5),
       );
@@ -2079,7 +2113,7 @@ function App() {
 
     try {
       const tasksQuery = query(
-        collection(db, "users", user.uid, "tasks"),
+        collection(db, "users", validWorkspaceUser.uid, "tasks"),
         orderBy("createdAt", "desc"),
       );
 
@@ -2099,7 +2133,7 @@ function App() {
         },
         (err) => {
           if (err.code === "permission-denied") {
-            handleFirestoreError(err, "list", `users/${user.uid}/tasks`);
+            handleFirestoreError(err, "list", `users/${validWorkspaceUser.uid}/tasks`);
           } else {
             console.error("Task Sync Error:", err);
           }
@@ -2113,7 +2147,7 @@ function App() {
       unsubscribeTasks();
       unsubscribeLogs();
     };
-  }, [user?.uid, db]);
+  }, [validWorkspaceUser?.uid, db]);
 
   const syncDataFromFirestore = async (userId: string) => {
     // legacy function left empty since we use separate effects now
@@ -4247,9 +4281,34 @@ Nội dung văn bản:\n` + content,
       case "auth/network-request-failed":
         return "Kết nối mạng không ổn định. Vui lòng tắt VPN hoặc thử lại.";
       default:
-        return "Đăng nhập Google không thành công. Vui lòng dùng Email/Password hoặc chế độ khách.";
+        return "Đăng nhập Google không thành công. Vui lòng dùng Email/Password.";
     }
   };
+
+  const waitForWorkspaceAuthUser = (expectedUid: string) =>
+    new Promise<void>((resolve, reject) => {
+      let unsubscribe: () => void = () => {};
+      const timeout = window.setTimeout(() => {
+        unsubscribe();
+        reject(new Error("Không thể xác nhận phiên đăng nhập. Vui lòng thử lại."));
+      }, 10000);
+
+      unsubscribe = onAuthStateChanged(
+        auth,
+        (firebaseUser) => {
+          if (isWorkspaceFirebaseUser(firebaseUser) && firebaseUser.uid === expectedUid) {
+            window.clearTimeout(timeout);
+            unsubscribe();
+            resolve();
+          }
+        },
+        (err) => {
+          window.clearTimeout(timeout);
+          unsubscribe();
+          reject(err);
+        },
+      );
+    });
 
   const handleGoogleAuth = async () => {
     if (!FEATURE_FLAGS.GOOGLE_AUTH_ENABLED) {
@@ -4262,7 +4321,8 @@ Nội dung văn bản:\n` + content,
 
     try {
       const provider = new GoogleAuthProvider();
-      await signInWithPopup(auth, provider);
+      const credential = await signInWithPopup(auth, provider);
+      await waitForWorkspaceAuthUser(credential.user.uid);
       setActiveModal(null);
     } catch (err) {
       console.error("[AUTH] Google sign-in failed", err);
@@ -4275,9 +4335,7 @@ Nội dung văn bản:\n` + content,
   const handleLogout = async () => {
     try {
       await signOut(auth);
-      setDocuments([]);
-      setSessions([]);
-      setCurrentSessionId(null);
+      clearUserScopedState();
       setActiveModal(null);
       
       // Clear sensitive local cache
