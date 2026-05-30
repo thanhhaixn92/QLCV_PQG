@@ -9,7 +9,6 @@ import {
 import { EditorialKindSelector } from './EditorialKindSelector';
 import { EditorialInputForm } from './EditorialInputForm';
 import { EditorialPreflightPanel } from './EditorialPreflightPanel';
-import { exportToWord } from '../../lib/exportUtils';
 import { TaskType, OutputFormat } from '../../types';
 
 import { motion, AnimatePresence } from 'framer-motion';
@@ -22,6 +21,7 @@ import { EditorialToolSelector } from './EditorialToolSelector';
 import { ContentReviewDisplay } from './ContentReviewDisplay';
 import { A4PrintPreview } from './A4PrintPreview';
 import { createArticleDocumentFromCurrentContent } from '../../lib/publishing/articleDocumentAdapter';
+import { validateArticleDocument } from '../../lib/publishing/validateArticleDocument';
 
 export const EditorWorkspace = (props: any) => {
   const {
@@ -41,6 +41,23 @@ export const EditorWorkspace = (props: any) => {
       authorName: user?.displayName || user?.email || undefined,
     });
   }, [illustrations, insertApprovedIllustrationsForPlainExport, output, user?.displayName, user?.email]);
+
+  const validateArticleBeforeExport = React.useCallback(() => {
+    const validation = validateArticleDocument(articleDocument);
+
+    if (!validation.valid) {
+      const message = validation.errors[0]?.message || "ArticleDocument chưa hợp lệ, không thể xuất file.";
+      toast.error(message);
+      setError(message);
+      return false;
+    }
+
+    if (validation.warnings.length > 0) {
+      toast(`Cảnh báo: ${validation.warnings[0].message}`, { icon: "⚠️", duration: 4000 });
+    }
+
+    return true;
+  }, [articleDocument, setError, toast]);
 
   const [cooldownRemaining, setCooldownRemaining] = React.useState(0);
   React.useEffect(() => {
@@ -1199,6 +1216,7 @@ export const EditorWorkspace = (props: any) => {
                                               if (!confirmed) return;
                                             }
                                             try {
+                                              if (!validateArticleBeforeExport()) return;
                                               toast(
                                                 "Đang tạo file PDF...",
                                                 { icon: "ℹ️", duration: 5000 },
@@ -1264,6 +1282,7 @@ export const EditorWorkspace = (props: any) => {
                                             if (!confirmed) return;
                                           }
                                           try {
+                                            if (!validateArticleBeforeExport()) return;
                                             const { exportWordFromElement } = await import("../../lib/exportUtils");
                                             await exportWordFromElement(
                                               "printable-article",
