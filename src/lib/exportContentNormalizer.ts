@@ -13,16 +13,136 @@ export interface ExportValidationResult {
   issues: ExportValidationIssue[];
 }
 
+export interface ExportImagePlaceholderBlock {
+  placeholder: string;
+  caption?: string;
+}
+
 export function normalizeVietnameseText(input: string): string {
   let output = normalizeVietnameseUnicode(input)
     .replace(/Bản xem nhanh\s*\(Visual Snapshot\)/gi, '')
     .replace(/Visual Snapshot/gi, '')
     .replace(/Bản chụp nhanh PDF/gi, '');
 
+  output = normalizeExportTextContent(output);
+
   return output
     .replace(/[ \t]{2,}/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+}
+
+function normalizeVietnameseTextNode(input: string): string {
+  // DOM text nodes must preserve leading/trailing whitespace around inline elements.
+  let output = normalizeVietnameseUnicode(input || '')
+    .replace(/Bản xem nhanh\s*\(Visual Snapshot\)/gi, '')
+    .replace(/Visual Snapshot/gi, '')
+    .replace(/Bản chụp nhanh PDF/gi, '');
+
+  output = output.replace(/([A-Za-zÀ-ỹĐđ0-9\)])\s*:\s*([A-Za-zÀ-ỹĐđ])/gu, '$1: $2');
+  output = output.replace(/(?<!\d):(?=[^\s\d/:])/gu, ': ');
+
+  return output;
+}
+
+function protectUrls(input: string): { text: string; urls: string[] } {
+  const urls: string[] = [];
+  const text = input.replace(/https?:\/\/\S+/gi, (url) => {
+    urls.push(url);
+    return `__EXPORT_URL_${urls.length - 1}__`;
+  });
+  return { text, urls };
+}
+
+function restoreUrls(input: string, urls: string[]): string {
+  return urls.reduce(
+    (output, url, index) => output.replace(`__EXPORT_URL_${index}__`, url),
+    input,
+  );
+}
+
+function buildCleanPlaceholderLabel(index: string | undefined, description: string): string {
+  const cleanIndex = (index || '').trim();
+  const cleanDescription = description.trim().replace(/\s+/g, ' ');
+  const label = cleanIndex ? `KHUNG ẢNH ${cleanIndex}` : 'KHUNG ẢNH';
+  return cleanDescription ? `${label}: ${cleanDescription}` : label;
+}
+
+export function extractImagePlaceholderBlock(input: string): ExportImagePlaceholderBlock | null {
+  const text = input.trim();
+  if (!text) return null;
+
+  const bracketMatch = text.match(
+    /^\s*\[\s*(?:PLACEHOLDER\s+)?(?:ẢNH|HÌNH)\s*(\d+)?\s*:\s*([^\]]+?)\s*\]\s*(?:(Chú thích ảnh|Ghi chú hình|Caption)\s*:?\s*(.+))?\s*$/iu,
+  );
+
+  if (bracketMatch) {
+    return {
+      placeholder: buildCleanPlaceholderLabel(bracketMatch[1], bracketMatch[2]),
+      caption: bracketMatch[4]?.trim()
+        ? `${bracketMatch[3] || 'Chú thích ảnh'}: ${bracketMatch[4].trim()}`
+        : undefined,
+    };
+  }
+
+  const cleanMatch = text.match(
+    /^(KHUNG\s+(?:GIỮ\s+CHỖ\s+)?ẢNH(?:\s+\d+)?\s*:?\s*.*?)(?:\s+(Chú thích ảnh|Ghi chú hình|Caption)\s*:?\s*(.+))?$/iu,
+  );
+
+  if (cleanMatch && /^KHUNG/iu.test(cleanMatch[1])) {
+    return {
+      placeholder: cleanMatch[1].trim(),
+      caption: cleanMatch[3]?.trim()
+        ? `${cleanMatch[2] || 'Chú thích ảnh'}: ${cleanMatch[3].trim()}`
+        : undefined,
+    };
+  }
+
+  return null;
+}
+
+function removeDebugMarkers(input: string): string {
+  return input
+    .replace(/\[\s*[-–—]{1,3}\s*(?=[^\]]*(?:PLACEHOLDER|ẢNH|HÌNH))[^\]]*?[-–—]{1,3}\s*\]/giu, '')
+    .replace(/^\s*[-–—]{1,3}\s*(?=.*(?:PLACEHOLDER|ẢNH|HÌNH)).*?[-–—]{1,3}\s*$/gimu, '');
+}
+
+function replaceBracketedPlaceholders(input: string): string {
+  const attachedCaptionPattern =
+    /\[\s*(?:PLACEHOLDER\s+)?(?:ẢNH|HÌNH)\s*(\d+)?\s*:\s*([^\]]+?)\s*\]\s*(Chú thích ảnh|Ghi chú hình|Caption)\s*:?\s*([^\n]+)/giu;
+
+  const standalonePattern =
+    /\[\s*(?:PLACEHOLDER\s+)?(?:ẢNH|HÌNH)\s*(\d+)?\s*:\s*([^\]]+?)\s*\]/giu;
+
+  const withCaptions = input.replace(
+    attachedCaptionPattern,
+    (match, index, description, captionPrefix, caption, offset) => {
+      if (input[offset - 1] === '!') return match;
+      return `${buildCleanPlaceholderLabel(index, description)}\n${captionPrefix}: ${caption.trim()}`;
+    },
+  );
+
+  return withCaptions.replace(
+    standalonePattern,
+    (match, index, description, offset) => {
+      if (withCaptions[offset - 1] === '!') return match;
+      return buildCleanPlaceholderLabel(index, description);
+    },
+  );
+}
+
+export function normalizeExportTextContent(input: string): string {
+  const { text, urls } = protectUrls(input);
+
+  let output = removeDebugMarkers(text);
+  output = replaceBracketedPlaceholders(output)
+    .replace(/^(\s*\d+)[.)]([^\s\d])/gm, '$1. $2')
+    .replace(/^(\s*[-*])([^\s])/gm, '$1 $2');
+
+  output = output.replace(/([A-Za-zÀ-ỹĐđ0-9\)])\s*:\s*([A-Za-zÀ-ỹĐđ])/gu, '$1: $2');
+  output = output.replace(/(?<!\d):(?=[^\s\d/:])/gu, ': ');
+
+  return restoreUrls(output, urls);
 }
 
 export function stripExportArtifacts(root: HTMLElement): HTMLElement {
@@ -56,8 +176,77 @@ export function stripExportArtifacts(root: HTMLElement): HTMLElement {
   return clone;
 }
 
+function normalizeImagePlaceholderElements(root: HTMLElement): void {
+  const candidates = Array.from(root.querySelectorAll<HTMLElement>('p,li,div'));
+
+  candidates.forEach((el) => {
+    if (el.querySelector('img,table,ul,ol,h1,h2,h3')) return;
+
+    const text = (el.textContent || '').trim();
+    const block = extractImagePlaceholderBlock(text);
+    if (!block) return;
+
+    const fragment = document.createDocumentFragment();
+    fragment.appendChild(
+      createExportParagraph(
+        document,
+        block.placeholder,
+        'export-image-placeholder',
+        'text-align:center;font-weight:700;border:1px dashed #64748b;background:#f8fafc;padding:10px;margin:12px 0 4px 0;color:#334155;',
+      ),
+    );
+
+    if (block.caption) {
+      fragment.appendChild(
+        createExportParagraph(
+          document,
+          block.caption,
+          'export-image-caption',
+          'text-align:center;font-style:italic;font-size:11px;margin:0 0 12px 0;color:#475569;',
+        ),
+      );
+    }
+
+    el.replaceWith(fragment);
+  });
+}
+
+function fixColonSpacingAcrossDomBoundaries(root: HTMLElement): void {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes: Text[] = [];
+  while (walker.nextNode()) {
+    nodes.push(walker.currentNode as Text);
+  }
+
+  for (let i = 0; i < nodes.length - 1; i += 1) {
+    const current = nodes[i];
+    const next = nodes[i + 1];
+    const currentValue = current.nodeValue || '';
+    const nextValue = next.nodeValue || '';
+
+    if (/:$/.test(currentValue.trimEnd()) && /^[A-Za-zÀ-ỹĐđ]/u.test(nextValue.trimStart())) {
+      current.nodeValue = `${currentValue.trimEnd()} `;
+    }
+  }
+}
+
+function createExportParagraph(
+  documentRef: Document,
+  text: string,
+  className: string,
+  cssText: string,
+): HTMLParagraphElement {
+  const p = documentRef.createElement('p');
+  p.className = className;
+  p.textContent = text;
+  p.setAttribute('style', cssText);
+  return p;
+}
+
 export function normalizeExportDom(root: HTMLElement): HTMLElement {
   const clone = stripExportArtifacts(root);
+
+  normalizeImagePlaceholderElements(clone);
 
   const walker = document.createTreeWalker(clone, NodeFilter.SHOW_TEXT);
   const nodes: Text[] = [];
@@ -66,8 +255,11 @@ export function normalizeExportDom(root: HTMLElement): HTMLElement {
   }
 
   nodes.forEach((node) => {
-    node.nodeValue = normalizeVietnameseText(node.nodeValue || '');
+    node.nodeValue = normalizeVietnameseTextNode(node.nodeValue || '');
   });
+
+  fixColonSpacingAcrossDomBoundaries(clone);
+  normalizeImagePlaceholderElements(clone);
 
   return clone;
 }

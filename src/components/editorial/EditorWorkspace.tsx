@@ -1252,19 +1252,19 @@ export const EditorWorkspace = (props: any) => {
                                             if (!confirmed) return;
                                           }
                                           try {
-                                            let cleanContent = stripResolvedPlaceholders(
-                                              removeBrokenMarkdownImages(output),
-                                              illustrations,
-                                              true,
-                                            );
-                                            const { extractExportTitle, exportToWord } = await import("../../lib/exportUtils");
-                                            const extracted = extractExportTitle(input, cleanContent);
-                                            await exportToWord(
-                                              extracted.title,
-                                              extracted.body,
-                                              `Bai_viet_HTMB_${Date.now()}`,
-                                              illustrations,
-                                              editorialKind,
+                                            const { exportWordFromElement } = await import("../../lib/exportUtils");
+                                            await exportWordFromElement(
+                                              "printable-article",
+                                              {
+                                                title:
+                                                  sessions.find(
+                                                    (s) => s.id === currentSessionId,
+                                                  )?.title ||
+                                                  input ||
+                                                  "Bài viết",
+                                                filename: `Bai_viet_HTMB_${Date.now()}`,
+                                                kind: editorialKind,
+                                              },
                                             );
 
                                             if (currentSessionId) {

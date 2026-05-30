@@ -1,12 +1,11 @@
 /**
- * Printable PDF Export Utility using browser native print engine (iframe)
+ * Printable PDF Export Utility using pdfmake/html-to-pdfmake.
  * Provides searchable, selectable, vector-grade high-quality printouts.
  */
 
-import htmlToPdfmake from "html-to-pdfmake";
 import { normalizeExportDom, validateExportContent } from "./exportContentNormalizer";
+import { buildExportArticleModel, exportArticleModelToPdfmake } from "./exportArticleModel";
 
-// Helper for dynamic loading and module normalization
 async function getPdfMakeClient() {
   const pdfMakeModule = await import("pdfmake/build/pdfmake");
   const pdfFontsModule = await import("pdfmake/build/vfs_fonts");
@@ -33,7 +32,7 @@ async function getPdfMakeClient() {
     pdfMakeCandidate?.default?.createPdf;
 
   if (typeof createPdf !== "function") {
-    throw new Error("Không thể khởi tạo trình xuất (pdfMake is undefined).");
+    throw new Error("Không thể khởi tạo trình xuất PDF (pdfMake.createPdf unavailable).");
   }
 
   return {
@@ -69,37 +68,18 @@ export async function exportPrintablePdfFromElement(elementId: string, options: 
     options.onValidationWarning(warnings[0].message);
   }
 
-  // Normalize DOM (strips artifacts, fixes Vietnamese text, removes Visual Snapshot text)
+  // Normalize DOM on a clone only.
   const normalizedClone = normalizeExportDom(element);
 
-  // Convert HTML to pdfmake format!
-  // Note: html-to-pdfmake needs window object in browser environment
-  const htmlContent = normalizedClone.outerHTML;
-  let pdfmakeContent;
-  try {
-    pdfmakeContent = htmlToPdfmake(htmlContent, {
-      window: window,
-      defaultStyles: {
-        b: { bold: true },
-        strong: { bold: true },
-        u: { decoration: 'underline' },
-        i: { italics: true },
-        em: { italics: true },
-        h1: { fontSize: 16, bold: true, alignment: 'center', margin: [0, 10, 0, 15] },
-        h2: { fontSize: 14, bold: true, margin: [0, 10, 0, 8] },
-        h3: { fontSize: 13, bold: true, margin: [0, 10, 0, 8] },
-        p: { fontSize: 13, margin: [0, 0, 0, 10], alignment: 'justify' },
-        table: { margin: [0, 5, 0, 15] }
-      }
-    });
-  } catch (err) {
-    console.error("htmlToPdfmake error:", err);
-    throw new Error("Lỗi chuyển đổi HTML sang cấu trúc PDF.");
+  const articleModel = buildExportArticleModel(normalizedClone);
+  if (articleModel.length === 0) {
+    throw new Error("Nội dung bài viết trống sau khi chuẩn hóa, không thể xuất PDF.");
   }
+  const pdfmakeContent = exportArticleModelToPdfmake(articleModel);
 
-  // Prepare document definition
+  // Prepare document definition.
   const docDefinition = {
-    content: pdfmakeContent as any,
+    content: pdfmakeContent,
     defaultStyle: {
       font: 'Roboto',
       fontSize: 13,
@@ -108,6 +88,22 @@ export async function exportPrintablePdfFromElement(elementId: string, options: 
     },
     pageSize: 'A4',
     pageMargins: [70, 56, 42, 56] as any, // [left, top, right, bottom]
+    footer: function(currentPage: number, pageCount: number) {
+      return {
+        text: `Trang ${currentPage} / ${pageCount}`,
+        alignment: 'center',
+        fontSize: 10,
+        margin: [0, 20, 0, 0],
+        color: '#94a3b8'
+      };
+    },
+    styles: {
+      h1: { fontSize: 16, bold: true, alignment: 'center', margin: [0, 10, 0, 15], color: '#002D56' },
+      h2: { fontSize: 14, bold: true, margin: [0, 8, 0, 5], color: '#002D56' },
+      h3: { fontSize: 13, bold: true, margin: [0, 5, 0, 5] },
+      paragraph: { fontSize: 13, margin: [0, 0, 0, 10], alignment: 'justify', lineHeight: 1.3 },
+      caption: { fontSize: 10, italics: true, color: '#475569', alignment: 'center', margin: [0, 0, 0, 10] },
+    },
     info: {
       title: options.title || 'Tai_Lieu_Xuat_Ban'
     }
