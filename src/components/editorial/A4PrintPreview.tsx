@@ -137,12 +137,16 @@ export const A4PrintPreview = ({
           aria-label="Kiểm tra ArticleDocument"
           data-export-exclude="true"
         >
-          {!validation.valid && <strong>ArticleDocument cần kiểm tra trước khi xuất bản.</strong>}
+          {!validation.valid ? (
+            <strong>ArticleDocument cần kiểm tra trước khi xuất bản.</strong>
+          ) : (
+            <strong>Bản thảo còn cảnh báo trước khi xuất bản chính thức.</strong>
+          )}
           {validation.errors.map((error) => (
-            <p key={`error-${error.path}`}>Lỗi {error.path}: {error.message}</p>
+            <p key={`error-${error.path}`} title={error.detail || error.path}>Lỗi: {error.message}</p>
           ))}
           {validation.warnings.map((warning) => (
-            <p key={`warning-${warning.path}`}>Cảnh báo {warning.path}: {warning.message}</p>
+            <p key={`warning-${warning.path}`} title={warning.detail || warning.path}>Cảnh báo: {warning.message}</p>
           ))}
         </aside>
       )}
