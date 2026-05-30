@@ -1,4 +1,5 @@
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType } from "docx";
+import { ARTICLE_EXPORT_STYLE, cmToTwip } from "./exportArticleModel";
 import { saveAs } from "file-saver";
 import { SlideOutlineResult, SlideDeckExportOptions } from "../types/slideOutline";
 
@@ -85,13 +86,13 @@ export async function exportSlideOutlineToWord(
       children.push(
         new Paragraph({
           children: [
-            new TextRun({ text: `Hỏi: ${qa.question}`, bold: true, color: "002D56" })
+            new TextRun({ text: `Hỏi: ${qa.question}`, bold: true, color: "002D56", font: ARTICLE_EXPORT_STYLE.font.body, size: ARTICLE_EXPORT_STYLE.sizePt.body * 2 })
           ],
           spacing: { before: 100, after: 100 }
         }),
         new Paragraph({
           children: [
-            new TextRun({ text: `Đáp: ${qa.answer}`, color: "333333" })
+            new TextRun({ text: `Đáp: ${qa.answer}`, color: "333333", font: ARTICLE_EXPORT_STYLE.font.body, size: ARTICLE_EXPORT_STYLE.sizePt.body * 2 })
           ],
           spacing: { after: 200 }
         })
@@ -114,7 +115,7 @@ export async function exportSlideOutlineToWord(
         new Paragraph({
           children: [
             new TextRun({ text: "Thông điệp chính: ", bold: true }),
-            new TextRun(slide.keyMessage)
+            new TextRun({ text: slide.keyMessage, font: ARTICLE_EXPORT_STYLE.font.body, size: ARTICLE_EXPORT_STYLE.sizePt.body * 2 })
           ],
           spacing: { after: 200 }
         })
@@ -202,11 +203,40 @@ export async function exportSlideOutlineToWord(
 
   const doc = new Document({
     styles: {
+      paragraphStyles: [
+        {
+          id: "Heading1",
+          name: "Heading 1",
+          basedOn: "Normal",
+          next: "Normal",
+          quickFormat: true,
+          run: { font: ARTICLE_EXPORT_STYLE.font.body, size: ARTICLE_EXPORT_STYLE.sizePt.h1 * 2, bold: true, color: "0F172A", underline: { type: "none" } },
+          paragraph: { spacing: { before: 280, after: 200 }, keepNext: true, keepLines: true, alignment: AlignmentType.CENTER },
+        },
+        {
+          id: "Heading2",
+          name: "Heading 2",
+          basedOn: "Normal",
+          next: "Normal",
+          quickFormat: true,
+          run: { font: ARTICLE_EXPORT_STYLE.font.body, size: ARTICLE_EXPORT_STYLE.sizePt.h2 * 2, bold: true, color: "0F172A", underline: { type: "none" } },
+          paragraph: { spacing: { before: 240, after: 160 }, keepNext: true, keepLines: true },
+        },
+        {
+          id: "Heading3",
+          name: "Heading 3",
+          basedOn: "Normal",
+          next: "Normal",
+          quickFormat: true,
+          run: { font: ARTICLE_EXPORT_STYLE.font.body, size: ARTICLE_EXPORT_STYLE.sizePt.h3 * 2, bold: true, color: "0F172A", underline: { type: "none" } },
+          paragraph: { spacing: { before: 200, after: 120 }, keepNext: true, keepLines: true },
+        },
+      ],
       default: {
         document: {
           run: {
-            font: "Times New Roman",
-            size: 28,
+            font: ARTICLE_EXPORT_STYLE.font.body,
+            size: ARTICLE_EXPORT_STYLE.sizePt.body * 2,
             color: "000000",
           },
         },
@@ -215,11 +245,12 @@ export async function exportSlideOutlineToWord(
     sections: [{
       properties: {
         page: {
+          size: { width: cmToTwip(ARTICLE_EXPORT_STYLE.page.widthCm), height: cmToTwip(ARTICLE_EXPORT_STYLE.page.heightCm), orientation: "portrait" },
           margin: {
-            top: "2cm",
-            right: "2cm",
-            bottom: "2cm",
-            left: "2.5cm",
+            top: cmToTwip(ARTICLE_EXPORT_STYLE.page.marginsCm.top),
+            right: cmToTwip(ARTICLE_EXPORT_STYLE.page.marginsCm.right),
+            bottom: cmToTwip(ARTICLE_EXPORT_STYLE.page.marginsCm.bottom),
+            left: cmToTwip(ARTICLE_EXPORT_STYLE.page.marginsCm.left),
           },
         },
       },

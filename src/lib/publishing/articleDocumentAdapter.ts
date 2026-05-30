@@ -30,7 +30,7 @@ interface ParsedLine {
 }
 
 const PLACEHOLDER_MARKER_PATTERN = /\[(?:\s*PLACEHOLDER[^\]]*|\s*[—-]+\s*(?:ẢNH|ANH|PLACEHOLDER)\s*[—-]+\s*)\]/gi;
-const DRAFT_MARKER_PATTERN = /\[\s*(?:Bổ sung|Bo sung)\s*:\s*([^\]]+)\]/gi;
+const DRAFT_MARKER_PATTERN = /\[\s*(?:Bổ sung|Bo sung|Cần bổ sung|Can bo sung|Cần kiểm chứng|Can kiem chung)\s*:\s*([^\]]+)\]/gi;
 const LEAD_IN_CONTEXT_PATTERN = /(?:bao gồm|gồm|các nội dung sau|những nội dung sau|các điểm sau|cụ thể như sau)[:：]?$/i;
 const LEAD_IN_LINE_PATTERN = /^([^:：]{3,90})[:：]\s*(.{2,})$/;
 
@@ -76,7 +76,7 @@ function stripInlineMarkdown(value: string): string {
 
 function explicitCaptionFromText(value: string): string | undefined {
   const text = stripInlineMarkdown(value);
-  const match = text.match(/^(Hình\s*\d*|Ảnh\s*\d*|Chú thích ảnh|Caption)\s*[:.：-]?\s+(.{2,})$/iu);
+  const match = text.match(/^(Hình\s*\d*|Ảnh\s*\d*|Chú thích ảnh|Caption)\s*[:.：-]?\s*(.{2,})$/iu);
   if (!match) return undefined;
 
   return collapseDuplicatedCaption(`${match[1].trim()}: ${match[2].trim()}`);
