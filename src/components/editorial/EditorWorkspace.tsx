@@ -20,8 +20,16 @@ import { getEditorialTool } from '../../lib/editorialTools';
 import { EditorialToolSelector } from './EditorialToolSelector';
 import { ContentReviewDisplay } from './ContentReviewDisplay';
 import { A4PrintPreview } from './A4PrintPreview';
+import {
+  LayoutRecommendationPanel,
+  recommendArticleLayoutsForBrief,
+  type LayoutRecommendation,
+} from './LayoutRecommendationPanel';
 import { createArticleDocumentFromCurrentContent } from '../../lib/publishing/articleDocumentAdapter';
 import { validateArticleDocument } from '../../lib/publishing/validateArticleDocument';
+import { getArticleLayout, getDefaultArticleLayout } from '../../lib/publishing/layoutRegistry';
+
+type EditorialCreationStep = "brief" | "recommendation" | "generating" | "draft";
 
 export const EditorWorkspace = (props: any) => {
   const {
@@ -30,6 +38,18 @@ export const EditorWorkspace = (props: any) => {
   } = props;
 
   const currentTool = getEditorialTool(selectedEditorialToolId);
+  const [currentStep, setCurrentStep] = React.useState<EditorialCreationStep>("brief");
+  const [recommendationBrief, setRecommendationBrief] = React.useState("");
+  const [recommendedLayouts, setRecommendedLayouts] = React.useState<LayoutRecommendation[]>([]);
+  const [selectedLayoutId, setSelectedLayoutId] = React.useState<string | undefined>();
+  const [selectedLayoutVersion, setSelectedLayoutVersion] = React.useState<string | undefined>();
+  const [layoutRecommendationError, setLayoutRecommendationError] = React.useState<string | undefined>();
+
+  const selectedLayout = React.useMemo(() => {
+    if (!selectedLayoutId || !selectedLayoutVersion) return undefined;
+    return getArticleLayout(selectedLayoutId, selectedLayoutVersion);
+  }, [selectedLayoutId, selectedLayoutVersion]);
+
   const articleDocument = React.useMemo(() => {
     const previewContent = insertApprovedIllustrationsForPlainExport(
       output || "",
@@ -39,8 +59,11 @@ export const EditorWorkspace = (props: any) => {
     return createArticleDocumentFromCurrentContent(previewContent, {
       status: "draft",
       authorName: user?.displayName || user?.email || undefined,
+      layoutId: selectedLayout?.layoutId,
+      layoutVersion: selectedLayout?.layoutVersion,
+      estimatedPages: selectedLayout?.estimatedPages,
     });
-  }, [illustrations, insertApprovedIllustrationsForPlainExport, output, user?.displayName, user?.email]);
+  }, [illustrations, insertApprovedIllustrationsForPlainExport, output, selectedLayout, user?.displayName, user?.email]);
 
   const validateArticleBeforeExport = React.useCallback(async () => {
     const validation = validateArticleDocument(articleDocument);
@@ -73,6 +96,69 @@ export const EditorWorkspace = (props: any) => {
     }, 1000);
     return () => clearInterval(timer);
   }, [aiCooldownUntil]);
+
+
+  const buildRecommendationBrief = React.useCallback(() => {
+    const sourceSummary = selectedSourceDocIds.length > 0
+      ? `
+
+Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
+      : "";
+    return `${input.trim()}${sourceSummary}`.trim();
+  }, [input, selectedSourceDocIds.length]);
+
+  const openLayoutRecommendations = React.useCallback(() => {
+    if (!input.trim() && selectedSourceDocIds.length === 0) {
+      toast.error("Vui lòng nhập nội dung hoặc chọn tài liệu nguồn trước khi xử lý.");
+      return;
+    }
+
+    const brief = buildRecommendationBrief();
+    const recommendations = recommendArticleLayoutsForBrief(brief);
+    const invalidRecommendation = recommendations.find(
+      (recommendation) => !getArticleLayout(recommendation.layout.layoutId, recommendation.layout.layoutVersion),
+    );
+
+    setRecommendationBrief(brief);
+    setRecommendedLayouts(recommendations);
+    setLayoutRecommendationError(
+      invalidRecommendation
+        ? `Layout ${invalidRecommendation.layout.layoutId}@${invalidRecommendation.layout.layoutVersion} không tồn tại trong registry.`
+        : undefined,
+    );
+    setCurrentStep("recommendation");
+  }, [buildRecommendationBrief, input, selectedSourceDocIds.length, toast]);
+
+  const runProcessWithLayout = React.useCallback(async (layoutId?: string, layoutVersion?: string) => {
+    setSelectedLayoutId(layoutId);
+    setSelectedLayoutVersion(layoutVersion);
+    setCurrentStep("generating");
+    await handleProcess();
+    setCurrentStep("draft");
+  }, [handleProcess]);
+
+  const handleSelectRecommendedLayout = React.useCallback((recommendation: LayoutRecommendation) => {
+    void runProcessWithLayout(recommendation.layout.layoutId, recommendation.layout.layoutVersion);
+  }, [runProcessWithLayout]);
+
+  const handleUseDefaultLayout = React.useCallback(() => {
+    const defaultLayout = getDefaultArticleLayout();
+    void runProcessWithLayout(defaultLayout.layoutId, defaultLayout.layoutVersion);
+  }, [runProcessWithLayout]);
+
+  const handleStartProcessing = React.useCallback(() => {
+    if (currentTool?.taskType === "TASK_BUILDER") {
+      handleBuildTasks();
+      return;
+    }
+
+    if (currentTool?.taskType === "WRITE_NEW") {
+      openLayoutRecommendations();
+      return;
+    }
+
+    handleProcess();
+  }, [currentTool?.taskType, handleBuildTasks, handleProcess, openLayoutRecommendations]);
 
   return (
     <>
@@ -516,7 +602,7 @@ export const EditorWorkspace = (props: any) => {
                                 <div className="p-2 sm:p-2.5 bg-[#002D56] rounded-md shadow-sm shadow-[#002D56]/10">
                                   <Edit3 className="w-4 h-4 sm:w-5 sm:h-5 text-white" />
                                 </div>
-                                <div>
+                                <div className="">
                                   <span className="text-xs sm:text-sm font-semibold text-[#002D56] tracking-normal">
                                     {currentTool?.inputLabel || "Thông tin đầu vào"}
                                   </span>
@@ -541,6 +627,12 @@ export const EditorWorkspace = (props: any) => {
                                     setInput("");
                                     setOutput("");
                                     setError(null);
+                                    setCurrentStep("brief");
+                                    setRecommendationBrief("");
+                                    setRecommendedLayouts([]);
+                                    setSelectedLayoutId(undefined);
+                                    setSelectedLayoutVersion(undefined);
+                                    setLayoutRecommendationError(undefined);
                                   }}
                                   className="text-slate-300 hover:text-red-500 p-2 sm:p-2.5 rounded-md transition-all hover:bg-red-50"
                                   title="Làm mới vùng biên tập"
@@ -550,7 +642,17 @@ export const EditorWorkspace = (props: any) => {
                               </div>
                             </div>
                             <div className="relative flex-1 flex flex-col min-h-[300px] bg-slate-50/50">
-                              {currentTool?.taskType === "WRITE_NEW" ? (
+                              {currentTool?.taskType === "WRITE_NEW" && currentStep === "recommendation" ? (
+                                <LayoutRecommendationPanel
+                                  userBrief={recommendationBrief}
+                                  recommendations={recommendedLayouts}
+                                  isLoading={false}
+                                  errorMessage={layoutRecommendationError}
+                                  onSelectLayout={handleSelectRecommendedLayout}
+                                  onUseDefaultLayout={handleUseDefaultLayout}
+                                  onBackToBrief={() => setCurrentStep("brief")}
+                                />
+                              ) : currentTool?.taskType === "WRITE_NEW" ? (
                                 <div className="p-6 sm:p-6 flex-1 w-full space-y-6">
                                   {currentTool.requiresDocumentKind && (
                                     <EditorialKindSelector
@@ -561,7 +663,12 @@ export const EditorWorkspace = (props: any) => {
                                   <EditorialInputForm
                                     kind={editorialKind}
                                     initialValue={input}
-                                    onChange={setInput}
+                                    onChange={(value) => {
+                                      setInput(value);
+                                      if (currentStep === "draft") {
+                                        setCurrentStep("brief");
+                                      }
+                                    }}
                                   />
                                 </div>
                               ) : (
@@ -573,6 +680,7 @@ export const EditorWorkspace = (props: any) => {
                                 />
                               )}
 
+                              {!(currentTool?.taskType === "WRITE_NEW" && currentStep === "recommendation") && (
                               <div className="absolute flex flex-col sm:flex-row items-end sm:items-center justify-end gap-3 bottom-0 right-0 w-full p-4 sm:p-6 pointer-events-none">
                                 {!input.trim() &&
                                   selectedSourceDocIds.length === 0 && (
@@ -588,9 +696,7 @@ export const EditorWorkspace = (props: any) => {
                                     cooldownRemaining > 0
                                   }
                                   onClick={
-                                    currentTool?.taskType === "TASK_BUILDER"
-                                      ? handleBuildTasks
-                                      : handleProcess
+                                    handleStartProcessing
                                   }
                                   className={cn(
                                     "w-full sm:w-auto flex items-center justify-center gap-2 px-8 py-3.5 rounded-md font-semibold text-[13px] tracking-normal transition-all duration-300 shadow-md active:scale-[0.98] pointer-events-auto shrink-0",
@@ -619,6 +725,7 @@ export const EditorWorkspace = (props: any) => {
                                   )}
                                 </button>
                               </div>
+                              )}
                             </div>
 
                             <div className="px-5 sm:px-8 py-4 bg-slate-50 border-t border-slate-100 flex items-center justify-between gap-5">
@@ -684,13 +791,6 @@ export const EditorWorkspace = (props: any) => {
                                       className="bg-red-50 text-red-500 p-3 rounded-md hover:bg-red-100 transition-all shrink-0"
                                     >
                                       <Trash2 className="w-5 h-5" />
-                                    </button>
-                                    <button
-                                      onClick={saveBuiltTasks}
-                                      disabled={isBuildingTasks}
-                                      className="bg-emerald-500 text-white px-6 py-3 rounded-md font-semibold text-[10px] sm:text-xs tracking-normal hover:bg-emerald-600 transition-all flex items-center justify-center gap-2 shrink-0 flex-1 sm:flex-initial"
-                                    >
-                                      <Save className="w-4 h-4" /> Lưu đã chọn
                                     </button>
                                   </div>
                                 </div>
@@ -1343,312 +1443,258 @@ export const EditorWorkspace = (props: any) => {
                                       >
                                         <FileText className="w-4 h-4 text-blue-600" />
                                         <span className="text-[10px] font-bold uppercase tracking-wider">
-                                          Word (DOCX)
+                                          Word
                                         </span>
                                       </button>
                                     )}
-                                  </>
-                                )}
-                              </div>
-                            </div>
+                                      </>
+                                    )}
+                                  </div>
+                                </div>
 
-                            {/* Illustration Progress / Dashboard - MOVED OUT OF PRINTABLE AREA */}
-                                {(illustrations.length > 0 ||
-                                  imagePlans.length > 0) && (
-                                  <div className="mx-8 md:mx-12 mt-8 p-6 bg-slate-50 border border-slate-200 rounded-md">
-                                    <div className="flex flex-col sm:flex-row items-center justify-between gap-6 mb-8">
-                                      <div className="flex items-center gap-4 w-full sm:w-auto">
-                                        <div className="bg-[#002D56] p-3 rounded-md shadow-sm shrink-0">
-                                          <ImageIcon className="w-6 h-6 text-white" />
-                                        </div>
-                                        <div>
-                                          <h4 className="text-sm font-semibold tracking-normal text-[#002D56]">
-                                            Duyệt hình bài viết
-                                          </h4>
-                                          <p className="text-[10px] font-bold text-slate-400 uppercase mt-0.5">
-                                            Xác nhận ảnh tải lên để xuất bản văn
-                                            bản
+                                <div className="space-y-10">
+                                  {/* 1. Vị trí cần ảnh (Plans without images) */}
+                                  <div className="space-y-4">
+                                    <div className="flex items-center gap-2 ml-2">
+                                      <Target className="w-4 h-4 text-amber-500" />
+                                      <h5 className="text-[11px] font-semibold tracking-normal text-slate-500">
+                                        Vị trí cần bổ sung ảnh
+                                      </h5>
+                                    </div>
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 sm:gap-6">
+                                      {imagePlans.map((plan) => {
+                                        const hasImage = illustrations.some(
+                                          (img) => img.planId === plan.id,
+                                        );
+                                        if (hasImage) return null;
+                                        return (
+                                          <div
+                                            key={plan.id}
+                                            className="bg-white p-5 rounded-md border border-slate-200 shadow-sm hover:shadow-md transition-all group border-dashed"
+                                          >
+                                            <div className="flex items-start justify-between mb-4">
+                                              <div className="w-10 h-10 rounded-md bg-amber-50 flex items-center justify-center font-semibold text-amber-600 text-xs">
+                                                P{plan.paragraphIndex}
+                                              </div>
+                                              <button
+                                                onClick={() => {
+                                                  const input =
+                                                    document.createElement(
+                                                      "input",
+                                                    );
+                                                  input.type = "file";
+                                                  input.accept = "image/*";
+                                                  input.onchange = (e) => {
+                                                    const file = (
+                                                      e.target as HTMLInputElement
+                                                    ).files?.[0];
+                                                    if (file)
+                                                      handleManualUpload(
+                                                        file,
+                                                        plan.paragraphIndex,
+                                                        plan.id,
+                                                      );
+                                                  };
+                                                  input.click();
+                                                }}
+                                                className="w-10 h-10 rounded-md bg-[#002D56] text-white flex items-center justify-center hover:bg-slate-900 transition-all shadow-md group-hover:scale-110 active:scale-[0.98]"
+                                                title="Tải ảnh cho vị trí này"
+                                              >
+                                                <FileUp className="w-5 h-5" />
+                                              </button>
+                                            </div>
+                                            <h6 className="text-[11px] font-semibold text-slate-800 tracking-tight mb-2 line-clamp-2">
+                                              {plan.caption}
+                                            </h6>
+                                            <p className="text-[10px] font-medium text-slate-400 italic mb-4 leading-relaxed">
+                                              {plan.reason}
+                                            </p>
+                                            <div className="flex items-center gap-2">
+                                              <span className="text-[8px] font-semibold tracking-normal px-2 py-1 bg-slate-100 text-slate-400 rounded-lg">
+                                                Chưa có ảnh
+                                              </span>
+                                            </div>
+                                          </div>
+                                        );
+                                      })}
+                                      {imagePlans.every((plan) =>
+                                        illustrations.some(
+                                          (img) => img.planId === plan.id,
+                                        ),
+                                      ) &&
+                                        imagePlans.length > 0 && (
+                                          <div className="col-span-full py-8 text-center bg-white rounded-md border border-emerald-200 border-dashed">
+                                            <CheckCircle className="w-10 h-10 text-emerald-300 mx-auto mb-3" />
+                                            <p className="text-xs font-bold text-emerald-600 tracking-normal">
+                                              Tất cả vị trí kế hoạch đã được
+                                              đăng tải ảnh
+                                            </p>
+                                          </div>
+                                        )}
+                                      {imagePlans.length === 0 && (
+                                        <div className="col-span-full py-8 text-center bg-white/50 rounded-md border border-slate-200 border-dashed">
+                                          <p className="text-xs font-bold text-slate-300 tracking-normal italic">
+                                            Bấm "LẬP KẾ HOẠCH HÌNH" để AI đề
+                                            xuất các vị trí cần minh họa
                                           </p>
                                         </div>
-                                      </div>
-                                      <div className="flex flex-wrap items-center gap-3 w-full sm:w-auto overflow-x-auto pb-2 sm:pb-0 scrollbar-hide">
-                                        {illustrations.some(
-                                          (img) =>
-                                            img.reviewStatus === "suggested" &&
-                                            img.status === "ready",
-                                        ) && (
-                                          <button
-                                            onClick={
-                                              approveAllValidIllustrations
-                                            }
-                                            className="flex-1 sm:flex-initial bg-emerald-500/10 text-emerald-600 px-5 py-2.5 rounded-md font-semibold text-[10px] tracking-wide hover:bg-emerald-500 hover:text-white transition-all flex items-center justify-center gap-2"
-                                          >
-                                            <CheckCircle className="w-4 h-4 shrink-0" />{" "}
-                                            Duyệt tất cả
-                                          </button>
-                                        )}
-                                        {illustrations.some(
-                                          (img) =>
-                                            img.status === "error" ||
-                                            img.qualityStatus === "failed" ||
-                                            img.reviewStatus === "rejected",
-                                        ) && (
-                                          <button
-                                            onClick={clearErrorImages}
-                                            className="flex-1 sm:flex-initial bg-red-500/10 text-red-600 px-5 py-2.5 rounded-md font-semibold text-[10px] tracking-wide hover:bg-red-500 hover:text-white transition-all flex items-center justify-center gap-2"
-                                          >
-                                            <Trash2 className="w-4 h-4 shrink-0" />{" "}
-                                            Dọn ảnh loại
-                                          </button>
-                                        )}
-                                      </div>
-                                    </div>
-
-                                    <div className="space-y-10">
-                                      {/* 1. Vị trí cần ảnh (Plans without images) */}
-                                      <div className="space-y-4">
-                                        <div className="flex items-center gap-2 ml-2">
-                                          <Target className="w-4 h-4 text-amber-500" />
-                                          <h5 className="text-[11px] font-semibold tracking-normal text-slate-500">
-                                            Vị trí cần bổ sung ảnh
-                                          </h5>
-                                        </div>
-                                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 sm:gap-6">
-                                          {imagePlans.map((plan) => {
-                                            const hasImage = illustrations.some(
-                                              (img) => img.planId === plan.id,
-                                            );
-                                            if (hasImage) return null;
-                                            return (
-                                              <div
-                                                key={plan.id}
-                                                className="bg-white p-5 rounded-md border border-slate-200 shadow-sm hover:shadow-md transition-all group border-dashed"
-                                              >
-                                                <div className="flex items-start justify-between mb-4">
-                                                  <div className="w-10 h-10 rounded-md bg-amber-50 flex items-center justify-center font-semibold text-amber-600 text-xs">
-                                                    P{plan.paragraphIndex}
-                                                  </div>
-                                                  <button
-                                                    onClick={() => {
-                                                      const input =
-                                                        document.createElement(
-                                                          "input",
-                                                        );
-                                                      input.type = "file";
-                                                      input.accept = "image/*";
-                                                      input.onchange = (e) => {
-                                                        const file = (
-                                                          e.target as HTMLInputElement
-                                                        ).files?.[0];
-                                                        if (file)
-                                                          handleManualUpload(
-                                                            file,
-                                                            plan.paragraphIndex,
-                                                            plan.id,
-                                                          );
-                                                      };
-                                                      input.click();
-                                                    }}
-                                                    className="w-10 h-10 rounded-md bg-[#002D56] text-white flex items-center justify-center hover:bg-slate-900 transition-all shadow-md group-hover:scale-110 active:scale-[0.98]"
-                                                    title="Tải ảnh cho vị trí này"
-                                                  >
-                                                    <FileUp className="w-5 h-5" />
-                                                  </button>
-                                                </div>
-                                                <h6 className="text-[11px] font-semibold text-slate-800 tracking-tight mb-2 line-clamp-2">
-                                                  {plan.caption}
-                                                </h6>
-                                                <p className="text-[10px] font-medium text-slate-400 italic mb-4 leading-relaxed">
-                                                  {plan.reason}
-                                                </p>
-                                                <div className="flex items-center gap-2">
-                                                  <span className="text-[8px] font-semibold tracking-normal px-2 py-1 bg-slate-100 text-slate-400 rounded-lg">
-                                                    Chưa có ảnh
-                                                  </span>
-                                                </div>
-                                              </div>
-                                            );
-                                          })}
-                                          {imagePlans.every((plan) =>
-                                            illustrations.some(
-                                              (img) => img.planId === plan.id,
-                                            ),
-                                          ) &&
-                                            imagePlans.length > 0 && (
-                                              <div className="col-span-full py-8 text-center bg-white rounded-md border border-emerald-200 border-dashed">
-                                                <CheckCircle className="w-10 h-10 text-emerald-300 mx-auto mb-3" />
-                                                <p className="text-xs font-bold text-emerald-600 tracking-normal">
-                                                  Tất cả vị trí kế hoạch đã được
-                                                  đăng tải ảnh
-                                                </p>
-                                              </div>
-                                            )}
-                                          {imagePlans.length === 0 && (
-                                            <div className="col-span-full py-8 text-center bg-white/50 rounded-md border border-slate-200 border-dashed">
-                                              <p className="text-xs font-bold text-slate-300 tracking-normal italic">
-                                                Bấm "LẬP KẾ HOẠCH HÌNH" để AI đề
-                                                xuất các vị trí cần minh họa
-                                              </p>
-                                            </div>
-                                          )}
-                                        </div>
-                                      </div>
-
-                                      {/* 2. Ảnh chờ duyệt (Suggested) */}
-                                      <div className="space-y-4">
-                                        <div className="flex items-center gap-2 ml-2">
-                                          <Clock className="w-4 h-4 text-blue-500" />
-                                          <h5 className="text-[11px] font-semibold tracking-normal text-slate-500">
-                                            Ảnh chờ duyệt
-                                          </h5>
-                                        </div>
-                                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-                                          {illustrations
-                                            .filter(
-                                              (img) =>
-                                                img.reviewStatus ===
-                                                "suggested",
-                                            )
-                                            .map((img, idx) => (
-                                              <div
-                                                key={`${img.id}-${idx}`}
-                                                className="bg-white p-4 rounded-md border border-blue-100 shadow-sm relative group overflow-hidden"
-                                              >
-                                                <div className="aspect-video rounded-md overflow-hidden mb-4 relative">
-                                                  <img
-                                                    src={img.url}
-                                                    alt={img.caption}
-                                                    className="w-full h-full object-cover"
-                                                  />
-                                                  <div className="absolute inset-0 bg-blue-600/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-3">
-                                                    <button
-                                                      onClick={() =>
-                                                        approveIllustration(
-                                                          img.id,
-                                                        )
-                                                      }
-                                                      className="w-10 h-10 bg-emerald-500 text-white rounded-md shadow-md flex items-center justify-center hover:scale-110 active:scale-[0.98] transition-all"
-                                                      title="Duyệt ảnh"
-                                                    >
-                                                      <Check className="w-5 h-5" />
-                                                    </button>
-                                                    <button
-                                                      onClick={() =>
-                                                        rejectIllustration(
-                                                          img.id,
-                                                        )
-                                                      }
-                                                      className="w-10 h-10 bg-red-500 text-white rounded-md shadow-md flex items-center justify-center hover:scale-110 active:scale-[0.98] transition-all"
-                                                      title="Từ chối"
-                                                    >
-                                                      <X className="w-5 h-5" />
-                                                    </button>
-                                                  </div>
-                                                </div>
-                                                <h6 className="text-[10px] font-semibold text-slate-800 tracking-tight truncate px-1 mb-1">
-                                                  {img.caption}
-                                                </h6>
-                                                <div className="flex items-center justify-between px-1">
-                                                  <span className="text-[8px] font-semibold text-blue-500 uppercase">
-                                                    P{img.paragraphIndex} • CHỜ
-                                                    DUYỆT
-                                                  </span>
-                                                  <button
-                                                    onClick={() =>
-                                                      setIllustrations((prev) =>
-                                                        prev.filter(
-                                                          (i) =>
-                                                            i.id !== img.id,
-                                                        ),
-                                                      )
-                                                    }
-                                                    className="text-slate-300 hover:text-red-500 transition-colors"
-                                                  >
-                                                    <Trash2 className="w-3 h-3" />
-                                                  </button>
-                                                </div>
-                                              </div>
-                                            ))}
-                                          {illustrations.filter(
-                                            (img) =>
-                                              img.reviewStatus === "suggested",
-                                          ).length === 0 && (
-                                            <div className="col-span-full py-8 text-center text-slate-300 font-bold uppercase text-[10px] tracking-wide border border-slate-200 border-dashed rounded-md">
-                                              Không có ảnh chờ duyệt
-                                            </div>
-                                          )}
-                                        </div>
-                                      </div>
-
-                                      {/* 3. Ảnh đã duyệt (Approved) */}
-                                      <div className="space-y-4">
-                                        <div className="flex items-center gap-2 ml-2">
-                                          <ShieldCheck className="w-4 h-4 text-emerald-500" />
-                                          <h5 className="text-[11px] font-semibold tracking-normal text-slate-500">
-                                            Ảnh đã duyệt (Sẽ xuất PDF/Word)
-                                          </h5>
-                                        </div>
-                                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-                                          {illustrations
-                                            .filter(
-                                              (img) =>
-                                                img.reviewStatus === "approved",
-                                            )
-                                            .map((img, idx) => (
-                                              <div
-                                                key={`${img.id}-${idx}`}
-                                                className="bg-white p-4 rounded-md border border-emerald-200 shadow-sm relative group overflow-hidden"
-                                              >
-                                                <div className="aspect-video rounded-md overflow-hidden mb-4 relative">
-                                                  <img
-                                                    src={img.url}
-                                                    alt={img.caption}
-                                                    className="w-full h-full object-cover"
-                                                  />
-                                                  <div className="absolute top-2 right-2 bg-emerald-500 text-white p-1.5 rounded-md shadow-sm">
-                                                    <Check className="w-3 h-3" />
-                                                  </div>
-                                                  <div className="absolute inset-0 bg-emerald-900/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-3">
-                                                    <button
-                                                      onClick={() =>
-                                                        rejectIllustration(
-                                                          img.id,
-                                                        )
-                                                      }
-                                                      className="w-10 h-10 bg-white text-red-500 rounded-md shadow-md flex items-center justify-center hover:scale-110 active:scale-[0.98] transition-all"
-                                                      title="Hủy duyệt"
-                                                    >
-                                                      <X className="w-5 h-5" />
-                                                    </button>
-                                                  </div>
-                                                </div>
-                                                <h6 className="text-[10px] font-semibold text-slate-800 tracking-tight truncate px-1 mb-1">
-                                                  {img.caption}
-                                                </h6>
-                                                <div className="flex items-center justify-between px-1">
-                                                  <span className="text-[8px] font-semibold text-emerald-600 uppercase">
-                                                    P{img.paragraphIndex} • ĐÃ
-                                                    DUYỆT
-                                                  </span>
-                                                  <p className="text-[8px] font-bold text-slate-300">
-                                                    Xuất sẵn sàng
-                                                  </p>
-                                                </div>
-                                              </div>
-                                            ))}
-                                          {illustrations.filter(
-                                            (img) =>
-                                              img.reviewStatus === "approved",
-                                          ).length === 0 && (
-                                            <div className="col-span-full py-8 text-center text-slate-300 font-bold uppercase text-[10px] tracking-wide border border-slate-200 border-dashed rounded-md">
-                                              Chưa có ảnh nào được duyệt
-                                            </div>
-                                          )}
-                                        </div>
-                                      </div>
+                                      )}
                                     </div>
                                   </div>
-                                )}
+
+                                  {/* 2. Ảnh chờ duyệt (Suggested) */}
+                                  <div className="space-y-4">
+                                    <div className="flex items-center gap-2 ml-2">
+                                      <Clock className="w-4 h-4 text-blue-500" />
+                                      <h5 className="text-[11px] font-semibold tracking-normal text-slate-500">
+                                        Ảnh chờ duyệt
+                                      </h5>
+                                    </div>
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+                                      {illustrations
+                                        .filter(
+                                          (img) =>
+                                            img.reviewStatus ===
+                                            "suggested",
+                                        )
+                                        .map((img, idx) => (
+                                          <div
+                                            key={`${img.id}-${idx}`}
+                                            className="bg-white p-4 rounded-md border border-blue-100 shadow-sm relative group overflow-hidden"
+                                          >
+                                            <div className="aspect-video rounded-md overflow-hidden mb-4 relative">
+                                              <img
+                                                src={img.url}
+                                                alt={img.caption}
+                                                className="w-full h-full object-cover"
+                                              />
+                                              <div className="absolute inset-0 bg-blue-600/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-3">
+                                                <button
+                                                  onClick={() =>
+                                                    approveIllustration(
+                                                      img.id,
+                                                    )
+                                                  }
+                                                  className="w-10 h-10 bg-emerald-500 text-white rounded-md shadow-md flex items-center justify-center hover:scale-110 active:scale-[0.98] transition-all"
+                                                  title="Duyệt ảnh"
+                                                >
+                                                  <Check className="w-5 h-5" />
+                                                </button>
+                                                <button
+                                                  onClick={() =>
+                                                    rejectIllustration(
+                                                      img.id,
+                                                    )
+                                                  }
+                                                  className="w-10 h-10 bg-red-500 text-white rounded-md shadow-md flex items-center justify-center hover:scale-110 active:scale-[0.98] transition-all"
+                                                  title="Từ chối"
+                                                >
+                                                  <X className="w-5 h-5" />
+                                                </button>
+                                              </div>
+                                            </div>
+                                            <h6 className="text-[10px] font-semibold text-slate-800 tracking-tight truncate px-1 mb-1">
+                                              {img.caption}
+                                            </h6>
+                                            <div className="flex items-center justify-between px-1">
+                                              <span className="text-[8px] font-semibold text-blue-500 uppercase">
+                                                P{img.paragraphIndex} • CHỜ
+                                                DUYỆT
+                                              </span>
+                                              <button
+                                                onClick={() =>
+                                                  setIllustrations((prev) =>
+                                                    prev.filter(
+                                                      (i) =>
+                                                        i.id !== img.id,
+                                                    ),
+                                                  )
+                                                }
+                                                className="text-slate-300 hover:text-red-500 transition-colors"
+                                              >
+                                                <Trash2 className="w-3 h-3" />
+                                              </button>
+                                            </div>
+                                          </div>
+                                        ))}
+                                      {illustrations.filter(
+                                        (img) =>
+                                          img.reviewStatus === "suggested",
+                                      ).length === 0 && (
+                                        <div className="col-span-full py-8 text-center text-slate-300 font-bold uppercase text-[10px] tracking-wide border border-slate-200 border-dashed rounded-md">
+                                          Không có ảnh chờ duyệt
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  {/* 3. Ảnh đã duyệt (Approved) */}
+                                  <div className="space-y-4">
+                                    <div className="flex items-center gap-2 ml-2">
+                                      <ShieldCheck className="w-4 h-4 text-emerald-500" />
+                                      <h5 className="text-[11px] font-semibold tracking-normal text-slate-500">
+                                        Ảnh đã duyệt (Sẽ xuất PDF/Word)
+                                      </h5>
+                                    </div>
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+                                      {illustrations
+                                        .filter(
+                                          (img) =>
+                                            img.reviewStatus === "approved",
+                                        )
+                                        .map((img, idx) => (
+                                          <div
+                                            key={`${img.id}-${idx}`}
+                                            className="bg-white p-4 rounded-md border border-emerald-200 shadow-sm relative group overflow-hidden"
+                                          >
+                                            <div className="aspect-video rounded-md overflow-hidden mb-4 relative">
+                                              <img
+                                                src={img.url}
+                                                alt={img.caption}
+                                                className="w-full h-full object-cover"
+                                              />
+                                              <div className="absolute top-2 right-2 bg-emerald-500 text-white p-1.5 rounded-md shadow-sm">
+                                                <Check className="w-3 h-3" />
+                                              </div>
+                                              <div className="absolute inset-0 bg-emerald-900/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-3">
+                                                <button
+                                                  onClick={() =>
+                                                    rejectIllustration(
+                                                      img.id,
+                                                    )
+                                                  }
+                                                  className="w-10 h-10 bg-white text-red-500 rounded-md shadow-md flex items-center justify-center hover:scale-110 active:scale-[0.98] transition-all"
+                                                  title="Hủy duyệt"
+                                                >
+                                                  <X className="w-5 h-5" />
+                                                </button>
+                                              </div>
+                                            </div>
+                                            <h6 className="text-[10px] font-semibold text-slate-800 tracking-tight truncate px-1 mb-1">
+                                              {img.caption}
+                                            </h6>
+                                            <div className="flex items-center justify-between px-1">
+                                              <span className="text-[8px] font-semibold text-emerald-600 uppercase">
+                                                P{img.paragraphIndex} • ĐÃ
+                                                DUYỆT
+                                              </span>
+                                              <p className="text-[8px] font-bold text-slate-300">
+                                                Xuất sẵn sàng
+                                              </p>
+                                            </div>
+                                          </div>
+                                        ))}
+                                      {illustrations.filter(
+                                        (img) =>
+                                          img.reviewStatus === "approved",
+                                      ).length === 0 && (
+                                        <div className="col-span-full py-8 text-center text-slate-300 font-bold uppercase text-[10px] tracking-wide border border-slate-200 border-dashed rounded-md">
+                                          Chưa có ảnh nào được duyệt
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
 
                                 <div className="p-4 sm:p-6 md:p-10 bg-[#FCFDFF] printable-article-shell">
                                   {contentReview && (
@@ -1673,47 +1719,6 @@ export const EditorWorkspace = (props: any) => {
                                     <A4PrintPreview document={articleDocument} rootId="printable-article" />
                                   )}
                                 </div>
-
-                                {/* Versions Quick Access */}
-                                {currentSessionId &&
-                                  sessions.find(
-                                    (s) => s.id === currentSessionId,
-                                  )?.versions?.length! > 1 && (
-                                    <div className="px-8 py-4 bg-slate-50 border-t border-slate-100 flex items-center gap-3 overflow-x-auto whitespace-nowrap scrollbar-hide">
-                                      <span className="text-[10px] font-semibold text-slate-400 tracking-normal mr-2">
-                                        Lịch sử bài viết:
-                                      </span>
-                                      {sessions
-                                        .find((s) => s.id === currentSessionId)
-                                        ?.versions?.map((v, i) => (
-                                          <button
-                                            key={`ver-${v.id || i}`}
-                                            onClick={() => {
-                                              setOutput(v.content);
-                                            }}
-                                            className={cn(
-                                              "flex items-center gap-2 px-3 py-1.5 rounded-md text-[10px] font-bold transition-all border",
-                                              output === v.content
-                                                ? "bg-[#002D56] text-white border-[#002D56]"
-                                                : "bg-white text-slate-500 border-slate-200 hover:border-slate-400",
-                                            )}
-                                          >
-                                            <Clock className="w-3 h-3" />
-                                            {new Date(
-                                              v.createdAt,
-                                            ).toLocaleTimeString([], {
-                                              hour: "2-digit",
-                                              minute: "2-digit",
-                                            })}
-                                            {i === 0 && (
-                                              <span className="ml-1 opacity-60">
-                                                (Mới nhất)
-                                              </span>
-                                            )}
-                                          </button>
-                                        ))}
-                                    </div>
-                                  )}
 
                                 <div className="px-8 py-6 bg-[#002D56] text-white/50 text-[10px] font-semibold text-center uppercase tracking-[0.3em]">
                                   Bản quyền nội dung thuộc về Tổng Công ty Bảo
