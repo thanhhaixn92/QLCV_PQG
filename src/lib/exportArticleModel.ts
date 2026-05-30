@@ -474,8 +474,11 @@ export function exportArticleModelToPdfmake(blocks: ExportArticleBlock[]): any[]
 
     if (block.type === "list") {
       content.push({
-        [block.ordered ? "ol" : "ul"]: block.items.map((item) => ({ text: pdfRuns(item) })),
-        margin: [16, 0, 0, 10],
+        [block.ordered ? "ol" : "ul"]: block.items.map((item) => ({
+          text: pdfRuns(item),
+          style: "listItem",
+        })),
+        margin: [16, 4, 0, 12],
       });
       return;
     }
@@ -644,6 +647,7 @@ export function exportArticleModelToDocx(blocks: ExportArticleBlock[]): ExportDo
               reference: block.ordered ? "vms-numbered" : "vms-bullet",
               level: 0,
             },
+            alignment: AlignmentType.JUSTIFIED,
             spacing: { after: 100, line: 360 },
           }),
         );

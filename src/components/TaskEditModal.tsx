@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React from 'react';
 import { FEATURE_FLAGS } from '../config/featureFlags';
 import { motion } from 'motion/react';
 import { X, Save, Edit3, Plus, CheckSquare, Layout, Clock, Trash2, ListChecks } from 'lucide-react';
@@ -14,6 +14,8 @@ interface TaskEditModalProps {
   onDelete: (id: string) => void;
   documents: any[];
   setIsPickingFromLibrary: (val: boolean) => void;
+  onDiscardDraft?: () => void;
+  onConfirmDelete?: (message: string) => Promise<boolean>;
 }
 
 export const TaskEditModal: React.FC<TaskEditModalProps> = ({
@@ -23,23 +25,13 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
   onSave,
   onDelete,
   documents,
-  setIsPickingFromLibrary
+  setIsPickingFromLibrary,
+  onDiscardDraft,
+  onConfirmDelete
 }) => {
   const isDraft = !editingTask.id || String(editingTask.id).startsWith('draft-task-') || Boolean(editingTask.clientId);
   const isPersisted = !isDraft && !!editingTask.id;
 
-  useEffect(() => {
-    // [DEBUG] Monitor key-related fields when modal opens
-    console.log("[TASK_MODAL_DEBUG]", {
-      taskId: editingTask?.id,
-      clientId: editingTask?.clientId,
-      isDraft,
-      isPersisted,
-      checklistIds: editingTask?.checklist?.map(item => item.id),
-      linkedDocumentIds: editingTask?.linkedDocumentIds,
-      categoryCode: editingTask?.categoryCode,
-    });
-  }, []);
 
   return (
     <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[100] flex justify-end" onClick={onClose}>
@@ -320,10 +312,21 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
         {/* Sticky Footer */}
         <div className="p-4 sm:px-8 sm:py-5 border-t border-slate-200 bg-white flex flex-col sm:flex-row items-center justify-between gap-4 shrink-0 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)] z-10">
           <div className="flex items-center gap-3 w-full sm:w-auto">
+            {!isPersisted && onDiscardDraft && (
+              <button
+                onClick={onDiscardDraft}
+                className="flex-1 sm:flex-none px-6 py-2.5 rounded-lg text-sm font-semibold text-amber-700 hover:bg-amber-50 transition-all border border-amber-200"
+              >
+                Xóa bản nháp
+              </button>
+            )}
             {isPersisted && (
               <button 
-                onClick={() => {
-                  if (window.confirm("Bạn có chắc chắn muốn xóa công việc này?")) {
+                onClick={async () => {
+                  const confirmed = onConfirmDelete
+                    ? await onConfirmDelete("Bạn có chắc chắn muốn xóa công việc này?")
+                    : true;
+                  if (confirmed) {
                     onDelete(editingTask.id!);
                   }
                 }}

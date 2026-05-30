@@ -44,6 +44,19 @@
   .markdown-body p {
     @apply text-justify leading-relaxed mb-4;
   }
+
+  /*
+   * Scoped justify for #printable-article body text only.
+   * Headings (h1-h6) and UI elements are intentionally excluded.
+   * This ensures prose paragraphs and list items are justified
+   * even when Tailwind prose resets or overrides text-align.
+   */
+  #printable-article .prose p {
+    text-align: justify;
+  }
+  #printable-article .prose li {
+    text-align: justify;
+  }
 }
 
 @layer utilities {

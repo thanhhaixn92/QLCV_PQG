@@ -98,11 +98,12 @@ export async function exportPrintablePdfFromElement(elementId: string, options: 
       };
     },
     styles: {
-      h1: { fontSize: 16, bold: true, alignment: 'center', margin: [0, 10, 0, 15], color: '#002D56' },
-      h2: { fontSize: 14, bold: true, margin: [0, 8, 0, 5], color: '#002D56' },
-      h3: { fontSize: 13, bold: true, margin: [0, 5, 0, 5] },
-      paragraph: { fontSize: 13, margin: [0, 0, 0, 10], alignment: 'justify', lineHeight: 1.3 },
-      caption: { fontSize: 10, italics: true, color: '#475569', alignment: 'center', margin: [0, 0, 0, 10] },
+      h1: { fontSize: 16, bold: true, alignment: 'center', margin: [0, 12, 0, 16], color: '#002D56' },
+      h2: { fontSize: 14, bold: true, alignment: 'left', margin: [0, 14, 0, 6], color: '#002D56' },
+      h3: { fontSize: 13, bold: true, alignment: 'left', margin: [0, 10, 0, 5] },
+      paragraph: { fontSize: 13, margin: [0, 4, 0, 14], alignment: 'justify', lineHeight: 1.45 },
+      listItem: { fontSize: 13, margin: [0, 2, 0, 6], alignment: 'justify', lineHeight: 1.45 },
+      caption: { fontSize: 10, italics: true, color: '#475569', alignment: 'center', margin: [0, 0, 0, 12] },
     },
     info: {
       title: options.title || 'Tai_Lieu_Xuat_Ban'
