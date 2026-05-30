@@ -84,8 +84,8 @@ export interface FirestoreErrorInfo {
   operationType: 'create' | 'update' | 'delete' | 'list' | 'get' | 'write';
   path: string | null;
   authInfo: {
-    userId: string;
-    email: string;
+    userId: string | null;
+    email: string | null;
     emailVerified: boolean;
     isAnonymous: boolean;
     providerInfo: { providerId: string; displayName: string; email: string; }[];
@@ -100,8 +100,8 @@ export function handleFirestoreError(error: any, operationType: FirestoreErrorIn
       operationType,
       path,
       authInfo: {
-        userId: currentUser?.uid || 'no-uid',
-        email: currentUser?.email || 'no-email',
+        userId: currentUser?.uid || null,
+        email: currentUser?.email || null,
         emailVerified: currentUser?.emailVerified || false,
         isAnonymous: currentUser?.isAnonymous || false,
         providerInfo: currentUser?.providerData.map(p => ({
