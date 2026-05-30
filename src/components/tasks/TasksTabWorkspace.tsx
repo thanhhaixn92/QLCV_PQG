@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { FEATURE_FLAGS } from "../../config/featureFlags";
 import { 
   ListTodo, 
@@ -47,8 +47,43 @@ export const TasksTabWorkspace = ({
   user,
   setIsAiCreateModalOpen
 }: TasksTabWorkspaceProps) => {
-  const [viewMode, setViewMode] = useState<"list" | "board">("list");
-  const [boardSearch, setBoardSearch] = useState("");
+  const taskViewStorageKey = user?.uid
+    ? `vms:workspace:${user.uid}:taskViewMode`
+    : null;
+  const [viewMode, setViewMode] = useState<"list" | "board">(() => {
+    try {
+      const saved = user?.uid
+        ? localStorage.getItem(`vms:workspace:${user.uid}:taskViewMode`)
+        : null;
+      return saved === "board" ? "board" : "list";
+    } catch {
+      return "list";
+    }
+  });
+  const [boardSearch, setBoardSearch] = useState(taskFilters.search || "");
+
+  useEffect(() => {
+    if (!taskViewStorageKey) return;
+    try {
+      const saved = localStorage.getItem(taskViewStorageKey);
+      if (saved === "list" || saved === "board") setViewMode(saved);
+    } catch {
+      // Ignore localStorage failures.
+    }
+  }, [taskViewStorageKey]);
+
+  useEffect(() => {
+    if (!taskViewStorageKey) return;
+    try {
+      localStorage.setItem(taskViewStorageKey, viewMode);
+    } catch {
+      // Ignore localStorage failures.
+    }
+  }, [taskViewStorageKey, viewMode]);
+
+  useEffect(() => {
+    setBoardSearch(taskFilters.search || "");
+  }, [taskFilters.search]);
 
   const handleSearch = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
