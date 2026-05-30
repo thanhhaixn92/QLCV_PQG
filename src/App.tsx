@@ -279,6 +279,10 @@ function getSafeUserDisplay(user: FirebaseUser | null, profile?: any) {
   };
 }
 
+function isWorkspaceFirebaseUser(user: FirebaseUser | null | undefined): user is FirebaseUser {
+  return Boolean(user?.uid && !user.isAnonymous);
+}
+
 // --- HELPERS ---
 const createDraftTaskId = () =>
   `draft-task-${
@@ -444,6 +448,7 @@ function App() {
   // Authentication & Global User State
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [authReady, setAuthReady] = useState(false);
+  const validWorkspaceUser = isWorkspaceFirebaseUser(user) ? user : null;
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [activeModal, setActiveModal] = useState<
     "auth" | "account" | "settings" | "task-edit" | null
@@ -708,37 +713,32 @@ function App() {
       return;
     }
 
-    let anonymousLoginStarted = false;
-
     const unsubscribe = onAuthStateChanged(
       auth,
       async (firebaseUser) => {
-        if (firebaseUser) {
+        if (firebaseUser?.isAnonymous) {
+          logDebug("[BOOT] ignoring anonymous auth session", {
+            uid: firebaseUser.uid,
+            isAnonymous: true,
+          });
+          setUser(null);
+          setAuthReady(true);
+          try {
+            await signOut(auth);
+          } catch (err) {
+            console.error("[BOOT] failed to clear anonymous auth session", err);
+          }
+          return;
+        }
+
+        if (isWorkspaceFirebaseUser(firebaseUser)) {
           setUser(firebaseUser);
           setAuthReady(true);
           logDebug("[BOOT] auth ready", {
             uid: firebaseUser.uid,
-            isAnonymous: firebaseUser.isAnonymous,
+            isAnonymous: false,
           });
           return;
-        }
-
-        if (FEATURE_FLAGS.ANONYMOUS_AUTH_ENABLED && !anonymousLoginStarted) {
-          anonymousLoginStarted = true;
-
-          try {
-            logDebug("[BOOT] starting anonymous auth");
-            await signInAnonymously(auth);
-            return;
-          } catch (err) {
-            console.error("[BOOT] anonymous auth failed", err);
-            setUser(null);
-            setAuthReady(true);
-            setError(
-              "Không thể vào chế độ khách. Vui lòng bật Anonymous provider trong Firebase Authentication."
-            );
-            return;
-          }
         }
 
         setUser(null);
