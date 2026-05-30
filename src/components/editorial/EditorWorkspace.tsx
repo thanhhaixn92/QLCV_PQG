@@ -20,8 +20,16 @@ import { getEditorialTool } from '../../lib/editorialTools';
 import { EditorialToolSelector } from './EditorialToolSelector';
 import { ContentReviewDisplay } from './ContentReviewDisplay';
 import { A4PrintPreview } from './A4PrintPreview';
+import {
+  LayoutRecommendationPanel,
+  recommendArticleLayoutsForBrief,
+  type LayoutRecommendation,
+} from './LayoutRecommendationPanel';
 import { createArticleDocumentFromCurrentContent } from '../../lib/publishing/articleDocumentAdapter';
 import { validateArticleDocument } from '../../lib/publishing/validateArticleDocument';
+import { getArticleLayout, getDefaultArticleLayout } from '../../lib/publishing/layoutRegistry';
+
+type EditorialCreationStep = "brief" | "recommendation" | "generating" | "draft";
 
 export const EditorWorkspace = (props: any) => {
   const {
@@ -30,6 +38,18 @@ export const EditorWorkspace = (props: any) => {
   } = props;
 
   const currentTool = getEditorialTool(selectedEditorialToolId);
+  const [currentStep, setCurrentStep] = React.useState<EditorialCreationStep>("brief");
+  const [recommendationBrief, setRecommendationBrief] = React.useState("");
+  const [recommendedLayouts, setRecommendedLayouts] = React.useState<LayoutRecommendation[]>([]);
+  const [selectedLayoutId, setSelectedLayoutId] = React.useState<string | undefined>();
+  const [selectedLayoutVersion, setSelectedLayoutVersion] = React.useState<string | undefined>();
+  const [layoutRecommendationError, setLayoutRecommendationError] = React.useState<string | undefined>();
+
+  const selectedLayout = React.useMemo(() => {
+    if (!selectedLayoutId || !selectedLayoutVersion) return undefined;
+    return getArticleLayout(selectedLayoutId, selectedLayoutVersion);
+  }, [selectedLayoutId, selectedLayoutVersion]);
+
   const articleDocument = React.useMemo(() => {
     const previewContent = insertApprovedIllustrationsForPlainExport(
       output || "",
@@ -39,8 +59,11 @@ export const EditorWorkspace = (props: any) => {
     return createArticleDocumentFromCurrentContent(previewContent, {
       status: "draft",
       authorName: user?.displayName || user?.email || undefined,
+      layoutId: selectedLayout?.layoutId,
+      layoutVersion: selectedLayout?.layoutVersion,
+      estimatedPages: selectedLayout?.estimatedPages,
     });
-  }, [illustrations, insertApprovedIllustrationsForPlainExport, output, user?.displayName, user?.email]);
+  }, [illustrations, insertApprovedIllustrationsForPlainExport, output, selectedLayout, user?.displayName, user?.email]);
 
   const validateArticleBeforeExport = React.useCallback(async () => {
     const validation = validateArticleDocument(articleDocument);
@@ -73,6 +96,69 @@ export const EditorWorkspace = (props: any) => {
     }, 1000);
     return () => clearInterval(timer);
   }, [aiCooldownUntil]);
+
+
+  const buildRecommendationBrief = React.useCallback(() => {
+    const sourceSummary = selectedSourceDocIds.length > 0
+      ? `
+
+Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
+      : "";
+    return `${input.trim()}${sourceSummary}`.trim();
+  }, [input, selectedSourceDocIds.length]);
+
+  const openLayoutRecommendations = React.useCallback(() => {
+    if (!input.trim() && selectedSourceDocIds.length === 0) {
+      toast.error("Vui lòng nhập nội dung hoặc chọn tài liệu nguồn trước khi xử lý.");
+      return;
+    }
+
+    const brief = buildRecommendationBrief();
+    const recommendations = recommendArticleLayoutsForBrief(brief);
+    const invalidRecommendation = recommendations.find(
+      (recommendation) => !getArticleLayout(recommendation.layout.layoutId, recommendation.layout.layoutVersion),
+    );
+
+    setRecommendationBrief(brief);
+    setRecommendedLayouts(recommendations);
+    setLayoutRecommendationError(
+      invalidRecommendation
+        ? `Layout ${invalidRecommendation.layout.layoutId}@${invalidRecommendation.layout.layoutVersion} không tồn tại trong registry.`
+        : undefined,
+    );
+    setCurrentStep("recommendation");
+  }, [buildRecommendationBrief, input, selectedSourceDocIds.length, toast]);
+
+  const runProcessWithLayout = React.useCallback(async (layoutId?: string, layoutVersion?: string) => {
+    setSelectedLayoutId(layoutId);
+    setSelectedLayoutVersion(layoutVersion);
+    setCurrentStep("generating");
+    await handleProcess();
+    setCurrentStep("draft");
+  }, [handleProcess]);
+
+  const handleSelectRecommendedLayout = React.useCallback((recommendation: LayoutRecommendation) => {
+    void runProcessWithLayout(recommendation.layout.layoutId, recommendation.layout.layoutVersion);
+  }, [runProcessWithLayout]);
+
+  const handleUseDefaultLayout = React.useCallback(() => {
+    const defaultLayout = getDefaultArticleLayout();
+    void runProcessWithLayout(defaultLayout.layoutId, defaultLayout.layoutVersion);
+  }, [runProcessWithLayout]);
+
+  const handleStartProcessing = React.useCallback(() => {
+    if (currentTool?.taskType === "TASK_BUILDER") {
+      handleBuildTasks();
+      return;
+    }
+
+    if (currentTool?.taskType === "WRITE_NEW") {
+      openLayoutRecommendations();
+      return;
+    }
+
+    handleProcess();
+  }, [currentTool?.taskType, handleBuildTasks, handleProcess, openLayoutRecommendations]);
 
   return (
     <>
@@ -541,6 +627,12 @@ export const EditorWorkspace = (props: any) => {
                                     setInput("");
                                     setOutput("");
                                     setError(null);
+                                    setCurrentStep("brief");
+                                    setRecommendationBrief("");
+                                    setRecommendedLayouts([]);
+                                    setSelectedLayoutId(undefined);
+                                    setSelectedLayoutVersion(undefined);
+                                    setLayoutRecommendationError(undefined);
                                   }}
                                   className="text-slate-300 hover:text-red-500 p-2 sm:p-2.5 rounded-md transition-all hover:bg-red-50"
                                   title="Làm mới vùng biên tập"
@@ -550,7 +642,17 @@ export const EditorWorkspace = (props: any) => {
                               </div>
                             </div>
                             <div className="relative flex-1 flex flex-col min-h-[300px] bg-slate-50/50">
-                              {currentTool?.taskType === "WRITE_NEW" ? (
+                              {currentTool?.taskType === "WRITE_NEW" && currentStep === "recommendation" ? (
+                                <LayoutRecommendationPanel
+                                  userBrief={recommendationBrief}
+                                  recommendations={recommendedLayouts}
+                                  isLoading={false}
+                                  errorMessage={layoutRecommendationError}
+                                  onSelectLayout={handleSelectRecommendedLayout}
+                                  onUseDefaultLayout={handleUseDefaultLayout}
+                                  onBackToBrief={() => setCurrentStep("brief")}
+                                />
+                              ) : currentTool?.taskType === "WRITE_NEW" ? (
                                 <div className="p-6 sm:p-6 flex-1 w-full space-y-6">
                                   {currentTool.requiresDocumentKind && (
                                     <EditorialKindSelector
@@ -561,7 +663,12 @@ export const EditorWorkspace = (props: any) => {
                                   <EditorialInputForm
                                     kind={editorialKind}
                                     initialValue={input}
-                                    onChange={setInput}
+                                    onChange={(value) => {
+                                      setInput(value);
+                                      if (currentStep === "draft") {
+                                        setCurrentStep("brief");
+                                      }
+                                    }}
                                   />
                                 </div>
                               ) : (
@@ -573,6 +680,7 @@ export const EditorWorkspace = (props: any) => {
                                 />
                               )}
 
+                              {!(currentTool?.taskType === "WRITE_NEW" && currentStep === "recommendation") && (
                               <div className="absolute flex flex-col sm:flex-row items-end sm:items-center justify-end gap-3 bottom-0 right-0 w-full p-4 sm:p-6 pointer-events-none">
                                 {!input.trim() &&
                                   selectedSourceDocIds.length === 0 && (
@@ -588,9 +696,7 @@ export const EditorWorkspace = (props: any) => {
                                     cooldownRemaining > 0
                                   }
                                   onClick={
-                                    currentTool?.taskType === "TASK_BUILDER"
-                                      ? handleBuildTasks
-                                      : handleProcess
+                                    handleStartProcessing
                                   }
                                   className={cn(
                                     "w-full sm:w-auto flex items-center justify-center gap-2 px-8 py-3.5 rounded-md font-semibold text-[13px] tracking-normal transition-all duration-300 shadow-md active:scale-[0.98] pointer-events-auto shrink-0",
@@ -619,6 +725,7 @@ export const EditorWorkspace = (props: any) => {
                                   )}
                                 </button>
                               </div>
+                              )}
                             </div>
 
                             <div className="px-5 sm:px-8 py-4 bg-slate-50 border-t border-slate-100 flex items-center justify-between gap-5">
