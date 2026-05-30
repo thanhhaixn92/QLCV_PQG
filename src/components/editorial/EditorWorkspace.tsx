@@ -42,7 +42,7 @@ export const EditorWorkspace = (props: any) => {
     });
   }, [illustrations, insertApprovedIllustrationsForPlainExport, output, user?.displayName, user?.email]);
 
-  const validateArticleBeforeExport = React.useCallback(() => {
+  const validateArticleBeforeExport = React.useCallback(async () => {
     const validation = validateArticleDocument(articleDocument);
 
     if (!validation.valid) {
@@ -53,11 +53,12 @@ export const EditorWorkspace = (props: any) => {
     }
 
     if (validation.warnings.length > 0) {
-      toast(`Cảnh báo: ${validation.warnings[0].message}`, { icon: "⚠️", duration: 4000 });
+      toast("Bản thảo còn cảnh báo trước khi xuất bản chính thức.", { icon: "⚠️", duration: 4000 });
+      return requestConfirmAsync("Bản thảo còn cảnh báo/cần bổ sung. Bạn vẫn muốn xuất file bản nháp?");
     }
 
     return true;
-  }, [articleDocument, setError, toast]);
+  }, [articleDocument, requestConfirmAsync, setError, toast]);
 
   const [cooldownRemaining, setCooldownRemaining] = React.useState(0);
   React.useEffect(() => {
@@ -1133,7 +1134,7 @@ export const EditorWorkspace = (props: any) => {
                                     />
                                   )}
 
-                                  <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-hide -mx-1 px-1">
+                                  <div className="flex flex-wrap items-center gap-2 pb-1 -mx-1 px-1 overflow-visible">
                                     {currentTool?.allowImageTools && (
                                       <>
                                         <button
@@ -1202,7 +1203,7 @@ export const EditorWorkspace = (props: any) => {
                                       TẠO TASK
                                     </button>
 
-                                    <div className="w-px h-6 bg-slate-200 mx-1 shrink-0" />
+                                    <div className="hidden sm:block w-px h-6 bg-slate-200 mx-1 shrink-0" />
 
                                     {(currentTool?.allowPdfExport !== false) && (
                                       <>
@@ -1216,7 +1217,7 @@ export const EditorWorkspace = (props: any) => {
                                               if (!confirmed) return;
                                             }
                                             try {
-                                              if (!validateArticleBeforeExport()) return;
+                                              if (!(await validateArticleBeforeExport())) return;
                                               toast(
                                                 "Đang tạo file PDF...",
                                                 { icon: "ℹ️", duration: 5000 },
@@ -1282,7 +1283,7 @@ export const EditorWorkspace = (props: any) => {
                                             if (!confirmed) return;
                                           }
                                           try {
-                                            if (!validateArticleBeforeExport()) return;
+                                            if (!(await validateArticleBeforeExport())) return;
                                             const { exportWordFromElement } = await import("../../lib/exportUtils");
                                             await exportWordFromElement(
                                               "printable-article",

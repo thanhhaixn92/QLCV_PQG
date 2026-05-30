@@ -8,7 +8,10 @@ interface Props {
   markdownContent: string;
 }
 
+const DRAFT_MARKER_PATTERN = /\[(?:\s*Bổ sung\s*:|\s*Cần\s+(?:bổ sung|bổ sung\/kiểm chứng|kiểm chứng)\s*:?)[^\]]*\]/i;
+
 export function EditorialPreflightPanel({ kind, markdownContent }: Props) {
+  const hasDraftMarkers = DRAFT_MARKER_PATTERN.test(markdownContent) || markdownContent.includes('[cần trích nguồn]');
   const checks = [
     {
       id: 'title',
@@ -17,8 +20,8 @@ export function EditorialPreflightPanel({ kind, markdownContent }: Props) {
     },
     {
       id: 'no_placeholders',
-      label: 'Không còn [Cần bổ sung/kiểm chứng]',
-      passed: !markdownContent.includes('[Cần') && !markdownContent.includes('[cần') && !markdownContent.includes('...') && !markdownContent.includes('[cần trích nguồn]'),
+      label: hasDraftMarkers ? 'Còn dữ liệu cần bổ sung/kiểm chứng' : 'Không còn dữ liệu cần bổ sung/kiểm chứng',
+      passed: !hasDraftMarkers,
     },
     {
       id: 'content_length',

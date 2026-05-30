@@ -13,6 +13,7 @@ import { hasArticleStyle } from "./styleRegistry";
 export interface ArticleValidationIssue {
   path: string;
   message: string;
+  detail?: string;
 }
 
 export interface ValidationResult {
@@ -23,8 +24,9 @@ export interface ValidationResult {
 
 const VALID_PAGE_BREAK_POLICIES: ArticlePageBreakPolicy[] = ["auto", "avoid", "before", "after"];
 const HTML_PATTERN = /<\/?[a-z][\s\S]*>/i;
-const DRAFT_MARKER_PATTERN = /\[(?:\s*Bổ sung\s*:|\s*Cần\s+(?:bổ sung|bổ sung\/kiểm chứng|kiểm chứng)\s*:|\s*PLACEHOLDER\b|\s*[—-]+\s*(?:ẢNH|PLACEHOLDER)\s*[—-]+\s*)[^\]]*\]/i;
-const DRAFT_MARKER_WARNING = "Bản thảo còn dữ liệu cần bổ sung trước khi xuất bản.";
+const DRAFT_MARKER_PATTERN = /\[(?:\s*Bổ sung\s*:|\s*Cần\s+(?:bổ sung|bổ sung\/kiểm chứng|kiểm chứng)\s*:?|\s*PLACEHOLDER\b|\s*[—-]+\s*(?:ẢNH|PLACEHOLDER)\s*[—-]+\s*)[^\]]*\]/i;
+const DRAFT_MARKER_WARNING = "Bản thảo còn dữ liệu cần bổ sung trước khi xuất bản chính thức.";
+const LONG_CAPTION_WARNING = "Chú thích ảnh hơi dài, nên rút gọn trước khi xuất bản chính thức.";
 
 function hasHtml(value: string): boolean {
   return HTML_PATTERN.test(value);
@@ -45,6 +47,17 @@ function addDraftMarkerWarning(value: string, path: string, warnings: ArticleVal
   warnings.push({ path, message: DRAFT_MARKER_WARNING });
 }
 
+function maxLengthWarning(path: string, maxChars: number): string {
+  if (/\.caption$/u.test(path)) return LONG_CAPTION_WARNING;
+  if (/lead-in-list|\.items\[\d+\]\.(?:label|body)$/u.test(path)) {
+    return `Ý nhãn dẫn hơi dài, nên rút gọn trước khi xuất bản chính thức.`;
+  }
+  if (/paragraph|conclusion|bullet-list|\.items\[\d+\]$/u.test(path)) {
+    return `Nội dung hơi dài, nên rà soát lại trước khi xuất bản chính thức.`;
+  }
+  return `Nội dung vượt khuyến nghị ${maxChars} ký tự, nên rút gọn trước khi xuất bản chính thức.`;
+}
+
 function validatePlainText(
   value: unknown,
   path: string,
@@ -61,7 +74,11 @@ function validatePlainText(
     errors.push({ path, message: "Slot plain text không được chứa HTML." });
   }
   if (maxChars && value.length > maxChars) {
-    errors.push({ path, message: `Slot vượt quá giới hạn ${maxChars} ký tự.` });
+    warnings.push({
+      path,
+      message: maxLengthWarning(path, maxChars),
+      detail: `Slot vượt quá giới hạn ${maxChars} ký tự.`,
+    });
   }
 }
 
@@ -167,9 +184,16 @@ export function validateArticleDocument(document: ArticleDocument): ValidationRe
     result.errors.push({ path: "blocks", message: "blocks phải là array." });
   } else {
     if (document.blocks.length === 0) {
-      result.warnings.push({ path: "blocks", message: "Tài liệu chưa có block nội dung." });
+      result.errors.push({ path: "blocks", message: "Tài liệu chưa có nội dung chính." });
     }
     document.blocks.forEach((block, index) => validateBlock(block, index, document, result));
+
+    const hasMainContent = document.blocks.some((block) =>
+      ["sapo", "paragraph", "lead-in-list", "bullet-list", "conclusion"].includes(block.type),
+    );
+    if (!hasMainContent) {
+      result.errors.push({ path: "blocks", message: "Tài liệu chưa có nội dung chính." });
+    }
   }
 
   result.valid = result.errors.length === 0;

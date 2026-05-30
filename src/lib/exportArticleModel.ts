@@ -112,9 +112,8 @@ function normalizeRunsForRender(runs: ExportTextRun[]): ExportTextRun[] {
 }
 
 export function isCaptionText(text: string): boolean {
-  return /^(?:Chú thích ảnh|Ghi chú hình|Caption)\s*:|^\*\s*.+\s*\*$/iu.test(
-    normalizeComparableText(text),
-  );
+  const value = normalizeComparableText(text);
+  return /^(?:Hình\s*\d*|Ảnh\s*\d*|Chú thích ảnh|Ghi chú hình|Caption)\s*[:.：-]\s+.{2,}$/iu.test(value);
 }
 
 export function isFigurePlaceholderText(text: string): boolean {
