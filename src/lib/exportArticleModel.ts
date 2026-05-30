@@ -12,9 +12,15 @@ export interface ExportTableCell {
   header?: boolean;
 }
 
+export interface ExportLeadInItem {
+  label: string;
+  body: ExportTextRun[];
+}
+
 export type ExportArticleBlock =
   | { type: "heading"; level: 1 | 2 | 3; runs: ExportTextRun[] }
   | { type: "paragraph"; runs: ExportTextRun[] }
+  | { type: "leadInList"; items: ExportLeadInItem[] }
   | { type: "figurePlaceholder"; label: string; caption?: string }
   | { type: "kpiTable"; rows: { label: string; value: string }[] }
   | { type: "list"; ordered: boolean; items: ExportTextRun[][] }
@@ -42,6 +48,10 @@ function normalizeDisplayText(input: string): string {
     .replace(/^\*\s*/, "")
     .replace(/\s*\*$/, "")
     .trim();
+}
+
+function sameDisplayText(a: string | undefined, b: string | undefined): boolean {
+  return Boolean(a && b && normalizeComparableText(a) === normalizeComparableText(b));
 }
 
 export function runsToPlainText(runs: ExportTextRun[]): string {
@@ -188,7 +198,13 @@ function listFromElement(list: HTMLElement): ExportArticleBlock | null {
 }
 
 function contentRoot(root: HTMLElement): HTMLElement {
-  return (root.querySelector(".prose") as HTMLElement) || root;
+  if (root.matches("article.print-layout, .print-layout.a4-preview")) {
+    return root;
+  }
+
+  return (
+    root.querySelector("article.print-layout, .print-layout.a4-preview") as HTMLElement
+  ) || root;
 }
 
 function pushPendingKpis(
@@ -212,6 +228,17 @@ function pushPendingKpis(
   }
 
   pendingKpis.length = 0;
+}
+
+function leadInFromRuns(runs: ExportTextRun[]): ExportLeadInItem | null {
+  const plain = runsToPlainText(runs).replace(/^\d+[.)]\s+/, "");
+  const match = plain.match(/^([^:：]{3,90})[:：]\s*(.{2,})$/u);
+  if (!match) return null;
+
+  const label = normalizeDisplayText(match[1]);
+  const bodyText = normalizeDisplayText(match[2]);
+  if (!label || !bodyText || label.split(/\s+/).length > 12) return null;
+  return { label, body: [{ text: bodyText }] };
 }
 
 function pushParagraphLines(
@@ -282,6 +309,25 @@ function appendElementToModel(
     return;
   }
 
+  if (tag === "figure") {
+    pushPendingKpis(blocks, pendingKpis);
+    const caption = normalizeDisplayText(el.querySelector("figcaption")?.textContent || "");
+    const boxText = normalizeDisplayText(
+      Array.from(el.children)
+        .filter((child) => child.tagName.toLowerCase() !== "figcaption")
+        .map((child) => child.textContent || "")
+        .join(" "),
+    );
+
+    const label = boxText || "Vị trí chèn ảnh minh họa";
+    blocks.push({
+      type: "figurePlaceholder",
+      label,
+      caption: caption && !sameDisplayText(label, caption) ? caption : undefined,
+    });
+    return;
+  }
+
   if (tag === "ul" || tag === "ol") {
     pushPendingKpis(blocks, pendingKpis);
     const list = listFromElement(el);
@@ -344,16 +390,21 @@ function attachCaptionsToPreviousFigures(blocks: ExportArticleBlock[]): ExportAr
   blocks.forEach((block) => {
     const previous = output[output.length - 1];
 
-    if (
-      block.type === "paragraph" &&
-      previous?.type === "figurePlaceholder" &&
-      !previous.caption &&
-      block.runs.length > 0 &&
-      block.runs.every((run) => run.italics) &&
-      isCaptionText(runsToPlainText(block.runs))
-    ) {
-      previous.caption = normalizeDisplayText(runsToPlainText(block.runs));
-      return;
+    if (block.type === "paragraph" && previous?.type === "figurePlaceholder") {
+      const paragraphText = runsToPlainText(block.runs);
+      const captionLike =
+        block.runs.length > 0 &&
+        block.runs.every((run) => run.italics) &&
+        isCaptionText(paragraphText);
+
+      if (!previous.caption && captionLike) {
+        previous.caption = normalizeDisplayText(paragraphText);
+        return;
+      }
+
+      if (sameDisplayText(previous.caption, paragraphText) || sameDisplayText(previous.label, paragraphText)) {
+        return;
+      }
     }
 
     output.push(block);
@@ -373,7 +424,55 @@ export function buildExportArticleModel(root: HTMLElement): ExportArticleBlock[]
 
   pushPendingKpis(blocks, pendingKpis);
 
-  return attachCaptionsToPreviousFigures(blocks);
+  return normalizeArticleBlocks(attachCaptionsToPreviousFigures(blocks));
+}
+
+function normalizeArticleBlocks(blocks: ExportArticleBlock[]): ExportArticleBlock[] {
+  const normalized: ExportArticleBlock[] = [];
+
+  for (let index = 0; index < blocks.length; index += 1) {
+    const block = blocks[index];
+
+    if (block.type !== "paragraph") {
+      normalized.push(block);
+      continue;
+    }
+
+    const numberedItems: ExportTextRun[][] = [];
+    let cursor = index;
+    let expectedNumber = 1;
+
+    while (cursor < blocks.length && blocks[cursor].type === "paragraph") {
+      const current = blocks[cursor] as Extract<ExportArticleBlock, { type: "paragraph" }>;
+      const plain = runsToPlainText(current.runs);
+      const match = plain.match(/^(\d+)[.)]\s+(.+)$/u);
+      if (!match || Number(match[1]) !== expectedNumber) break;
+
+      const stripped = normalizeDisplayText(match[2]);
+      if (!stripped) break;
+      numberedItems.push([{ text: stripped }]);
+      cursor += 1;
+      expectedNumber += 1;
+    }
+
+    if (numberedItems.length >= 2) {
+      const leadInItems = numberedItems
+        .map((item) => leadInFromRuns(item))
+        .filter(Boolean) as ExportLeadInItem[];
+
+      if (leadInItems.length === numberedItems.length) {
+        normalized.push({ type: "leadInList", items: leadInItems });
+      } else {
+        normalized.push({ type: "list", ordered: true, items: numberedItems });
+      }
+      index = cursor - 1;
+      continue;
+    }
+
+    normalized.push(block);
+  }
+
+  return normalized;
 }
 
 function pdfRuns(runs: ExportTextRun[]): any[] {
@@ -442,6 +541,16 @@ export function exportArticleModelToPdfmake(blocks: ExportArticleBlock[]): any[]
       content.push({
         text: pdfRuns(block.runs),
         style: captionLike ? "caption" : "paragraph",
+      });
+      return;
+    }
+
+    if (block.type === "leadInList") {
+      block.items.forEach((item) => {
+        content.push({
+          text: [{ text: `${item.label}: `, bold: true }, ...pdfRuns(item.body)],
+          style: "paragraph",
+        });
       });
       return;
     }
@@ -556,6 +665,28 @@ export function exportArticleModelToDocx(blocks: ExportArticleBlock[]): ExportDo
       return;
     }
 
+    if (block.type === "leadInList") {
+      block.items.forEach((item) => {
+        children.push(
+          new Paragraph({
+            children: [
+              new TextRun({
+                text: `${item.label}: `,
+                bold: true,
+                font: "Times New Roman",
+                size: 28,
+              }),
+              ...docxRuns(item.body),
+            ],
+            alignment: AlignmentType.JUSTIFIED,
+            spacing: { line: 360, after: 180 },
+            indent: { firstLine: 567 },
+          }),
+        );
+      });
+      return;
+    }
+
     if (block.type === "figurePlaceholder") {
       children.push(
         new Paragraph({
@@ -573,7 +704,7 @@ export function exportArticleModelToDocx(blocks: ExportArticleBlock[]): ExportDo
             top: { style: BorderStyle.DASHED, size: 6, color: "94A3B8" },
             bottom: { style: BorderStyle.DASHED, size: 6, color: "94A3B8" },
             left: { style: BorderStyle.DASHED, size: 6, color: "94A3B8" },
-            right: { style: BorderStyle.SINGLE, size: 6, color: "94A3B8" },
+            right: { style: BorderStyle.DASHED, size: 6, color: "94A3B8" },
           },
           shading: { fill: "F8FAFC" },
         } as any),

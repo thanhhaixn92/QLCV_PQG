@@ -28,7 +28,8 @@ interface ParsedLine {
   text: string;
 }
 
-const PLACEHOLDER_MARKER_PATTERN = /\[(?:\s*(?:PLACEHOLDER|Bổ sung|Bo sung)[^\]]*|\s*[—-]+\s*(?:ẢNH|ANH|PLACEHOLDER)\s*[—-]+\s*)\]/gi;
+const PLACEHOLDER_MARKER_PATTERN = /\[(?:\s*PLACEHOLDER[^\]]*|\s*[—-]+\s*(?:ẢNH|ANH|PLACEHOLDER)\s*[—-]+\s*)\]/gi;
+const DRAFT_MARKER_PATTERN = /\[\s*(?:Bổ sung|Bo sung)\s*:\s*([^\]]+)\]/gi;
 const LEAD_IN_CONTEXT_PATTERN = /(?:bao gồm|gồm|các nội dung sau|những nội dung sau|các điểm sau|cụ thể như sau)[:：]?$/i;
 const LEAD_IN_LINE_PATTERN = /^([^:：]{3,90})[:：]\s*(.{2,})$/;
 
@@ -40,8 +41,15 @@ function normalizeComparableText(value: string): string {
     .trim();
 }
 
+function normalizeDraftMarkers(value: string): string {
+  return value.replace(DRAFT_MARKER_PATTERN, (_match, description: string) => {
+    const cleanDescription = String(description || "").replace(/\s+/g, " ").trim();
+    return cleanDescription ? `[Cần bổ sung: ${cleanDescription}]` : "[Cần bổ sung: dữ liệu]";
+  });
+}
+
 function stripPlaceholderMarkers(value: string): string {
-  return value.replace(PLACEHOLDER_MARKER_PATTERN, " ").replace(/\s+/g, " ").trim();
+  return normalizeDraftMarkers(value).replace(PLACEHOLDER_MARKER_PATTERN, " ").replace(/\s+/g, " ").trim();
 }
 
 function collapseDuplicatedCaption(value: string): string {

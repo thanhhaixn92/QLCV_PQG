@@ -150,7 +150,23 @@ export function stripExportArtifacts(root: HTMLElement): HTMLElement {
 
   clone
     .querySelectorAll(
-      'button,input,select,textarea,[role="tooltip"],.no-print,.toast,.spinner,.loading,.lucide'
+      [
+        'button',
+        'input',
+        'select',
+        'textarea',
+        '[role="tooltip"]',
+        '[data-export-exclude]',
+        '[data-export-exclude="true"]',
+        '.no-print',
+        '.toast',
+        '.spinner',
+        '.loading',
+        '.lucide',
+        '.a4-validation-summary',
+        '.editor-toolbar',
+        '.toolbar',
+      ].join(','),
     )
     .forEach((el) => el.remove());
 
@@ -182,9 +198,13 @@ function normalizeImagePlaceholderElements(root: HTMLElement): void {
   candidates.forEach((el) => {
     if (el.querySelector('img,table,ul,ol,h1,h2,h3')) return;
 
+    if (el.dataset.exportPlaceholderNormalized === 'true') return;
+
     const text = (el.textContent || '').trim();
     const block = extractImagePlaceholderBlock(text);
     if (!block) return;
+
+    el.dataset.exportPlaceholderNormalized = 'true';
 
     const fragment = document.createDocumentFragment();
     fragment.appendChild(
@@ -246,8 +266,6 @@ function createExportParagraph(
 export function normalizeExportDom(root: HTMLElement): HTMLElement {
   const clone = stripExportArtifacts(root);
 
-  normalizeImagePlaceholderElements(clone);
-
   const walker = document.createTreeWalker(clone, NodeFilter.SHOW_TEXT);
   const nodes: Text[] = [];
   while (walker.nextNode()) {
@@ -266,7 +284,7 @@ export function normalizeExportDom(root: HTMLElement): HTMLElement {
 
 export function validateExportContent(root: HTMLElement): ExportValidationResult {
   const issues: ExportValidationIssue[] = [];
-  const text = root.innerText || '';
+  const text = root.innerText || root.textContent || '';
 
   if (!text.trim()) {
     issues.push({
