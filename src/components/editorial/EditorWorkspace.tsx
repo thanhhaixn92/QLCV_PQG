@@ -6,7 +6,6 @@ import {
   Target, Target as Plus, Link as LinkIcon, Trash2, Edit3, Image as ImageIcon,
   Save, Sparkles, CheckSquare, Zap, Target as Crosshair, Clock, Check, Copy, History, AlertCircle, CheckCircle2
 } from 'lucide-react';
-import ReactMarkdown from 'react-markdown';
 import { EditorialKindSelector } from './EditorialKindSelector';
 import { EditorialInputForm } from './EditorialInputForm';
 import { EditorialPreflightPanel } from './EditorialPreflightPanel';
@@ -21,6 +20,8 @@ import { SlideOutlineWorkspace } from './SlideOutlineWorkspace';
 import { getEditorialTool } from '../../lib/editorialTools';
 import { EditorialToolSelector } from './EditorialToolSelector';
 import { ContentReviewDisplay } from './ContentReviewDisplay';
+import { A4PrintPreview } from './A4PrintPreview';
+import { createArticleDocumentFromCurrentContent } from '../../lib/publishing/articleDocumentAdapter';
 
 export const EditorWorkspace = (props: any) => {
   const {
@@ -29,6 +30,17 @@ export const EditorWorkspace = (props: any) => {
   } = props;
 
   const currentTool = getEditorialTool(selectedEditorialToolId);
+  const articleDocument = React.useMemo(() => {
+    const previewContent = insertApprovedIllustrationsForPlainExport(
+      output || "",
+      illustrations || [],
+    );
+
+    return createArticleDocumentFromCurrentContent(previewContent, {
+      status: "draft",
+      authorName: user?.displayName || user?.email || undefined,
+    });
+  }, [illustrations, insertApprovedIllustrationsForPlainExport, output, user?.displayName, user?.email]);
 
   const [cooldownRemaining, setCooldownRemaining] = React.useState(0);
   React.useEffect(() => {
@@ -1621,130 +1633,7 @@ export const EditorWorkspace = (props: any) => {
                                         className="w-full h-[600px] p-6 bg-slate-50 border border-dashed border-slate-200 rounded-lg text-lg leading-relaxed font-serif focus:outline-none focus:border-[#002D56] transition-all"
                                       />
                                     ) : (
-                                      <ReactMarkdown
-                                        components={{
-                                          h1: ({ node, ...props }) => (
-                                            <h1
-                                              className="text-3xl md:text-5xl font-semibold text-[#002D56] mb-8 leading-tight tracking-tight uppercase"
-                                              {...props}
-                                            />
-                                          ),
-                                          h2: ({ node, ...props }) => (
-                                            <h2
-                                              className="text-2xl md:text-3xl mt-14 mb-6 pb-4 border-b-4 border-[#002D56]/10 font-semibold"
-                                              {...props}
-                                            />
-                                          ),
-                                          h3: ({ node, ...props }) => (
-                                            <h3
-                                              className="text-xl font-bold text-slate-800 mt-10 mb-4 flex items-center gap-3 bg-slate-50 p-4 rounded-md border-l-8 border-[#002D56]"
-                                              {...props}
-                                            />
-                                          ),
-                                          p: ({ node, children, ...props }) => {
-                                            return (
-                                              <p
-                                                className="mb-8 text-justify"
-                                                {...props}
-                                              >
-                                                {children}
-                                              </p>
-                                            );
-                                          },
-                                          strong: ({ node, ...props }) => (
-                                            <strong
-                                              className="font-semibold text-slate-900 underline decoration-[#002D56]/20 underline-offset-4"
-                                              {...props}
-                                            />
-                                          ),
-                                          em: ({ node, ...props }) => (
-                                            <em
-                                              className="text-slate-500 italic block border-l-4 border-[#002D56]/20 pl-8 my-10 py-4 text-2xl bg-[#002D56]/5 rounded-r-3xl leading-snug"
-                                              {...props}
-                                            />
-                                          ),
-                                          img: ({
-                                            node,
-                                            src,
-                                            alt,
-                                            ...props
-                                          }) => {
-                                            // Double check URL validity
-                                            if (
-                                              !src ||
-                                              (!src.startsWith("http") &&
-                                                !src.startsWith("data:"))
-                                            ) {
-                                              return null;
-                                            }
-
-                                            // Find metadata to get ID if possible
-                                            const meta = illustrations.find(
-                                              (i) => i.url === src,
-                                            );
-                                            if (
-                                              meta &&
-                                              !isPublishableIllustration(meta)
-                                            )
-                                              return null;
-                                            if (
-                                              meta &&
-                                              meta.loadStatus === "error"
-                                            )
-                                              return null;
-
-                                            return (
-                                              <div className="my-10 group relative">
-                                                <img
-                                                  src={src}
-                                                  alt={alt || "Hình minh họa"}
-                                                  className={cn(
-                                                    "rounded-md shadow-sm border-4 border-white mx-auto w-full transition-all",
-                                                    meta?.reviewStatus ===
-                                                      "suggested" &&
-                                                      "opacity-75 grayscale-[20%] ring-8 ring-[#002D56]/10",
-                                                  )}
-                                                  onLoad={() =>
-                                                    meta &&
-                                                    updateImageLoadStatus(
-                                                      meta.id,
-                                                      "loaded",
-                                                    )
-                                                  }
-                                                  onError={() =>
-                                                    meta &&
-                                                    updateImageLoadStatus(
-                                                      meta.id,
-                                                      "error",
-                                                    )
-                                                  }
-                                                  {...props}
-                                                />
-                                                {meta?.reviewStatus ===
-                                                  "suggested" && (
-                                                  <div className="absolute top-6 left-6 bg-[#002D56] text-white px-4 py-2 rounded-md text-[10px] font-semibold uppercase shadow-md flex items-center gap-2">
-                                                    <Loader2 className="w-3 h-3 animate-spin" />{" "}
-                                                    Ảnh chờ duyệt
-                                                  </div>
-                                                )}
-                                                {alt &&
-                                                  alt !== "Hình minh họa" && (
-                                                    <p className="text-center mt-4 text-sm font-bold text-slate-400 italic">
-                                                      * {alt} *
-                                                    </p>
-                                                  )}
-                                              </div>
-                                            );
-                                          },
-                                        }}
-                                      >
-                                        {isEditing
-                                          ? output
-                                          : insertApprovedIllustrationsForPlainExport(
-                                              output,
-                                              illustrations,
-                                            )}
-                                      </ReactMarkdown>
+                                      <A4PrintPreview document={articleDocument} />
                                     )}
                                   </div>
                                 </div>
