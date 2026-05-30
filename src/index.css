@@ -45,18 +45,6 @@
     @apply text-justify leading-relaxed mb-4;
   }
 
-  /*
-   * Scoped justify for #printable-article body text only.
-   * Headings (h1-h6) and UI elements are intentionally excluded.
-   * This ensures prose paragraphs and list items are justified
-   * even when Tailwind prose resets or overrides text-align.
-   */
-  #printable-article .prose p {
-    text-align: justify;
-  }
-  #printable-article .prose li {
-    text-align: justify;
-  }
 }
 
 @layer utilities {
@@ -113,26 +101,33 @@
 
 
 @layer components {
-  #printable-article {
+  .printable-article-shell {
+    width: 100%;
+    overflow-x: auto;
     background: #f8fafc;
   }
 
-  #printable-article .print-layout.a4-preview {
-    width: 210mm;
+  .print-layout.a4-preview {
+    width: min(210mm, 100%);
     max-width: 100%;
     min-height: 297mm;
+    box-sizing: border-box;
     margin: 0 auto;
-    padding: 22mm 20mm;
+    padding: clamp(18px, 5vw, 22mm) clamp(16px, 4.5vw, 20mm);
     background: #ffffff;
     color: #111827;
     font-family: "Times New Roman", Times, serif;
-    font-size: 13.5pt;
+    font-size: clamp(14px, 1.65vw, 13.5pt);
     line-height: 1.5;
     box-shadow: 0 18px 45px rgba(15, 23, 42, 0.12);
+    border: 1px solid rgba(148, 163, 184, 0.35);
+    overflow-wrap: break-word;
   }
 
-  #printable-article .a4-validation-summary {
-    margin-bottom: 16pt;
+  .a4-validation-summary {
+    width: min(210mm, 100%);
+    box-sizing: border-box;
+    margin: 0 auto 12px;
     padding: 10pt 12pt;
     border: 1px solid #f59e0b;
     border-radius: 6pt;
@@ -143,12 +138,12 @@
     line-height: 1.4;
   }
 
-  #printable-article .a4-validation-summary p {
+  .a4-validation-summary p {
     margin: 4pt 0 0;
     text-align: left;
   }
 
-  #printable-article .a4-block-title {
+  .print-layout.a4-preview .a4-block-title {
     margin: 0 0 18pt;
     color: #002d56;
     font-family: "Times New Roman", Times, serif;
@@ -161,7 +156,7 @@
     page-break-after: avoid;
   }
 
-  #printable-article .a4-block-sapo {
+  .print-layout.a4-preview .a4-block-sapo {
     margin: 0 0 14pt;
     font-size: 14pt;
     font-weight: 700;
@@ -169,7 +164,7 @@
     text-align: justify;
   }
 
-  #printable-article .a4-block-section-heading {
+  .print-layout.a4-preview .a4-block-section-heading {
     margin: 18pt 0 10pt;
     color: #002d56;
     font-size: 16pt;
@@ -180,8 +175,8 @@
     page-break-after: avoid;
   }
 
-  #printable-article .a4-block-paragraph,
-  #printable-article .a4-block-conclusion {
+  .print-layout.a4-preview .a4-block-paragraph,
+  .print-layout.a4-preview .a4-block-conclusion {
     margin: 0 0 10pt;
     font-size: 13.5pt;
     line-height: 1.5;
@@ -189,8 +184,8 @@
     text-indent: 18pt;
   }
 
-  #printable-article .a4-block-bullet-list,
-  #printable-article .a4-block-lead-in-list {
+  .print-layout.a4-preview .a4-block-bullet-list,
+  .print-layout.a4-preview .a4-block-lead-in-list:not(.a4-lead-in-paragraphs) {
     margin: 0 0 10pt 22pt;
     padding: 0;
     font-size: 13.5pt;
@@ -198,30 +193,31 @@
     text-align: justify;
   }
 
-  #printable-article .a4-block-bullet-list li,
-  #printable-article .a4-block-lead-in-list li {
+  .print-layout.a4-preview .a4-block-bullet-list li,
+  .print-layout.a4-preview .a4-block-lead-in-list li {
     margin: 0 0 6pt;
     padding-left: 4pt;
     break-inside: avoid;
     page-break-inside: avoid;
   }
 
-  #printable-article .a4-lead-in-paragraphs {
+  .print-layout.a4-preview .a4-lead-in-paragraphs {
     margin: 0 0 10pt;
   }
 
-  #printable-article .a4-lead-in-paragraphs p {
+  .print-layout.a4-preview .a4-lead-in-paragraphs p {
     margin: 0 0 8pt;
     text-align: justify;
+    text-indent: 18pt;
   }
 
-  #printable-article .a4-block-figure-placeholder {
+  .print-layout.a4-preview .a4-block-figure-placeholder {
     margin: 14pt 0 12pt;
     break-inside: avoid;
     page-break-inside: avoid;
   }
 
-  #printable-article .a4-figure-placeholder-box {
+  .print-layout.a4-preview .a4-figure-placeholder-box {
     display: flex;
     min-height: 62mm;
     align-items: center;
@@ -237,7 +233,7 @@
     text-align: center;
   }
 
-  #printable-article .a4-figure-placeholder-box small {
+  .print-layout.a4-preview .a4-figure-placeholder-box small {
     display: block;
     max-width: 80%;
     color: #64748b;
@@ -245,7 +241,7 @@
     line-height: 1.35;
   }
 
-  #printable-article .a4-block-figure-placeholder figcaption {
+  .print-layout.a4-preview .a4-block-figure-placeholder figcaption {
     margin-top: 8pt;
     color: #475569;
     font-size: 12.5pt;
@@ -256,19 +252,19 @@
     page-break-inside: avoid;
   }
 
-  #printable-article .a4-break-avoid,
-  #printable-article figure,
-  #printable-article .figure-placeholder,
-  #printable-article figcaption,
-  #printable-article table,
-  #printable-article .callout,
-  #printable-article .card {
+  .print-layout.a4-preview .a4-break-avoid,
+  .print-layout.a4-preview figure,
+  .print-layout.a4-preview .figure-placeholder,
+  .print-layout.a4-preview figcaption,
+  .print-layout.a4-preview table,
+  .print-layout.a4-preview .callout,
+  .print-layout.a4-preview .card {
     break-inside: avoid;
     page-break-inside: avoid;
   }
 
-  #printable-article .a4-break-before,
-  #printable-article .a4-block-page-break {
+  .print-layout.a4-preview .a4-break-before,
+  .print-layout.a4-preview .a4-block-page-break {
     break-before: page;
     page-break-before: always;
     height: 0;
@@ -276,7 +272,7 @@
     padding: 0;
   }
 
-  #printable-article .a4-break-after {
+  .print-layout.a4-preview .a4-break-after {
     break-after: page;
     page-break-after: always;
   }
@@ -288,36 +284,39 @@
 }
 
 @media print {
-  #printable-article {
+  .printable-article-shell {
     background: #ffffff !important;
+    overflow: visible;
   }
 
-  #printable-article .print-layout.a4-preview {
+  .print-layout.a4-preview {
     width: auto;
     max-width: none;
     min-height: auto;
     margin: 0;
     padding: 0;
+    border: 0;
     box-shadow: none;
   }
 
-  #printable-article .a4-validation-summary {
-    display: none;
+  [data-export-exclude="true"],
+  .a4-validation-summary {
+    display: none !important;
   }
 
-  #printable-article h1,
-  #printable-article h2,
-  #printable-article h3 {
+  .print-layout.a4-preview h1,
+  .print-layout.a4-preview h2,
+  .print-layout.a4-preview h3 {
     break-after: avoid;
     page-break-after: avoid;
   }
 
-  #printable-article figure,
-  #printable-article .a4-block-figure-placeholder,
-  #printable-article figcaption,
-  #printable-article table,
-  #printable-article .callout,
-  #printable-article .card {
+  .print-layout.a4-preview figure,
+  .print-layout.a4-preview .a4-block-figure-placeholder,
+  .print-layout.a4-preview figcaption,
+  .print-layout.a4-preview table,
+  .print-layout.a4-preview .callout,
+  .print-layout.a4-preview .card {
     break-inside: avoid;
     page-break-inside: avoid;
   }
