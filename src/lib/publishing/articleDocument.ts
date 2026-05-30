@@ -56,6 +56,9 @@ export interface ArticleDocument {
   documentVersion: number;
   templateId: string;
   templateVersion: string;
+  layoutId?: string;
+  layoutVersion?: string;
+  estimatedPages?: number;
   locale: ArticleLocale;
   metadata: ArticleDocumentMetadata;
   blocks: ArticleBlock[];
