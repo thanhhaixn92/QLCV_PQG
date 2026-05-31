@@ -20,7 +20,12 @@ const COMMON_ALLOWED_BLOCKS: ArticleBlockType[] = [
   "paragraph",
   "lead-in-list",
   "bullet-list",
+  "ordered-list",
+  "quote",
+  "fact-box",
+  "table",
   "figure-placeholder",
+  "callout",
   "conclusion",
   "page-break",
 ];

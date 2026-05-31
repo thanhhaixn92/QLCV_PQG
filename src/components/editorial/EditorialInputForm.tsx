@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { EditorialDocumentKind } from '../../types/editorial';
 import { EDITORIAL_KIND_CONFIG } from '../../lib/editorialTemplates';
+import { normalizeEditorialBriefInput } from '../../lib/editorialBrief';
 
 interface Props {
   kind: EditorialDocumentKind;
@@ -12,17 +13,21 @@ export function EditorialInputForm({ kind, onChange, initialValue = '' }: Props)
   const config = EDITORIAL_KIND_CONFIG[kind];
   
   const [formData, setFormData] = useState<Record<string, string>>({
-    generalContext: initialValue
+    generalContext: normalizeEditorialBriefInput(initialValue)
   });
 
   useEffect(() => {
-    setFormData({ generalContext: formData.generalContext || '' });
-  }, [kind]);
+    setFormData((prev) => ({
+      ...prev,
+      generalContext: normalizeEditorialBriefInput(prev.generalContext || initialValue || ''),
+    }));
+  }, [kind, initialValue]);
 
   useEffect(() => {
     // Whenever formData changes, compile it to a single text prompt
     const parts = [];
-    if (formData.generalContext) parts.push(`Yêu cầu / Bối cảnh: ${formData.generalContext}`);
+    const generalContext = normalizeEditorialBriefInput(formData.generalContext || '');
+    if (generalContext) parts.push(generalContext);
     
     // Only include fields that are actually relevant to the selected kind
     const allowTimeAndPlace = ['news', 'press_release', 'meeting_minutes'].includes(kind);
@@ -48,9 +53,9 @@ export function EditorialInputForm({ kind, onChange, initialValue = '' }: Props)
           Yêu cầu chung / Bối cảnh
         </label>
         <textarea
-          value={formData.generalContext || ''}
-          onChange={(e) => handleChange('generalContext', e.target.value)}
-          placeholder="Nhập thông tin nền hoặc yêu cầu cụ thể..."
+          value={normalizeEditorialBriefInput(formData.generalContext || '')}
+          onChange={(e) => handleChange('generalContext', normalizeEditorialBriefInput(e.target.value))}
+          placeholder="Nhập yêu cầu, bối cảnh, mục tiêu bài viết..."
           className="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#002D56] resize-none h-24"
         />
       </div>

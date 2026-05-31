@@ -123,6 +123,37 @@ export const ARTICLE_STYLE_REGISTRY = {
     marginAfter: 12,
     italic: true,
   },
+  "article.quote": {
+    styleId: "article.quote",
+    label: "Trích dẫn",
+    fontFamily: "Times New Roman, Times, serif",
+    fontSize: 13.5,
+    lineHeight: 1.5,
+    alignment: "justify",
+    marginBefore: 12,
+    marginAfter: 12,
+    italic: true,
+  },
+  "article.callout": {
+    styleId: "article.callout",
+    label: "Khối nhấn mạnh / fact box",
+    fontFamily: "Times New Roman, Times, serif",
+    fontSize: 13.5,
+    lineHeight: 1.45,
+    alignment: "left",
+    marginBefore: 12,
+    marginAfter: 12,
+  },
+  "article.table": {
+    styleId: "article.table",
+    label: "Bảng dữ liệu",
+    fontFamily: "Times New Roman, Times, serif",
+    fontSize: 12.5,
+    lineHeight: 1.35,
+    alignment: "left",
+    marginBefore: 12,
+    marginAfter: 12,
+  },
 } as const satisfies Record<string, ArticleStyleDefinition>;
 
 export type ArticleStyleId = keyof typeof ARTICLE_STYLE_REGISTRY;
