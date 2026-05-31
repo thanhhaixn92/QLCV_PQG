@@ -40,6 +40,8 @@ interface ParsedLine {
 }
 
 const PLACEHOLDER_MARKER_PATTERN = /\[(?:\s*PLACEHOLDER[^\]]*|\s*[—-]+\s*(?:ẢNH|ANH|PLACEHOLDER)\s*[—-]+\s*)\]/gi;
+// Nhận diện dòng caption bảng kiểu "Bảng 1: …" hoặc "Bảng 1 — …" hoặc "Bảng: …"
+const TABLE_CAPTION_PATTERN = /^Bảng\s*(?:\d+\s*)?[:\-–—]\s*(.{2,180})$/iu;
 const DRAFT_MARKER_PATTERN = /\[\s*(?:Bổ sung|Bo sung|Cần bổ sung|Can bo sung|Cần kiểm chứng|Can kiem chung)\s*:\s*([^\]]+)\]/gi;
 const SEPARATOR_LINE_PATTERN = /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/u;
 const TEXT_PLACEHOLDER_PATTERN = /^(?:\d+[.)]\s*)?(?:Placehold|Placeholder|Vị trí chèn)\s+hình\s+minh\s+h[oọ][aạ]\s*[:：-]?\s*(.*)$/iu;
@@ -272,6 +274,8 @@ export function createArticleDocumentFromCurrentContent(
   const pendingBullets: string[] = [];
   const pendingOrdered: ParsedLine[] = [];
   const pendingTableRows: string[][] = [];
+  let pendingTableCaption: string | undefined = undefined;
+  let pendingCaptionParagraphText: string | undefined = undefined;
 
   const rememberText = (text: string) => {
     if (text.trim()) previousText = text.trim();
@@ -285,13 +289,24 @@ export function createArticleDocumentFromCurrentContent(
   };
 
   const flushTable = () => {
-    if (pendingTableRows.length === 0) return;
+    if (pendingTableRows.length === 0) {
+      // Nếu có caption đang chờ nhưng không có bảng đến → push lại như paragraph bình thường
+      if (pendingCaptionParagraphText) {
+        blocks.push(createBlock("paragraph", blockIndex++, { text: pendingCaptionParagraphText }));
+      }
+      pendingTableCaption = undefined;
+      pendingCaptionParagraphText = undefined;
+      return;
+    }
     const rows: ArticleTableCell[][] = pendingTableRows.map((row, rowIndex) =>
       row.map((text) => ({ text, header: rowIndex === 0 })),
     );
-    blocks.push(createBlock("table", blockIndex++, { rows }));
+    const captionSlot = pendingTableCaption ? { caption: pendingTableCaption } : {};
+    blocks.push(createBlock("table", blockIndex++, { rows, ...captionSlot }));
     rememberText(pendingTableRows[pendingTableRows.length - 1]?.join(" ") || "");
     pendingTableRows.length = 0;
+    pendingTableCaption = undefined;
+    pendingCaptionParagraphText = undefined;
   };
 
   const flushOrdered = () => {
@@ -407,7 +422,22 @@ export function createArticleDocumentFromCurrentContent(
       return;
     }
 
-    blocks.push(createBlock("paragraph", blockIndex++, { text: line.text }));
+    // Kiểm tra nếu dòng paragraph này là caption bảng (sẽ dùng nếu block tiếp theo là bảng)
+    const captionMatch = line.text.match(TABLE_CAPTION_PATTERN);
+    if (captionMatch) {
+      // Đánh dấu caption tạm thời; block sẽ được tạo nếu không có bảng theo sau
+      pendingTableCaption = captionMatch[1].trim();
+      pendingCaptionParagraphText = line.text;
+      // Không push paragraph ngay — sẽ push lại trong flushTable nếu bảng không đến
+    } else {
+      // Caption mới không phải bảng → flush caption cũ nếu còn đang chờ
+      if (pendingCaptionParagraphText) {
+        blocks.push(createBlock("paragraph", blockIndex++, { text: pendingCaptionParagraphText }));
+        pendingTableCaption = undefined;
+        pendingCaptionParagraphText = undefined;
+      }
+      blocks.push(createBlock("paragraph", blockIndex++, { text: line.text }));
+    }
     rememberText(line.text);
   });
 

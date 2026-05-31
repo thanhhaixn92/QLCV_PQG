@@ -253,6 +253,23 @@
 
   .print-layout.a4-preview .a4-table-figure {
     margin: 14pt 0;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .print-layout.a4-preview .a4-table-caption-top {
+    display: block;
+    font-size: 11pt;
+    font-style: italic;
+    color: #334155;
+    margin-bottom: 5pt;
+    text-align: left;
+  }
+
+  .print-layout.a4-preview .a4-table-scroll {
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
   }
 
   .print-layout.a4-preview .a4-table {

@@ -119,7 +119,7 @@ function cleanFigure(slots: Partial<ArticleBlockSlots>): ArticleExportFigure {
   };
 }
 
-function cleanTable(value: unknown): ArticleExportTable | undefined {
+function cleanTable(value: unknown, captionValue?: unknown): ArticleExportTable | undefined {
   if (!Array.isArray(value)) return undefined;
   const rows = value
     .map((row) => {
@@ -136,7 +136,9 @@ function cleanTable(value: unknown): ArticleExportTable | undefined {
         .filter((cell): cell is ArticleExportTableCell => Boolean(cell));
     })
     .filter((row) => row.length > 0);
-  return rows.length > 0 ? { rows } : undefined;
+  if (rows.length === 0) return undefined;
+  const caption = cleanArticleExportText(captionValue);
+  return caption ? { rows, caption } : { rows };
 }
 
 function blockId(block: LooseArticleBlock): string {
@@ -276,7 +278,7 @@ export function mapArticleBlockToExportBlock(block: ArticleBlock): ArticleExport
     case "figure-placeholder":
       return { id, type: "figure-placeholder", figure: cleanFigure(slots), sourceType, variant };
     case "table": {
-      const table = cleanTable((slots as Record<string, unknown>).rows ?? slots.items);
+      const table = cleanTable((slots as Record<string, unknown>).rows ?? slots.items, slots.caption);
       return table
         ? { id, type: "table", table, sourceType, variant }
         : { id, type: "unknown", text: blockText(slots), sourceType, variant };

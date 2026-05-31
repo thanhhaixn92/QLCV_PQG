@@ -163,19 +163,21 @@ function renderBlock(block: ArticleBlock): React.ReactNode {
       if (rows.length === 0) return null;
       return (
         <figure className={`${className} a4-table-figure`}>
-          <table className="a4-table">
-            <tbody>
-              {rows.map((row, rowIndex) => (
-                <tr key={`${block.id}-row-${rowIndex}`}>
-                  {row.map((cell, cellIndex) => {
-                    const Tag = cell.header ? "th" : "td";
-                    return <Tag key={`${block.id}-cell-${rowIndex}-${cellIndex}`}>{cell.text}</Tag>;
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {caption && <figcaption>{caption}</figcaption>}
+          {caption && <figcaption className="a4-table-caption-top">{caption}</figcaption>}
+          <div className="a4-table-scroll">
+            <table className="a4-table">
+              <tbody>
+                {rows.map((row, rowIndex) => (
+                  <tr key={`${block.id}-row-${rowIndex}`}>
+                    {row.map((cell, cellIndex) => {
+                      const Tag = cell.header ? "th" : "td";
+                      return <Tag key={`${block.id}-cell-${rowIndex}-${cellIndex}`}>{cell.text}</Tag>;
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </figure>
       );
     }

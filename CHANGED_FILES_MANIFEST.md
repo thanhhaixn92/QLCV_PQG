@@ -1,29 +1,23 @@
 # CHANGED FILES MANIFEST
 
-Package: A4 Preflight + HTML Export + Preview Polish
+Package: feat/article-table-block-foundation v2
+Purpose: Apply production changed files for ArticleDocument/A4 Preview table foundation before Draft Library redesign.
 
 Included files:
-- src/lib/publishing/preflightIssue.ts
-- src/lib/publishing/validateArticleDocument.ts
+- src/lib/publishing/articleDocumentAdapter.ts
+- src/lib/publishing/articleExportModel.ts
+- src/lib/publishing/articleExportAdapter.ts
 - src/lib/publishing/htmlExport.ts
-- src/components/editorial/EditorialPreflightPanel.tsx
-- src/components/editorial/EditorWorkspace.tsx
 - src/components/editorial/A4PrintPreview.tsx
+- src/index.css
 
-Source branch expected:
-- fix/a4-preview-foundation-polish
+Excluded from AI Studio runtime ZIP:
+- scripts/smoke-table-block.mjs (development smoke-test helper; not needed for AI Studio runtime apply)
 
-Scope:
-- PR 4: Persistent Preflight Cockpit
-- PR 5: Article HTML A4 export
-- PR 6: A4 Preview foundation polish
-
-Excluded:
-- AGENTS.md
-- server.ts
-- package.json
-- package-lock.json
-- metadata.json
-- .env
-- Firebase/Auth/Task/API key/export engine files
-- ZIP/PDF/DOCX/test artifacts
+Safety notes:
+- No package.json/package-lock.json changes.
+- No server.ts changes.
+- No metadata.json changes.
+- No .env or secret files.
+- No Firebase/Auth/Task/API key files.
+- No generated PDF/DOCX/ZIP/test output files.

@@ -65,7 +65,9 @@ function renderTable(block: Extract<ArticleExportBlock, { type: "table" }>): str
       return `<tr>${cells}</tr>`;
     })
     .join("\n");
-  return rows ? `<table class="article-table"><tbody>${rows}</tbody></table>` : "";
+  if (!rows) return "";
+  const caption = block.table.caption ? `<figcaption class="article-table-caption">${escapeHtml(block.table.caption)}</figcaption>` : "";
+  return `<figure class="article-table-figure">${caption}<div class="article-table-scroll"><table class="article-table"><tbody>${rows}</tbody></table></div></figure>`;
 }
 
 function renderArticleBlock(block: ArticleExportBlock): string {

@@ -39,6 +39,7 @@ export interface ArticleExportTableCell {
 
 export interface ArticleExportTable {
   rows: ArticleExportTableCell[][];
+  caption?: string;
 }
 
 export interface ArticleExportLeadInItem {
