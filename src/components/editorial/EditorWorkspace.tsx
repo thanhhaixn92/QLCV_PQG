@@ -30,6 +30,7 @@ import {
 } from '../../lib/publishing/preflightIssue';
 import { getArticleLayout, getDefaultArticleLayout } from '../../lib/publishing/layoutRegistry';
 import { buildArticleHtml, buildArticleHtmlFilename } from '../../lib/publishing/htmlExport';
+import { normalizeArticleDocumentForExport } from '../../lib/publishing/articleExportAdapter';
 
 type EditorialCreationStep = "brief" | "recommendation" | "generating" | "draft";
 
@@ -895,10 +896,10 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                                 "Đang tạo file PDF...",
                                                 { icon: "ℹ️", duration: 5000 },
                                               );
-                                              const { exportPrintablePdfFromElement } =
+                                              const { exportPrintablePdfFromArticleExportModel } =
                                                 await import("../../lib/printablePdfExport");
-                                              await exportPrintablePdfFromElement(
-                                                "printable-article", { 
+                                              await exportPrintablePdfFromArticleExportModel(
+                                                normalizeArticleDocumentForExport(articleDocument), {
                                                   title: `Bai_viet_HTMB_${Date.now()}`, 
                                                   profile: "article",
                                                   onValidationError: (msg) => {
@@ -965,9 +966,9 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                               );
                                               if (!confirmed) return;
                                             }
-                                            const { exportWordFromElement } = await import("../../lib/exportUtils");
-                                            await exportWordFromElement(
-                                              "printable-article",
+                                            const { exportWordFromArticleExportModel } = await import("../../lib/exportUtils");
+                                            await exportWordFromArticleExportModel(
+                                              normalizeArticleDocumentForExport(articleDocument),
                                               {
                                                 title:
                                                   sessions.find(
