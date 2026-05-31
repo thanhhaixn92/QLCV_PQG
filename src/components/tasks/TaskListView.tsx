@@ -18,18 +18,20 @@ const getAvatarLetter = (name?: string) => {
   return clean[0].toUpperCase();
 };
 
-export const TaskListView = ({ 
-  tasks, 
-  documents, 
-  openTaskEditor, 
-  updateTaskStatus, 
-  handleDeleteTask 
-}: { 
-  tasks: WorkTask[]; 
-  documents: any[]; 
-  openTaskEditor: (t: WorkTask) => void; 
-  updateTaskStatus: (id: string, status: any) => void; 
-  handleDeleteTask: (id: string) => void; 
+export const TaskListView = ({
+  tasks,
+  documents,
+  openTaskEditor,
+  updateTaskStatus,
+  handleDeleteTask,
+  setTaskFilters
+}: {
+  tasks: WorkTask[];
+  documents: any[];
+  openTaskEditor: (t: WorkTask | null) => void;
+  updateTaskStatus: (id: string, status: any) => void;
+  handleDeleteTask: (id: string) => void;
+  setTaskFilters: React.Dispatch<React.SetStateAction<any>>;
 }) => {
   const [openDropdownId, setOpenDropdownId] = React.useState<string | null>(null);
 
@@ -40,14 +42,14 @@ export const TaskListView = ({
   }, []);
 
   return (
-    <div className="flex-1 overflow-y-auto bg-slate-50/50 rounded-2xl border border-slate-200 pb-24">
+    <div className="flex-1 overflow-y-auto bg-slate-50/50 rounded-2xl border border-slate-200 pb-[calc(7rem+env(safe-area-inset-bottom))]">
       {tasks.length === 0 ? (
-        <NoTasksMessage setTaskFilters={() => {}} openTaskEditor={openTaskEditor} />
+        <NoTasksMessage setTaskFilters={setTaskFilters} openTaskEditor={openTaskEditor} />
       ) : (
         <div className="flex flex-col p-2 space-y-1.5">
           {tasks.map((t: any, index: number) => {
             const isCompleted = t.status === "done" || t.status === "completed" || t.status === "archived";
-            
+
             // Status Icon mapping
             let StatusIcon = Circle;
             let statusIconColor = "text-slate-300";
@@ -94,9 +96,7 @@ export const TaskListView = ({
                       <p className="text-[13px] text-slate-500 line-clamp-1 leading-relaxed">
                         {t.description}
                       </p>
-                    ) : (
-                      <p className="text-[13px] text-slate-400">Chưa có mô tả</p>
-                    )}
+                    ) : null}
                   </div>
 
                   {/* Row 3: Metadata */}
@@ -106,9 +106,9 @@ export const TaskListView = ({
                         {getCategoryLabel(t.categoryCode)}
                       </span>
                     )}
-                    
+
                     <span className="text-slate-300">&bull;</span>
-                    
+
                     <span className={cn(
                       "font-medium",
                       t.priority === "urgent" ? "text-red-600" :
@@ -131,7 +131,7 @@ export const TaskListView = ({
                     )}
 
                     <span className="text-slate-300">&bull;</span>
-                    
+
                     <div className="flex items-center gap-1.5 bg-slate-100/90 text-slate-700 px-2 py-0.5 rounded-full select-none text-[11px] font-semibold w-fit border border-slate-200/50">
                       <div className="w-4 h-4 rounded-full bg-blue-600 font-bold text-white flex items-center justify-center text-[9px] shrink-0 uppercase tracking-tight">
                         {getAvatarLetter(t.assignee)}
@@ -169,13 +169,13 @@ export const TaskListView = ({
                         e.stopPropagation();
                         setOpenDropdownId(openDropdownId === t.id ? null : t.id);
                       }}
-                      className="p-1 text-slate-400 hover:text-slate-800 hover:bg-slate-100 rounded-md transition-colors opacity-0 group-hover:opacity-100"
+                      className="p-1 text-slate-400 hover:text-slate-800 hover:bg-slate-100 rounded-md transition-colors opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
                     >
                       <MoreHorizontal className="w-4 h-4" />
                     </button>
 
                     {openDropdownId === t.id && (
-                      <div 
+                      <div
                         className="absolute right-0 top-full mt-1 w-36 bg-white rounded-lg shadow-lg border border-slate-200 py-1 z-10"
                         onClick={(e) => e.stopPropagation()}
                       >

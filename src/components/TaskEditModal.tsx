@@ -10,7 +10,7 @@ interface TaskEditModalProps {
   editingTask: WorkTask;
   setEditingTask: (task: WorkTask) => void;
   onClose: () => void;
-  onSave: (task: WorkTask) => void;
+  onSave: (task: WorkTask) => void | Promise<void>;
   onDelete: (id: string) => void;
   documents: any[];
   setIsPickingFromLibrary: (val: boolean) => void;
@@ -31,7 +31,18 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
 }) => {
   const isDraft = !editingTask.id || String(editingTask.id).startsWith('draft-task-') || Boolean(editingTask.clientId);
   const isPersisted = !isDraft && !!editingTask.id;
+  const [isSaving, setIsSaving] = React.useState(false);
+  const trimmedTitle = String(editingTask.title || "").trim();
 
+  const handleSave = async () => {
+    if (isSaving || !trimmedTitle) return;
+    setIsSaving(true);
+    try {
+      await onSave({ ...editingTask, title: trimmedTitle });
+    } finally {
+      setIsSaving(false);
+    }
+  };
 
   return (
     <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[100] flex justify-end" onClick={onClose}>
@@ -343,11 +354,12 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({
             </button>
           </div>
           <button 
-            onClick={() => onSave(editingTask)}
-            className="w-full sm:w-auto bg-[#002D56] text-white px-8 py-3 rounded-lg text-sm font-bold shadow-md hover:shadow-lg hover:bg-blue-900 transition-all active:scale-[0.98] flex items-center justify-center gap-2"
+            onClick={handleSave}
+            disabled={isSaving || !trimmedTitle}
+            className="w-full sm:w-auto bg-[#002D56] text-white px-8 py-3 rounded-lg text-sm font-bold shadow-md hover:shadow-lg hover:bg-blue-900 transition-all active:scale-[0.98] flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-[#002D56]"
           >
             <Save className="w-5 h-5" />
-            {isPersisted ? 'Cập nhật công việc' : 'Lưu công việc mới'}
+            {isSaving ? 'Đang lưu...' : isPersisted ? 'Cập nhật công việc' : 'Lưu công việc mới'}
           </button>
         </div>
       </motion.div>

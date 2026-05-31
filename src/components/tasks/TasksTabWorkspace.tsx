@@ -25,7 +25,7 @@ interface TasksTabWorkspaceProps {
   taskStats: any;
   filteredTasks: WorkTask[];
   taskFilters: any;
-  setTaskFilters: (f: any) => void;
+  setTaskFilters: React.Dispatch<React.SetStateAction<any>>;
   openTaskEditor: (task: WorkTask | null) => void;
   handleDeleteTask: (id: string) => void;
   updateTaskStatus: (id: string, newStatus: any) => void;
@@ -170,6 +170,7 @@ export const TasksTabWorkspace = ({
           openTaskEditor={openTaskEditor}
           updateTaskStatus={updateTaskStatus}
           handleDeleteTask={handleDeleteTask}
+          setTaskFilters={setTaskFilters}
         />
       ) : (
         <TaskBoardView 
