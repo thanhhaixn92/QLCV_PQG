@@ -241,6 +241,7 @@ import {
 } from "./components/tasks/TaskHelpers";
 
 import { getEditorialTool } from "./lib/editorialTools";
+import { normalizeEditorialBriefContent, normalizeEditorialBriefInput } from "./lib/editorialBrief";
 import { sanitizeEditorContent } from "./lib/unicodeNormalizer";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { EditorialToolSelector } from "./components/editorial/EditorialToolSelector";
@@ -1902,8 +1903,8 @@ function App() {
             <button
               className="rounded-lg bg-[#002D56] px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-900"
               onClick={() => {
-                setInput(saved.input || "");
-                setOutput(saved.output || "");
+                setInput(normalizeEditorialBriefInput(saved.input || ""));
+                setOutput(normalizeEditorialBriefContent(saved.output || ""));
                 if (saved.selectedEditorialToolId) setSelectedEditorialToolId(saved.selectedEditorialToolId);
                 if (saved.taskType) setTaskType(saved.taskType);
                 if (saved.style) setStyle(saved.style);
@@ -1931,8 +1932,8 @@ function App() {
     if (existing?.isDraftDirty !== true) return;
     if (!input.trim() && !output.trim()) return;
     safeWriteJson(editorialDraftKey, {
-      input,
-      output,
+      input: normalizeEditorialBriefInput(input),
+      output: normalizeEditorialBriefContent(output),
       selectedEditorialToolId,
       taskType,
       style,
@@ -3141,7 +3142,7 @@ function App() {
 
     const sessionData: Omit<ProjectSession, "id"> = {
       title:
-        input.substring(0, 50) || `Bài viết ${new Date().toLocaleDateString()}`,
+        normalizeEditorialBriefInput(input).substring(0, 50) || `Bài viết ${new Date().toLocaleDateString()}`,
       taskType,
       style,
       format: outputFormat,
@@ -5442,14 +5443,15 @@ Nội dung văn bản:\n` + content,
           )}
 
           {isEffectiveSidebarCollapsed && !isSidebarOpen && (
-            <div
-              className="bg-white/10 p-2 rounded-md backdrop-blur-md border border-white/20 shrink-0 cursor-pointer hover:bg-white/20 transition-all group"
+            <button
+              type="button"
+              className="inline-flex h-11 w-11 items-center justify-center rounded-md border border-white/20 bg-white/10 text-white backdrop-blur-md transition-all hover:bg-white/20 focus:outline-none focus:ring-2 focus:ring-white/40"
               onClick={() => setIsSidebarCollapsed(false)}
               title="Mở rộng menu"
+              aria-label="Mở rộng menu"
             >
-              <Ship className="text-white w-5 h-5 lg:w-6 lg:h-6 group-hover:hidden" />
-              <ChevronRight className="text-white w-5 h-5 lg:w-6 lg:h-6 hidden group-hover:block" />
-            </div>
+              <Ship className="h-6 w-6 shrink-0 opacity-100" aria-hidden="true" />
+            </button>
           )}
 
           {/* Sidebar Toggle/Close */}
@@ -5506,8 +5508,8 @@ Nội dung văn bản:\n` + content,
                 }
               }}
               className={cn(
-                "w-full flex items-center gap-4 px-5 py-4 rounded-xl transition-all relative group mb-1",
-                isEffectiveSidebarCollapsed && !isSidebarOpen ? "justify-center gap-0 px-0" : "",
+                "w-full min-h-12 flex items-center gap-4 px-5 py-4 rounded-xl transition-all relative group mb-1",
+                isEffectiveSidebarCollapsed && !isSidebarOpen ? "justify-center gap-0 px-0 overflow-visible" : "",
                 activeTab === item.id
                   ? "bg-white text-[#002D56] shadow-xl shadow-blue-900/20 active:scale-95"
                   : "text-white/60 hover:bg-white/5 hover:text-white",
@@ -5516,8 +5518,8 @@ Nội dung văn bản:\n` + content,
             >
               <item.icon
                 className={cn(
-                  "w-5 h-5 shrink-0 transition-transform group-hover:scale-110",
-                  isEffectiveSidebarCollapsed && !isSidebarOpen ? "mx-auto opacity-100" : "",
+                  "relative z-10 block h-5 w-5 shrink-0 opacity-100 transition-transform group-hover:scale-110",
+                  isEffectiveSidebarCollapsed && !isSidebarOpen ? "mx-auto visible" : "",
                   activeTab === item.id ? "text-[#002D56]" : "text-white/40",
                 )}
               />
@@ -5559,12 +5561,12 @@ Nội dung văn bản:\n` + content,
             <button
               onClick={createNewSession}
               className={cn(
-                "w-full flex items-center gap-3 px-4 py-3.5 rounded-md bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500 hover:text-white transition-all group border border-transparent hover:border-emerald-500/50",
-                isEffectiveSidebarCollapsed ? "justify-center" : "",
+                "w-full min-h-12 flex items-center gap-3 px-4 py-3.5 rounded-md bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500 hover:text-white transition-all group border border-transparent hover:border-emerald-500/50",
+                isEffectiveSidebarCollapsed && !isSidebarOpen ? "justify-center overflow-visible" : "",
               )}
               title={isEffectiveSidebarCollapsed ? "Bài viết mới" : ""}
             >
-              <FilePlus className="w-5 h-5 shrink-0" />
+              <FilePlus className="relative z-10 h-5 w-5 shrink-0 opacity-100" />
               {(!isEffectiveSidebarCollapsed || isSidebarOpen) && (
                 <span className="text-sm font-semibold">Bài viết mới</span>
               )}
@@ -5572,12 +5574,12 @@ Nội dung văn bản:\n` + content,
             <button
               onClick={openCreateTask}
               className={cn(
-                "w-full flex items-center gap-3 px-4 py-3.5 rounded-md bg-blue-500/10 text-blue-400 hover:bg-blue-500 hover:text-white transition-all group border border-transparent hover:border-blue-500/50",
-                isEffectiveSidebarCollapsed && !isSidebarOpen ? "justify-center" : "",
+                "w-full min-h-12 flex items-center gap-3 px-4 py-3.5 rounded-md bg-blue-500/10 text-blue-400 hover:bg-blue-500 hover:text-white transition-all group border border-transparent hover:border-blue-500/50",
+                isEffectiveSidebarCollapsed && !isSidebarOpen ? "justify-center overflow-visible" : "",
               )}
               title={isEffectiveSidebarCollapsed ? "Thêm việc" : ""}
             >
-              <CheckSquare className="w-5 h-5 shrink-0" />
+              <CheckSquare className="relative z-10 h-5 w-5 shrink-0 opacity-100" />
               {(!isEffectiveSidebarCollapsed || isSidebarOpen) && (
                 <span className="text-sm font-semibold">Thêm việc</span>
               )}
@@ -5585,12 +5587,12 @@ Nội dung văn bản:\n` + content,
             <button
               onClick={openAiTaskBuilder}
               className={cn(
-                "w-full flex items-center gap-3 px-4 py-3.5 rounded-md bg-orange-500/10 text-orange-400 hover:bg-orange-500 hover:text-white transition-all group border border-transparent hover:border-orange-500/50",
-                isEffectiveSidebarCollapsed && !isSidebarOpen ? "justify-center" : "",
+                "w-full min-h-12 flex items-center gap-3 px-4 py-3.5 rounded-md bg-orange-500/10 text-orange-400 hover:bg-orange-500 hover:text-white transition-all group border border-transparent hover:border-orange-500/50",
+                isEffectiveSidebarCollapsed && !isSidebarOpen ? "justify-center overflow-visible" : "",
               )}
               title={isEffectiveSidebarCollapsed ? "Tạo công việc bằng AI" : ""}
             >
-              <Bot className="w-5 h-5 shrink-0" />
+              <Bot className="relative z-10 h-5 w-5 shrink-0 opacity-100" />
               {(!isEffectiveSidebarCollapsed || isSidebarOpen) && (
                 <span className="text-sm font-semibold">Tạo công việc AI</span>
               )}
@@ -5636,11 +5638,11 @@ Nội dung văn bản:\n` + content,
             <button
               onClick={() => setActiveModal("auth")}
               className={cn(
-                "w-full flex items-center gap-3 px-4 py-3.5 rounded-md bg-white/10 text-white font-bold hover:bg-white/20 transition-all border border-white/10",
-                isEffectiveSidebarCollapsed && !isSidebarOpen ? "justify-center" : "",
+                "w-full min-h-12 flex items-center gap-3 px-4 py-3.5 rounded-md bg-white/10 text-white font-bold hover:bg-white/20 transition-all border border-white/10",
+                isEffectiveSidebarCollapsed && !isSidebarOpen ? "justify-center overflow-visible" : "",
               )}
             >
-              <User className="w-5 h-5 shrink-0" />
+              <User className="relative z-10 h-5 w-5 shrink-0 opacity-100" />
               {(!isEffectiveSidebarCollapsed || isSidebarOpen) && (
                 <span className="text-sm">Đăng nhập</span>
               )}
@@ -5761,7 +5763,7 @@ Nội dung văn bản:\n` + content,
               }}
               className="ml-auto p-2.5 bg-white/10 rounded-xl"
             >
-              <User className="w-5 h-5 shrink-0" />
+              <User className="relative z-10 h-5 w-5 shrink-0 opacity-100" />
             </button>
           )}
         </div>

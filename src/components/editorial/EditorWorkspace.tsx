@@ -15,7 +15,6 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '../../lib/utils';
 import { getEditorialTool } from '../../lib/editorialTools';
 import { EditorialToolSelector } from './EditorialToolSelector';
-import { ContentReviewDisplay } from './ContentReviewDisplay';
 import { A4PrintPreview } from './A4PrintPreview';
 import {
   LayoutRecommendationPanel,
@@ -31,6 +30,7 @@ import {
 import { getArticleLayout, getDefaultArticleLayout } from '../../lib/publishing/layoutRegistry';
 import { buildArticleHtml, buildArticleHtmlFilename } from '../../lib/publishing/htmlExport';
 import { normalizeArticleDocumentForExport } from '../../lib/publishing/articleExportAdapter';
+import { normalizeEditorialBriefContent, normalizeEditorialBriefInput } from '../../lib/editorialBrief';
 import { processTask } from '../../services/geminiService';
 
 type EditorialCreationStep = "brief" | "recommendation" | "generating" | "draft";
@@ -127,8 +127,8 @@ export const EditorWorkspace = (props: any) => {
   React.useEffect(() => {
     if (!localDraftKey || !isDraftDirty || !hasGeneratedDraft) return;
     localStorage.setItem(localDraftKey, JSON.stringify({
-      input,
-      output,
+      input: normalizeEditorialBriefInput(input),
+      output: normalizeEditorialBriefContent(output),
       selectedEditorialToolId,
       taskType,
       outputFormat,
@@ -210,7 +210,7 @@ export const EditorWorkspace = (props: any) => {
   ], []);
 
   const applyAiEdit = React.useCallback(async (promptOverride?: string) => {
-    const prompt = (promptOverride || aiEditPrompt).trim();
+    const prompt = normalizeEditorialBriefInput(promptOverride || aiEditPrompt);
     if (!prompt) {
       toast.error("Vui lòng nhập yêu cầu chỉnh sửa bản thảo.");
       return;
@@ -228,14 +228,14 @@ export const EditorWorkspace = (props: any) => {
           "Chỉ trả về toàn bộ bản thảo sau khi chỉnh sửa, không giải thích thêm.",
           `Yêu cầu chỉnh sửa: ${prompt}`,
           "Bản thảo hiện tại:",
-          output,
+          normalizeEditorialBriefContent(output),
         ].join("\n\n"),
         "EDITORIAL",
         outputFormat,
         [],
         token,
       );
-      const nextOutput = typeof response === "string" ? response : response?.text || "";
+      const nextOutput = normalizeEditorialBriefContent(typeof response === "string" ? response : response?.text || "");
       if (!nextOutput.trim()) throw new Error("AI không trả về nội dung chỉnh sửa.");
       setOutput(nextOutput);
       setAiEditPrompt("");
@@ -259,10 +259,7 @@ export const EditorWorkspace = (props: any) => {
   }, [selectedLayoutId, selectedLayoutVersion]);
 
   const articleDocument = React.useMemo(() => {
-    const previewContent = insertApprovedIllustrationsForPlainExport(
-      output || "",
-      illustrations || [],
-    );
+    const previewContent = normalizeEditorialBriefContent(output || "");
 
     return createArticleDocumentFromCurrentContent(previewContent, {
       status: "draft",
@@ -271,7 +268,7 @@ export const EditorWorkspace = (props: any) => {
       layoutVersion: selectedLayout?.layoutVersion,
       estimatedPages: selectedLayout?.estimatedPages,
     });
-  }, [illustrations, insertApprovedIllustrationsForPlainExport, output, selectedLayout, user?.displayName, user?.email]);
+  }, [output, selectedLayout, user?.displayName, user?.email]);
 
   const articleValidation = React.useMemo(() => validateArticleDocument(articleDocument), [articleDocument]);
   const preflightIssues = React.useMemo(() => articleValidation.preflightIssues, [articleValidation]);
@@ -315,11 +312,11 @@ export const EditorWorkspace = (props: any) => {
 
 Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
       : "";
-    return `${input.trim()}${sourceSummary}`.trim();
+    return `${normalizeEditorialBriefInput(input)}${sourceSummary}`.trim();
   }, [input, selectedSourceDocIds.length]);
 
   const openLayoutRecommendations = React.useCallback(() => {
-    if (!input.trim() && selectedSourceDocIds.length === 0) {
+    if (!normalizeEditorialBriefInput(input) && selectedSourceDocIds.length === 0) {
       toast.error("Vui lòng nhập nội dung hoặc chọn tài liệu nguồn trước khi xử lý.");
       return;
     }
@@ -844,16 +841,16 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                     kind={editorialKind}
                                     initialValue={input}
                                     onChange={(value) => {
-                                      setInput(value);
+                                      setInput(normalizeEditorialBriefInput(value));
                                       if (hasGeneratedDraft) markDraftDirty();
                                     }}
                                   />
                                 </div>
                               ) : (
                                 <textarea
-                                  value={input}
+                                  value={normalizeEditorialBriefInput(input)}
                                   onChange={(e) => {
-                                    setInput(e.target.value);
+                                    setInput(normalizeEditorialBriefInput(e.target.value));
                                     if (hasGeneratedDraft) markDraftDirty();
                                   }}
                                   placeholder={currentTool?.inputPlaceholder || "Nhập thông tin..."}
@@ -1123,8 +1120,8 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                       <div className="flex flex-col gap-2 lg:flex-row">
                                         <textarea
                                           value={aiEditPrompt}
-                                          onChange={(event) => setAiEditPrompt(event.target.value)}
-                                          placeholder="Ví dụ: Rút gọn đoạn mở đầu, tăng tính chính luận, viết lại tiêu đề hấp dẫn hơn..."
+                                          onChange={(event) => setAiEditPrompt(normalizeEditorialBriefInput(event.target.value))}
+                                          placeholder="Nhập yêu cầu chỉnh sửa cho bản thảo hiện tại…"
                                           className="min-h-[84px] flex-1 rounded-lg border border-blue-100 bg-white px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-200"
                                         />
                                         <button
@@ -1159,13 +1156,6 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                             setExportingFormat("pdf");
                                             try {
                                               if (!(await validateArticleBeforeExport())) return;
-                                              const audit = auditEditorialPublish(illustrations);
-                                              if (audit.suggestedCount > 0) {
-                                                const confirmed = await requestConfirmAsync(
-                                                  `Còn ${audit.suggestedCount} hình ảnh chưa được duyệt. Bạn có muốn tiếp tục xuất bản PDF mà không có các hình này?`,
-                                                );
-                                                if (!confirmed) return;
-                                              }
                                               toast(
                                                 "Đang tạo file PDF...",
                                                 { icon: "ℹ️", duration: 5000 },
@@ -1212,7 +1202,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                               setExportingFormat(null);
                                             }
                                           }}
-                                          disabled={Boolean(exportingFormat)}
+                                          disabled={hasPreflightBlockers || Boolean(exportingFormat)}
                                           aria-disabled={hasPreflightBlockers || Boolean(exportingFormat)}
                                           className={cn(
                                             "flex items-center gap-2 px-3 py-2.5 rounded-md text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100/80 transition-all shrink-0 active:scale-[0.98] shadow-sm disabled:opacity-50",
@@ -1233,13 +1223,6 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                           setExportingFormat("docx");
                                           try {
                                             if (!(await validateArticleBeforeExport())) return;
-                                            const audit = auditEditorialPublish(illustrations);
-                                            if (audit.suggestedCount > 0) {
-                                              const confirmed = await requestConfirmAsync(
-                                                `Còn ${audit.suggestedCount} hình ảnh chưa được duyệt. Bạn có muốn tiếp tục xuất bản Word mà không có các hình này?`,
-                                              );
-                                              if (!confirmed) return;
-                                            }
                                             const { exportWordFromArticleExportModel } = await import("../../lib/exportUtils");
                                             await exportWordFromArticleExportModel(
                                               normalizeArticleDocumentForExport(articleDocument),
@@ -1248,7 +1231,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                                   sessions.find(
                                                     (s) => s.id === currentSessionId,
                                                   )?.title ||
-                                                  input ||
+                                                  normalizeEditorialBriefInput(input) ||
                                                   "Bài viết",
                                                 filename: `Bai_viet_HTMB_${Date.now()}`,
                                                 kind: editorialKind,
@@ -1281,7 +1264,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                             setExportingFormat(null);
                                           }
                                         }}
-                                        disabled={Boolean(exportingFormat)}
+                                        disabled={hasPreflightBlockers || Boolean(exportingFormat)}
                                         aria-disabled={hasPreflightBlockers || Boolean(exportingFormat)}
                                         className={cn(
                                           "flex items-center gap-2 px-3 py-2.5 rounded-md text-[10px] font-semibold bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100/80 transition-all shrink-0 active:scale-[0.98] shadow-sm disabled:opacity-50",
@@ -1305,7 +1288,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                               if (!(await validateArticleBeforeExport())) return;
                                               const title =
                                                 sessions.find((s) => s.id === currentSessionId)?.title ||
-                                                input ||
+                                                normalizeEditorialBriefInput(input) ||
                                                 articleDocument.metadata?.title ||
                                                 "Bài viết A4";
                                               const html = buildArticleHtml(articleDocument, { title });
@@ -1337,7 +1320,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                               setExportingFormat(null);
                                             }
                                           }}
-                                          disabled={Boolean(exportingFormat)}
+                                          disabled={hasPreflightBlockers || Boolean(exportingFormat)}
                                           aria-disabled={hasPreflightBlockers || Boolean(exportingFormat)}
                                           className={cn(
                                             "flex items-center gap-2 px-3 py-2.5 rounded-md text-[10px] font-semibold bg-slate-50 text-slate-700 border border-slate-200 hover:bg-slate-100/80 transition-all shrink-0 active:scale-[0.98] shadow-sm disabled:opacity-50",
@@ -1355,13 +1338,6 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                 </div>
 
                                 <div className="p-4 sm:p-6 md:p-10 bg-[#FCFDFF] printable-article-shell">
-                                  {contentReview && (
-                                    <div data-export-exclude="true">
-                                      <ContentReviewDisplay
-                                        review={contentReview}
-                                      />
-                                    </div>
-                                  )}
 
                                   {isEditing ? (
                                     <div className="prose prose-slate max-w-none prose-headings:text-[#002D56] prose-headings:font-semibold prose-p:text-slate-700 prose-p:text-lg prose-p:leading-relaxed prose-li:text-slate-600 font-serif">

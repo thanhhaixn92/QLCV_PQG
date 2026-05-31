@@ -49,6 +49,10 @@ function isLeadInItem(value: unknown): value is ArticleLeadInItem {
   );
 }
 
+function isTableCell(value: unknown): value is { text: string; header?: boolean } {
+  return Boolean(value && typeof value === "object" && typeof (value as { text?: unknown }).text === "string");
+}
+
 function addDraftMarkerWarning(value: string, path: string, warnings: ArticleValidationIssue[]): void {
   DRAFT_MARKER_PATTERN.lastIndex = 0;
   if (!DRAFT_MARKER_PATTERN.test(value)) return;
@@ -150,6 +154,23 @@ function validateBlock(
       result.errors.push({ path: `${path}.slots.${slot}`, message: `Danh sách vượt quá ${definition.maxItems} mục.` });
     }
 
+    if (slotType === "tableRows") {
+      value.forEach((row, rowIndex) => {
+        if (!Array.isArray(row) || row.length === 0) {
+          result.errors.push({ path: `${path}.slots.${slot}[${rowIndex}]`, message: "Hàng bảng phải là array không rỗng." });
+          return;
+        }
+        row.forEach((cell, cellIndex) => {
+          if (!isTableCell(cell)) {
+            result.errors.push({ path: `${path}.slots.${slot}[${rowIndex}][${cellIndex}]`, message: "Ô bảng phải có text." });
+            return;
+          }
+          validatePlainText(cell.text, `${path}.slots.${slot}[${rowIndex}][${cellIndex}].text`, definition.maxChars, result.errors, result.warnings);
+        });
+      });
+      return;
+    }
+
     value.forEach((item, itemIndex) => {
       if (slotType === "plainTextArray") {
         validatePlainText(item, `${path}.slots.${slot}[${itemIndex}]`, definition.maxChars, result.errors, result.warnings);
@@ -248,11 +269,15 @@ function toPreflightIssue(
 
   return createPreflightIssue({
     severity,
+    code: severity === "blocker" ? "article-validation-blocker" : "article-validation-warning",
     message: issue.message,
+    path: issue.path,
     blockId: shouldCollapseRepeatedLengthWarning ? undefined : block?.id,
     blockType: block?.type,
     field: shouldCollapseRepeatedLengthWarning ? "content-length" : extractField(issue.path),
+    exportBlocking: severity === "blocker",
     suggestion: suggestionForIssue(issue),
+    fixAction: suggestionForIssue(issue) ? { label: "Xem vị trí cần sửa", actionId: "focus-block" } : undefined,
     source: sourceForIssue(issue.path, issue.message),
   });
 }
@@ -273,6 +298,36 @@ function blockText(block: ArticleBlock): string {
     }
   });
   return parts.join(" ");
+}
+
+function blockPlainText(block: ArticleBlock): string {
+  return blockText(block).trim();
+}
+
+function isMarkdownTableRow(value: string): boolean {
+  const text = value.trim();
+  return text.startsWith("|") && text.endsWith("|") && text.split("|").length >= 4;
+}
+
+function isMarkdownTableSeparator(value: string): boolean {
+  if (!isMarkdownTableRow(value)) return false;
+  const cells = value
+    .trim()
+    .replace(/^\|/u, "")
+    .replace(/\|$/u, "")
+    .split("|")
+    .map((cell) => cell.trim());
+  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/u.test(cell.replace(/\s+/gu, "")));
+}
+
+function findMarkdownTableBlockId(document: ArticleDocument): string | undefined {
+  if (!Array.isArray(document.blocks)) return undefined;
+  for (let index = 0; index < document.blocks.length - 1; index += 1) {
+    const current = blockPlainText(document.blocks[index]);
+    const next = blockPlainText(document.blocks[index + 1]);
+    if (isMarkdownTableRow(current) && isMarkdownTableSeparator(next)) return document.blocks[index].id;
+  }
+  return undefined;
 }
 
 function addEditorialPreflightChecks(document: ArticleDocument, issues: PreflightIssue[]): void {
@@ -302,6 +357,22 @@ function addEditorialPreflightChecks(document: ArticleDocument, issues: Prefligh
         }));
       }
     });
+  }
+
+  const markdownTableBlockId = findMarkdownTableBlockId(document);
+  if (markdownTableBlockId) {
+    issues.push(createPreflightIssue({
+      severity: "warning",
+      code: "markdown-table-source",
+      message: "Nội dung có bảng markdown cần chuyển thành bảng thật trước khi xuất bản chính thức.",
+      path: "blocks",
+      blockId: markdownTableBlockId,
+      field: "markdown-table",
+      exportBlocking: false,
+      suggestion: "Kiểm tra bảng trong A4 Preview; HTML/DOCX/PDF sẽ cố gắng chuyển bảng markdown đơn giản sang block bảng khi xuất.",
+      fixAction: { label: "Kiểm tra bảng", actionId: "review-markdown-table" },
+      source: "editorial-check",
+    }));
   }
 
   const fullText = Array.isArray(document.blocks) ? document.blocks.map(blockText).join(" ") : "";
@@ -371,7 +442,7 @@ export function validateArticleDocument(document: ArticleDocument): ValidationRe
     document.blocks.forEach((block, index) => validateBlock(block, index, document, result, layout));
 
     const hasMainContent = document.blocks.some((block) =>
-      ["sapo", "paragraph", "lead-in-list", "bullet-list", "conclusion"].includes(block.type),
+      ["sapo", "paragraph", "lead-in-list", "bullet-list", "ordered-list", "quote", "fact-box", "table", "callout", "conclusion"].includes(block.type),
     );
     if (!hasMainContent) {
       result.errors.push({ path: "blocks", message: "Tài liệu chưa có nội dung chính." });

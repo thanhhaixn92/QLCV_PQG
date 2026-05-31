@@ -60,7 +60,12 @@ const BLOCK_LABELS: Record<ArticleBlockType, string> = {
   paragraph: "Đoạn nội dung",
   "lead-in-list": "Danh sách nhấn mạnh",
   "bullet-list": "Gạch đầu dòng",
+  "ordered-list": "Danh sách đánh số",
+  quote: "Trích dẫn",
+  "fact-box": "Fact box",
+  table: "Bảng",
   "figure-placeholder": "Vị trí ảnh",
+  callout: "Callout",
   conclusion: "Kết luận",
   "page-break": "Ngắt trang",
 };
@@ -109,7 +114,7 @@ function createRecommendation(
       summary: reasonSummary,
       matchedSignals,
     },
-    plannedBlocks: layout.defaultBlockPlan.slice(0, 7),
+    plannedBlocks: layout.blockSequence.slice(0, 7),
   };
 }
 
@@ -139,7 +144,7 @@ export function recommendArticleLayoutsForBrief(userBrief: string): LayoutRecomm
   if (photoSignals.length > 0) {
     return uniqueRecommendations([
       createRecommendation(
-        "photo-led-a4",
+        "photo-led-placeholder-a4",
         "anh-dan-dat",
         "Phù hợp bài có nhiều hình ảnh/phóng sự ảnh, ưu tiên placeholder ảnh, chú thích và nhịp nội dung trực quan.",
         photoSignals,
@@ -243,7 +248,7 @@ export function recommendArticleLayoutsForBrief(userBrief: string): LayoutRecomm
         shortNewsSignals,
       ),
       createRecommendation(
-        "photo-led-a4",
+        "photo-led-placeholder-a4",
         "anh-dan-dat",
         "Phù hợp nếu hoạt động có nhiều hình ảnh và cần nhấn mạnh trải nghiệm trực quan.",
         shortNewsSignals,
