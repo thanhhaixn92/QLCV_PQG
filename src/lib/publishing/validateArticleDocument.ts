@@ -10,6 +10,12 @@ import { ARTICLE_BLOCK_REGISTRY } from "./blockRegistry";
 import { getDefaultArticleLayout, getArticleLayout, type ArticleLayoutDefinition } from "./layoutRegistry";
 import { getArticleTemplate } from "./templateRegistry";
 import { hasArticleStyle } from "./styleRegistry";
+import {
+  createPreflightIssue,
+  dedupePreflightIssues,
+  type PreflightIssue,
+  type PreflightIssueSource,
+} from "./preflightIssue";
 
 export interface ArticleValidationIssue {
   path: string;
@@ -21,6 +27,7 @@ export interface ValidationResult {
   valid: boolean;
   errors: ArticleValidationIssue[];
   warnings: ArticleValidationIssue[];
+  preflightIssues: PreflightIssue[];
 }
 
 const VALID_PAGE_BREAK_POLICIES: ArticlePageBreakPolicy[] = ["auto", "avoid", "before", "after"];
@@ -192,6 +199,134 @@ function resolveDocumentLayout(document: ArticleDocument, result: ValidationResu
   return layout;
 }
 
+function extractBlockIndex(path: string): number | undefined {
+  const match = path.match(/^blocks\[(\d+)\]/u);
+  return match ? Number(match[1]) : undefined;
+}
+
+function extractField(path: string): string | undefined {
+  const slotMatch = path.match(/\.slots\.([^.[\]]+)/u);
+  if (slotMatch) return slotMatch[1];
+  const parts = path.split(".");
+  return parts[parts.length - 1] || path;
+}
+
+function sourceForIssue(path: string, message: string): PreflightIssueSource {
+  if (path.startsWith("layout") || message.toLowerCase().includes("layout")) return "layout-validation";
+  return "article-validation";
+}
+
+function suggestionForIssue(issue: ArticleValidationIssue): string | undefined {
+  if (issue.path.includes("metadata.title") || issue.path.includes(".slots.text")) {
+    if (issue.message.toLowerCase().includes("title") || issue.path.includes("metadata.title")) {
+      return "Bổ sung tiêu đề rõ ràng trước khi xuất bản.";
+    }
+  }
+  if (issue.path.includes("layout")) return "Chọn lại layout từ bước gợi ý hoặc dùng layout mặc định hợp lệ.";
+  if (issue.message.includes("HTML")) return "Chuyển nội dung về plain text, không dán thẻ HTML vào block.";
+  if (issue.message.includes("không cho phép block type")) return "Đổi layout phù hợp hoặc chuyển block sang loại được layout cho phép.";
+  if (issue.message.includes("Thiếu required slot") || issue.message.includes("không rỗng")) {
+    return "Điền đủ nội dung bắt buộc cho block này.";
+  }
+  if (issue.message.includes("hơi dài") || issue.message.includes("vượt khuyến nghị")) {
+    return "Rút gọn nội dung hoặc tách thành block ngắn hơn để dễ đọc trên A4.";
+  }
+  if (issue.message.includes("bổ sung/kiểm chứng")) {
+    return "Rà soát marker nháp và bổ sung dữ liệu hoặc nguồn kiểm chứng.";
+  }
+  return undefined;
+}
+
+function toPreflightIssue(
+  issue: ArticleValidationIssue,
+  severity: "blocker" | "warning",
+  document: ArticleDocument,
+): PreflightIssue {
+  const blockIndex = extractBlockIndex(issue.path);
+  const block = blockIndex === undefined ? undefined : document.blocks?.[blockIndex];
+  const shouldCollapseRepeatedLengthWarning = severity === "warning" && /hơi dài|vượt khuyến nghị/u.test(issue.message);
+
+  return createPreflightIssue({
+    severity,
+    message: issue.message,
+    blockId: shouldCollapseRepeatedLengthWarning ? undefined : block?.id,
+    blockType: block?.type,
+    field: shouldCollapseRepeatedLengthWarning ? "content-length" : extractField(issue.path),
+    suggestion: suggestionForIssue(issue),
+    source: sourceForIssue(issue.path, issue.message),
+  });
+}
+
+function hasBlockType(document: ArticleDocument, type: ArticleBlock["type"]): boolean {
+  return Array.isArray(document.blocks) && document.blocks.some((block) => block.type === type);
+}
+
+function blockText(block: ArticleBlock): string {
+  const parts: string[] = [];
+  Object.values(block.slots || {}).forEach((value) => {
+    if (typeof value === "string") parts.push(value);
+    if (Array.isArray(value)) {
+      value.forEach((item) => {
+        if (typeof item === "string") parts.push(item);
+        else if (item && typeof item === "object") parts.push(...Object.values(item).filter((part): part is string => typeof part === "string"));
+      });
+    }
+  });
+  return parts.join(" ");
+}
+
+function addEditorialPreflightChecks(document: ArticleDocument, issues: PreflightIssue[]): void {
+  if (!hasBlockType(document, "sapo") && !document.metadata?.sapo) {
+    issues.push(createPreflightIssue({
+      severity: "warning",
+      message: "Bài viết chưa có sapo/lead mở đầu.",
+      field: "sapo",
+      suggestion: "Bổ sung một đoạn sapo ngắn để định hướng người đọc trước phần thân bài.",
+      source: "editorial-check",
+    }));
+  }
+
+  if (Array.isArray(document.blocks)) {
+    document.blocks.forEach((block) => {
+      if (block.type !== "figure-placeholder") return;
+      const caption = typeof block.slots.caption === "string" ? block.slots.caption.trim() : "";
+      if (!caption) {
+        issues.push(createPreflightIssue({
+          severity: "warning",
+          message: "Khung ảnh placeholder chưa có chú thích.",
+          blockId: block.id,
+          blockType: block.type,
+          field: "caption",
+          suggestion: "Thêm chú thích ngắn mô tả ảnh dự kiến hoặc ý nghĩa minh họa.",
+          source: "editorial-check",
+        }));
+      }
+    });
+  }
+
+  const fullText = Array.isArray(document.blocks) ? document.blocks.map(blockText).join(" ") : "";
+  const numericMatches = fullText.match(/(?:\d+[.,]?\d*|\d+%)/gu) || [];
+  const hasSourceCue = /(?:nguồn|theo|trích|dẫn|số liệu|báo cáo|thống kê|kiểm chứng)/iu.test(fullText);
+  if (numericMatches.length >= 8 && !hasSourceCue) {
+    issues.push(createPreflightIssue({
+      severity: "warning",
+      message: "Bài có nhiều số liệu nhưng chưa thấy dữ liệu nguồn/kiểm chứng rõ ràng.",
+      field: "sources",
+      suggestion: "Bổ sung nguồn số liệu, mốc thời gian hoặc ghi chú kiểm chứng trước khi phát hành chính thức.",
+      source: "editorial-check",
+    }));
+  }
+}
+
+function buildPreflightIssues(document: ArticleDocument, result: ValidationResult): PreflightIssue[] {
+  const issues = [
+    ...result.errors.map((issue) => toPreflightIssue(issue, "blocker", document)),
+    ...result.warnings.map((issue) => toPreflightIssue(issue, "warning", document)),
+  ];
+  addEditorialPreflightChecks(document, issues);
+  return dedupePreflightIssues(issues);
+}
+
 function validateEstimatedPages(document: ArticleDocument, result: ValidationResult): void {
   if (document.estimatedPages === undefined) return;
   if (!Number.isFinite(document.estimatedPages) || document.estimatedPages < 1 || document.estimatedPages > 10) {
@@ -200,7 +335,7 @@ function validateEstimatedPages(document: ArticleDocument, result: ValidationRes
 }
 
 export function validateArticleDocument(document: ArticleDocument): ValidationResult {
-  const result: ValidationResult = { valid: false, errors: [], warnings: [] };
+  const result: ValidationResult = { valid: false, errors: [], warnings: [], preflightIssues: [] };
 
   if (document.schemaVersion !== ARTICLE_DOCUMENT_SCHEMA_VERSION) {
     result.errors.push({ path: "schemaVersion", message: "schemaVersion chưa được hỗ trợ." });
@@ -244,5 +379,10 @@ export function validateArticleDocument(document: ArticleDocument): ValidationRe
   }
 
   result.valid = result.errors.length === 0;
+  result.preflightIssues = buildPreflightIssues(document, result);
   return result;
+}
+
+export function getArticleDocumentPreflightIssues(document: ArticleDocument): PreflightIssue[] {
+  return validateArticleDocument(document).preflightIssues;
 }
