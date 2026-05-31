@@ -185,6 +185,7 @@
   }
 
   .print-layout.a4-preview .a4-block-bullet-list,
+  .print-layout.a4-preview .a4-block-ordered-list,
   .print-layout.a4-preview .a4-block-lead-in-list:not(.a4-lead-in-paragraphs) {
     margin: 0 0 10pt 22pt;
     padding: 0;
@@ -194,6 +195,7 @@
   }
 
   .print-layout.a4-preview .a4-block-bullet-list li,
+  .print-layout.a4-preview .a4-block-ordered-list li,
   .print-layout.a4-preview .a4-block-lead-in-list li {
     margin: 0 0 6pt;
     padding-left: 4pt;
@@ -211,8 +213,69 @@
     text-indent: 18pt;
   }
 
-  .print-layout.a4-preview .a4-block-figure-placeholder {
-    margin: 14pt 0 12pt;
+
+  .print-layout.a4-preview .a4-block-quote {
+    margin: 14pt 0;
+    padding: 10pt 14pt;
+    border-left: 4pt solid #94a3b8;
+    background: #f8fafc;
+    color: #334155;
+    font-size: 13.5pt;
+    font-style: italic;
+    line-height: 1.5;
+    text-align: justify;
+  }
+
+  .print-layout.a4-preview .a4-block-quote cite {
+    display: block;
+    margin-top: 6pt;
+    color: #64748b;
+    font-size: 11.5pt;
+    text-align: right;
+  }
+
+  .print-layout.a4-preview .a4-callout,
+  .print-layout.a4-preview .a4-fact-box {
+    margin: 12pt 0;
+    padding: 12pt 14pt;
+    border: 1pt solid #bfdbfe;
+    border-radius: 8pt;
+    background: #eff6ff;
+    color: #1e3a5f;
+    font-size: 13pt;
+    line-height: 1.45;
+  }
+
+  .print-layout.a4-preview .a4-callout p,
+  .print-layout.a4-preview .a4-fact-box ul {
+    margin: 6pt 0 0;
+  }
+
+  .print-layout.a4-preview .a4-table-figure {
+    margin: 14pt 0;
+  }
+
+  .print-layout.a4-preview .a4-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12.5pt;
+    line-height: 1.35;
+  }
+
+  .print-layout.a4-preview .a4-table th,
+  .print-layout.a4-preview .a4-table td {
+    border: 1px solid #94a3b8;
+    padding: 7pt 8pt;
+    vertical-align: top;
+  }
+
+  .print-layout.a4-preview .a4-table th {
+    background: #eaf1f8;
+    color: #002d56;
+    font-weight: 700;
+  }
+
+  .print-layout.a4-preview .a4-block-figure-placeholder {    margin: 14pt 0 12pt;
     break-inside: avoid;
     page-break-inside: avoid;
   }

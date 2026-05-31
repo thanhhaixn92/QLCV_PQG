@@ -1,4 +1,5 @@
 import type { ArticleBlock, ArticleBlockSlots, ArticleDocument, ArticleLeadInItem } from "./articleDocument";
+import { normalizeEditorialBriefInput } from "../editorialBrief";
 import type {
   ArticleExportBlock,
   ArticleExportFigure,
@@ -14,6 +15,8 @@ const DEFAULT_LAYOUT_ID = "legacy-a4";
 const DEFAULT_LAYOUT_VERSION = "legacy";
 
 const DRAFT_MARKER_PATTERN = /\[(?:\s*Bổ sung\s*:|\s*Cần\s+[^\]]*|\s*PLACEHOLDER\b|\s*[—-]+\s*(?:ẢNH|PLACEHOLDER)\s*[—-]+\s*)[^\]]*\]/giu;
+const RAW_PLACEHOLDER_LINE_PATTERN = /^(?:\d+[.)]\s*)?(?:Placehold|Placeholder|Vị trí chèn)\s+hình\s+minh\s+h[oọ][aạ]\s*[:：-]?.*$/gimu;
+const RAW_SEPARATOR_LINE_PATTERN = /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/gmu;
 const OBJECT_TEXT_PATTERN = /\[object Object\]/giu;
 const UNSAFE_EXTENSION_PATTERN = /^\.*|[^a-z0-9]+/giu;
 
@@ -74,13 +77,16 @@ function cleanScalarText(value: unknown): string {
 }
 
 export function cleanArticleExportText(value: unknown): string {
-  return cleanScalarText(value)
+  const cleaned = cleanScalarText(value)
     .replace(/<\s*script\b[^>]*>[\s\S]*?<\s*\/\s*script\s*>/giu, "")
     .replace(DRAFT_MARKER_PATTERN, "")
+    .replace(RAW_PLACEHOLDER_LINE_PATTERN, "")
+    .replace(RAW_SEPARATOR_LINE_PATTERN, "")
     .replace(OBJECT_TEXT_PATTERN, "")
     .replace(/\b(?:undefined|null)\b/giu, "")
     .replace(/\s+/gu, " ")
     .trim();
+  return normalizeEditorialBriefInput(cleaned);
 }
 
 function cleanTextArray(value: unknown): string[] {
@@ -142,6 +148,95 @@ function blockText(slots: Partial<ArticleBlockSlots>, slot: keyof ArticleBlockSl
   return cleanArticleExportText(slots[slot]);
 }
 
+
+type TextLikeExportBlock = Extract<ArticleExportBlock, { text: string }>;
+
+function isTextLikeBlock(block: ArticleExportBlock): block is TextLikeExportBlock {
+  return "text" in block && typeof block.text === "string";
+}
+
+function isMarkdownTableRow(value: string): boolean {
+  const text = value.trim();
+  return text.startsWith("|") && text.endsWith("|") && text.split("|").length >= 4;
+}
+
+function isMarkdownTableSeparator(value: string): boolean {
+  if (!isMarkdownTableRow(value)) return false;
+  const cells = value
+    .trim()
+    .replace(/^\|/u, "")
+    .replace(/\|$/u, "")
+    .split("|")
+    .map((cell) => cell.trim());
+  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/u.test(cell.replace(/\s+/gu, "")));
+}
+
+function splitMarkdownTableRow(value: string): string[] {
+  return value
+    .trim()
+    .replace(/^\|/u, "")
+    .replace(/\|$/u, "")
+    .split("|")
+    .map((cell) => cleanArticleExportText(cell))
+    .filter((cell) => cell.length > 0);
+}
+
+function markdownTableFromBlocks(blocks: ArticleExportBlock[]): ArticleExportTable | undefined {
+  if (blocks.length < 2 || !blocks.every(isTextLikeBlock)) return undefined;
+  if (!isMarkdownTableSeparator(blocks[1].text)) return undefined;
+
+  const headerCells = splitMarkdownTableRow(blocks[0].text);
+  const bodyRows = blocks.slice(2).map((block) => splitMarkdownTableRow(block.text));
+  const rows = [headerCells, ...bodyRows]
+    .filter((row) => row.length > 0)
+    .map((row, rowIndex) =>
+      row.map((text) => ({ text, header: rowIndex === 0 }) satisfies ArticleExportTableCell),
+    );
+
+  return rows.length >= 2 ? { rows } : undefined;
+}
+
+function normalizeMarkdownTableBlocks(blocks: ArticleExportBlock[]): ArticleExportBlock[] {
+  const normalized: ArticleExportBlock[] = [];
+  let index = 0;
+
+  while (index < blocks.length) {
+    const block = blocks[index];
+    if (!isTextLikeBlock(block) || !isMarkdownTableRow(block.text)) {
+      normalized.push(block);
+      index += 1;
+      continue;
+    }
+
+    const tableCandidate: ArticleExportBlock[] = [];
+    let cursor = index;
+    while (cursor < blocks.length) {
+      const candidate = blocks[cursor];
+      if (!isTextLikeBlock(candidate) || !isMarkdownTableRow(candidate.text)) break;
+      tableCandidate.push(candidate);
+      cursor += 1;
+    }
+
+    const table = markdownTableFromBlocks(tableCandidate);
+    if (!table) {
+      normalized.push(block);
+      index += 1;
+      continue;
+    }
+
+    normalized.push({
+      id: `${block.id}-markdown-table`,
+      type: "table",
+      table,
+      sourceType: "markdown-table",
+      variant: block.variant,
+    });
+    index = cursor;
+  }
+
+  return normalized;
+}
+
 export function mapArticleBlockToExportBlock(block: ArticleBlock): ArticleExportBlock {
   const looseBlock = asLooseBlock(block);
   const sourceType = cleanArticleExportText(looseBlock.type) || "unknown";
@@ -163,6 +258,13 @@ export function mapArticleBlockToExportBlock(block: ArticleBlock): ArticleExport
       return { id, type: "conclusion", text: blockText(slots), sourceType, variant };
     case "quote":
       return { id, type: "quote", text: blockText(slots), sourceType, variant };
+    case "callout":
+      return { id, type: "quote", text: [blockText(slots, "title"), blockText(slots)].filter(Boolean).join(": "), sourceType, variant };
+    case "fact-box": {
+      const title = blockText(slots, "title");
+      const items = cleanTextArray(slots.items);
+      return { id, type: "lead-in", items: items.map((body, index) => ({ label: index === 0 && title ? title : `Điểm ${index + 1}`, body })), sourceType, variant };
+    }
     case "bullet-list":
       return { id, type: "bullet-list", items: cleanTextArray(slots.items), sourceType, variant };
     case "numbered-list":
@@ -174,7 +276,7 @@ export function mapArticleBlockToExportBlock(block: ArticleBlock): ArticleExport
     case "figure-placeholder":
       return { id, type: "figure-placeholder", figure: cleanFigure(slots), sourceType, variant };
     case "table": {
-      const table = cleanTable(slots.items ?? (slots as Record<string, unknown>).rows);
+      const table = cleanTable((slots as Record<string, unknown>).rows ?? slots.items);
       return table
         ? { id, type: "table", table, sourceType, variant }
         : { id, type: "unknown", text: blockText(slots), sourceType, variant };
@@ -223,6 +325,9 @@ function collectWarnings(blocks: ArticleExportBlock[], document: LooseArticleDoc
     if (block.type === "unknown") {
       warnings.push({ code: "unknown-block", message: "Block không xác định được giữ dưới dạng fallback để tránh mất nội dung.", blockId: block.id, blockType: block.sourceType });
     }
+    if (block.type === "table" && block.sourceType === "markdown-table") {
+      warnings.push({ code: "markdown-table-normalized", message: "Bảng markdown đã được chuyển sang block bảng khi xuất file.", blockId: block.id, blockType: block.sourceType });
+    }
   });
   return warnings;
 }
@@ -230,15 +335,19 @@ function collectWarnings(blocks: ArticleExportBlock[], document: LooseArticleDoc
 export function normalizeArticleDocumentForExport(articleDocument: ArticleDocument): ArticleExportModel {
   const document = asLooseDocument(articleDocument);
   const metadata = isRecord(document.metadata) ? (document.metadata as LooseMetadata) : {};
-  const mappedBlocks = (Array.isArray(document.blocks) ? document.blocks : [])
-    .map((block) => mapArticleBlockToExportBlock(block as ArticleBlock))
-    .filter((block) => !isEmptyExportBlock(block));
+  const mappedBlocks = normalizeMarkdownTableBlocks(
+    (Array.isArray(document.blocks) ? document.blocks : [])
+      .map((block) => mapArticleBlockToExportBlock(block as ArticleBlock))
+      .filter((block) => !isEmptyExportBlock(block)),
+  );
 
-  const titleFromMetadata = cleanArticleExportText(metadata.title);
-  const titleFromBlock = mappedBlocks.reduce((value, block) => (value || (block.type === "title" ? block.text : "")), "");
-  const sapoFromBlock = mappedBlocks.reduce((value, block) => (value || (block.type === "sapo" ? block.text : "")), "");
+  const metadataTitle = cleanArticleExportText(metadata.title);
+  const metadataSapo = cleanArticleExportText(metadata.sapo);
+  const titleFromMetadata = isMarkdownTableRow(metadataTitle) ? "" : metadataTitle;
+  const titleFromBlock = mappedBlocks.reduce((value, block) => (value || (block.type === "title" && !isMarkdownTableRow(block.text) ? block.text : "")), "");
+  const sapoFromBlock = mappedBlocks.reduce((value, block) => (value || (block.type === "sapo" && !isMarkdownTableRow(block.text) ? block.text : "")), "");
   const title = titleFromMetadata || titleFromBlock || DEFAULT_EXPORT_TITLE;
-  const sapo = cleanArticleExportText(metadata.sapo) || sapoFromBlock || undefined;
+  const sapo = metadataSapo && !isMarkdownTableRow(metadataSapo) ? metadataSapo : sapoFromBlock || undefined;
   const layoutId = cleanArticleExportText(document.layoutId) || cleanArticleExportText(document.templateId) || DEFAULT_LAYOUT_ID;
   const layoutVersion = cleanArticleExportText(document.layoutVersion) || cleanArticleExportText(document.templateVersion) || DEFAULT_LAYOUT_VERSION;
   const estimatedPages = typeof document.estimatedPages === "number" && Number.isFinite(document.estimatedPages) ? document.estimatedPages : undefined;

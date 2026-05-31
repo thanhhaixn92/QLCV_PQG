@@ -1,6 +1,7 @@
 import type { ArticleBlockType } from "./articleDocument";
 
-export type ArticleVisualDensity = "airy" | "balanced" | "dense" | "photo-led";
+export type ArticleLayoutDensity = "airy" | "balanced" | "dense" | "photo-led";
+export type ArticleVisualDensity = ArticleLayoutDensity;
 export type ArticlePlaceholderPolicy = "optional" | "recommended" | "required" | "photo-led";
 
 export interface ArticlePageBudget {
@@ -23,15 +24,22 @@ export interface ArticlePageBudget {
 export interface ArticleLayoutDefinition {
   layoutId: string;
   layoutVersion: string;
+  name: string;
   label: string;
   description: string;
-  estimatedPages: number;
-  pageBudget: ArticlePageBudget;
-  allowedBlocks: ArticleBlockType[];
-  defaultBlockPlan: ArticleBlockType[];
+  suitableFor: string[];
   recommendedFor: string[];
+  estimatedPages: number;
+  density: ArticleLayoutDensity;
   visualDensity: ArticleVisualDensity;
+  blockSequence: ArticleBlockType[];
+  defaultBlockPlan: ArticleBlockType[];
+  allowedBlocks: ArticleBlockType[];
+  requiredBlocks: ArticleBlockType[];
+  optionalBlocks: ArticleBlockType[];
   placeholderPolicy: ArticlePlaceholderPolicy;
+  exportNotes: string[];
+  pageBudget: ArticlePageBudget;
   stylePresetId: string;
 }
 
@@ -42,275 +50,174 @@ const A4_ALLOWED_BLOCKS: ArticleBlockType[] = [
   "paragraph",
   "lead-in-list",
   "bullet-list",
+  "ordered-list",
+  "quote",
+  "fact-box",
+  "table",
   "figure-placeholder",
+  "callout",
   "conclusion",
   "page-break",
 ];
 
+const BASE_REQUIRED_BLOCKS: ArticleBlockType[] = ["title", "sapo", "paragraph"];
+const BASE_OPTIONAL_BLOCKS = A4_ALLOWED_BLOCKS.filter((block) => !BASE_REQUIRED_BLOCKS.includes(block));
+
+function pageBudget(
+  minPages: number,
+  targetPages: number,
+  maxPages: number,
+  wordsPerPage: number,
+  minWords: number,
+  targetWords: number,
+  maxWords: number,
+  minFigures: number,
+  targetFigures: number,
+  maxFigures: number,
+): ArticlePageBudget {
+  return {
+    minPages,
+    targetPages,
+    maxPages,
+    wordsPerPage,
+    totalWords: { min: minWords, target: targetWords, max: maxWords },
+    figureSlots: { min: minFigures, target: targetFigures, max: maxFigures },
+  };
+}
+
+function defineLayout(config: Omit<ArticleLayoutDefinition, "label" | "recommendedFor" | "visualDensity" | "defaultBlockPlan" | "optionalBlocks" | "stylePresetId"> & { stylePresetId?: string }): ArticleLayoutDefinition {
+  return {
+    ...config,
+    label: config.name,
+    recommendedFor: config.suitableFor,
+    visualDensity: config.density,
+    defaultBlockPlan: config.blockSequence,
+    optionalBlocks: BASE_OPTIONAL_BLOCKS,
+    stylePresetId: config.stylePresetId || "hoa-tieu-a4-basic",
+  };
+}
+
 export const ARTICLE_LAYOUT_REGISTRY = {
-  "standard-news-a4@1.0.0": {
+  "standard-news-a4@1.0.0": defineLayout({
     layoutId: "standard-news-a4",
     layoutVersion: "1.0.0",
-    label: "Tin tiêu chuẩn A4",
-    description: "Layout A4 cân bằng cho tin/bài phản ánh 5 trang, ưu tiên diễn biến chính và kết quả nổi bật.",
+    name: "Tin tiêu chuẩn A4",
+    description: "Layout A4 cân bằng cho tin/bài website 5 trang, ưu tiên thông tin chính, diễn biến và kết quả.",
+    suitableFor: ["Tin tổng hợp", "Bài website", "Bài phản ánh hoạt động", "Truyền thông nội bộ"],
     estimatedPages: 5,
-    pageBudget: {
-      minPages: 4,
-      targetPages: 5,
-      maxPages: 6,
-      wordsPerPage: 520,
-      totalWords: { min: 1_900, target: 2_600, max: 3_100 },
-      figureSlots: { min: 1, target: 2, max: 3 },
-    },
+    density: "balanced",
+    blockSequence: ["title", "sapo", "paragraph", "figure-placeholder", "section-heading", "paragraph", "lead-in-list", "section-heading", "paragraph", "conclusion"],
     allowedBlocks: A4_ALLOWED_BLOCKS,
-    defaultBlockPlan: [
-      "title",
-      "sapo",
-      "paragraph",
-      "figure-placeholder",
-      "section-heading",
-      "paragraph",
-      "lead-in-list",
-      "section-heading",
-      "paragraph",
-      "conclusion",
-    ],
-    recommendedFor: ["Tin tổng hợp", "Bài phản ánh hoạt động", "Thông tin nội bộ"],
-    visualDensity: "balanced",
+    requiredBlocks: BASE_REQUIRED_BLOCKS,
     placeholderPolicy: "recommended",
-    stylePresetId: "hoa-tieu-a4-basic",
-  },
-  "feature-article-a4@1.0.0": {
+    exportNotes: ["Phù hợp HTML/DOCX/PDF A4", "Khuyến nghị 1–2 placeholder ảnh có caption."],
+    pageBudget: pageBudget(4, 5, 6, 520, 1900, 2600, 3100, 1, 2, 3),
+  }),
+  "feature-article-a4@1.0.0": defineLayout({
     layoutId: "feature-article-a4",
     layoutVersion: "1.0.0",
-    label: "Bài feature A4",
-    description: "Layout dài 6–7 trang cho bài chuyên sâu, có nhiều đề mục và nhịp kể chuyện rõ.",
+    name: "Bài feature A4",
+    description: "Layout dài 6–7 trang cho bài chuyên sâu, nhiều đề mục, quote/callout và nhịp kể chuyện rõ.",
+    suitableFor: ["Bài chuyên sâu", "Chân dung tập thể", "Tường thuật dài"],
     estimatedPages: 6,
-    pageBudget: {
-      minPages: 5,
-      targetPages: 6,
-      maxPages: 7,
-      wordsPerPage: 540,
-      totalWords: { min: 2_600, target: 3_200, max: 3_800 },
-      figureSlots: { min: 2, target: 3, max: 4 },
-    },
+    density: "airy",
+    blockSequence: ["title", "sapo", "paragraph", "quote", "figure-placeholder", "section-heading", "paragraph", "section-heading", "lead-in-list", "paragraph", "figure-placeholder", "conclusion"],
     allowedBlocks: A4_ALLOWED_BLOCKS,
-    defaultBlockPlan: [
-      "title",
-      "sapo",
-      "paragraph",
-      "figure-placeholder",
-      "section-heading",
-      "paragraph",
-      "section-heading",
-      "lead-in-list",
-      "paragraph",
-      "figure-placeholder",
-      "section-heading",
-      "paragraph",
-      "conclusion",
-    ],
-    recommendedFor: ["Bài chuyên sâu", "Chân dung tập thể", "Tường thuật dài"],
-    visualDensity: "airy",
+    requiredBlocks: BASE_REQUIRED_BLOCKS,
     placeholderPolicy: "recommended",
-    stylePresetId: "hoa-tieu-a4-basic",
-  },
-  "event-recap-a4@1.0.0": {
+    exportNotes: ["Có thể dùng quote/callout để tăng nhịp đọc.", "Giữ mỗi đoạn dưới 1.200 ký tự."],
+    pageBudget: pageBudget(5, 6, 7, 540, 2600, 3200, 3800, 2, 3, 4),
+  }),
+  "event-recap-a4@1.0.0": defineLayout({
     layoutId: "event-recap-a4",
     layoutVersion: "1.0.0",
-    label: "Tổng thuật sự kiện A4",
-    description: "Layout 5–6 trang cho bài tổng thuật sự kiện, nhấn mạnh bối cảnh, diễn biến, kết quả và ý nghĩa.",
+    name: "Tổng thuật sự kiện A4",
+    description: "Layout cho hội nghị/sự kiện, nhấn mạnh bối cảnh, diễn biến, kết quả và ý nghĩa.",
+    suitableFor: ["Hội nghị", "Lễ ký kết", "Hoạt động chính trị", "Sự kiện chuyên môn"],
     estimatedPages: 5,
-    pageBudget: {
-      minPages: 4,
-      targetPages: 5,
-      maxPages: 6,
-      wordsPerPage: 520,
-      totalWords: { min: 2_000, target: 2_700, max: 3_200 },
-      figureSlots: { min: 2, target: 3, max: 4 },
-    },
+    density: "balanced",
+    blockSequence: ["title", "sapo", "section-heading", "paragraph", "figure-placeholder", "section-heading", "lead-in-list", "paragraph", "section-heading", "paragraph", "conclusion"],
     allowedBlocks: A4_ALLOWED_BLOCKS,
-    defaultBlockPlan: [
-      "title",
-      "sapo",
-      "section-heading",
-      "paragraph",
-      "figure-placeholder",
-      "section-heading",
-      "lead-in-list",
-      "paragraph",
-      "section-heading",
-      "paragraph",
-      "conclusion",
-    ],
-    recommendedFor: ["Hội nghị", "Lễ ký kết", "Hoạt động chính trị", "Sự kiện chuyên môn"],
-    visualDensity: "balanced",
+    requiredBlocks: BASE_REQUIRED_BLOCKS,
     placeholderPolicy: "required",
-    stylePresetId: "hoa-tieu-a4-basic",
-  },
-  "data-achievement-a4@1.0.0": {
+    exportNotes: ["Cần caption rõ cho ảnh sự kiện.", "Nên có kết luận/ý nghĩa sau sự kiện."],
+    pageBudget: pageBudget(4, 5, 6, 520, 2000, 2700, 3200, 2, 3, 4),
+  }),
+  "data-achievement-a4@1.0.0": defineLayout({
     layoutId: "data-achievement-a4",
     layoutVersion: "1.0.0",
-    label: "Thành tựu - số liệu A4",
-    description: "Layout 5 trang cho bài nhấn mạnh kết quả, chỉ tiêu, số liệu và các điểm nổi bật có thể liệt kê.",
+    name: "Thành tựu - số liệu A4",
+    description: "Layout cho bài có số liệu/kết quả, hỗ trợ fact-box, bảng nhỏ và danh sách điểm nổi bật.",
+    suitableFor: ["Báo cáo thành tựu", "Tổng kết chỉ tiêu", "Bài viết có nhiều số liệu"],
     estimatedPages: 5,
-    pageBudget: {
-      minPages: 4,
-      targetPages: 5,
-      maxPages: 6,
-      wordsPerPage: 500,
-      totalWords: { min: 1_800, target: 2_500, max: 3_000 },
-      figureSlots: { min: 1, target: 2, max: 3 },
-    },
+    density: "dense",
+    blockSequence: ["title", "sapo", "paragraph", "fact-box", "section-heading", "lead-in-list", "table", "section-heading", "bullet-list", "paragraph", "conclusion"],
     allowedBlocks: A4_ALLOWED_BLOCKS,
-    defaultBlockPlan: [
-      "title",
-      "sapo",
-      "paragraph",
-      "section-heading",
-      "lead-in-list",
-      "section-heading",
-      "bullet-list",
-      "figure-placeholder",
-      "paragraph",
-      "conclusion",
-    ],
-    recommendedFor: ["Báo cáo thành tựu", "Tổng kết chỉ tiêu", "Bài viết có nhiều số liệu"],
-    visualDensity: "dense",
+    requiredBlocks: BASE_REQUIRED_BLOCKS,
     placeholderPolicy: "optional",
-    stylePresetId: "hoa-tieu-a4-basic",
-  },
-  "explainer-a4@1.0.0": {
+    exportNotes: ["Bảng nên nhỏ, dễ đọc trên A4.", "Số liệu nên có nguồn/điểm kiểm chứng."],
+    pageBudget: pageBudget(4, 5, 6, 500, 1800, 2500, 3000, 1, 2, 3),
+  }),
+  "explainer-a4@1.0.0": defineLayout({
     layoutId: "explainer-a4",
     layoutVersion: "1.0.0",
-    label: "Giải thích/chuyên đề A4",
-    description: "Layout 5–6 trang cho bài giải thích chính sách, quy trình hoặc chủ đề chuyên môn theo từng ý rõ ràng.",
+    name: "Giải thích/chuyên đề A4",
+    description: "Layout giải thích chính sách, quy trình hoặc chủ đề chuyên môn theo các khối dễ đọc.",
+    suitableFor: ["Giải thích chính sách", "Hướng dẫn nghiệp vụ", "Chuyên đề kiến thức"],
     estimatedPages: 6,
-    pageBudget: {
-      minPages: 5,
-      targetPages: 6,
-      maxPages: 7,
-      wordsPerPage: 520,
-      totalWords: { min: 2_400, target: 3_100, max: 3_600 },
-      figureSlots: { min: 1, target: 2, max: 3 },
-    },
+    density: "balanced",
+    blockSequence: ["title", "sapo", "section-heading", "paragraph", "callout", "lead-in-list", "section-heading", "paragraph", "ordered-list", "section-heading", "paragraph", "conclusion"],
     allowedBlocks: A4_ALLOWED_BLOCKS,
-    defaultBlockPlan: [
-      "title",
-      "sapo",
-      "section-heading",
-      "paragraph",
-      "lead-in-list",
-      "section-heading",
-      "paragraph",
-      "bullet-list",
-      "section-heading",
-      "paragraph",
-      "conclusion",
-    ],
-    recommendedFor: ["Giải thích chính sách", "Hướng dẫn nghiệp vụ", "Chuyên đề kiến thức"],
-    visualDensity: "balanced",
+    requiredBlocks: BASE_REQUIRED_BLOCKS,
     placeholderPolicy: "optional",
-    stylePresetId: "hoa-tieu-a4-basic",
-  },
-  "unit-profile-a4@1.0.0": {
+    exportNotes: ["Ưu tiên heading rõ và ordered-list khi có quy trình.", "Callout dùng cho thông điệp chính."],
+    pageBudget: pageBudget(5, 6, 7, 520, 2400, 3100, 3600, 1, 2, 3),
+  }),
+  "unit-profile-a4@1.0.0": defineLayout({
     layoutId: "unit-profile-a4",
     layoutVersion: "1.0.0",
-    label: "Hồ sơ đơn vị A4",
-    description: "Layout 6 trang cho bài giới thiệu đơn vị, năng lực, truyền thống, thành tựu và định hướng.",
+    name: "Hồ sơ đơn vị A4",
+    description: "Layout giới thiệu đơn vị, năng lực, truyền thống, thành tựu và định hướng.",
+    suitableFor: ["Giới thiệu đơn vị", "Hồ sơ năng lực", "Truyền thống và thành tựu"],
     estimatedPages: 6,
-    pageBudget: {
-      minPages: 5,
-      targetPages: 6,
-      maxPages: 7,
-      wordsPerPage: 530,
-      totalWords: { min: 2_500, target: 3_200, max: 3_700 },
-      figureSlots: { min: 2, target: 3, max: 4 },
-    },
+    density: "balanced",
+    blockSequence: ["title", "sapo", "paragraph", "figure-placeholder", "section-heading", "paragraph", "bullet-list", "section-heading", "lead-in-list", "figure-placeholder", "conclusion"],
     allowedBlocks: A4_ALLOWED_BLOCKS,
-    defaultBlockPlan: [
-      "title",
-      "sapo",
-      "paragraph",
-      "figure-placeholder",
-      "section-heading",
-      "paragraph",
-      "bullet-list",
-      "section-heading",
-      "lead-in-list",
-      "figure-placeholder",
-      "conclusion",
-    ],
-    recommendedFor: ["Giới thiệu đơn vị", "Hồ sơ năng lực", "Truyền thống và thành tựu"],
-    visualDensity: "balanced",
+    requiredBlocks: BASE_REQUIRED_BLOCKS,
     placeholderPolicy: "recommended",
-    stylePresetId: "hoa-tieu-a4-basic",
-  },
-  "policy-admin-a4@1.0.0": {
+    exportNotes: ["Nên có 2–3 vị trí ảnh về con người/đơn vị.", "Phù hợp bài 5–7 trang A4."],
+    pageBudget: pageBudget(5, 6, 7, 530, 2500, 3200, 3700, 2, 3, 4),
+  }),
+  "policy-admin-a4@1.0.0": defineLayout({
     layoutId: "policy-admin-a4",
     layoutVersion: "1.0.0",
-    label: "Chính sách - hành chính A4",
-    description: "Layout 5 trang cho bài hành chính/chính sách, ưu tiên cấu trúc rõ, ít ảnh, nhiều đoạn giải thích.",
+    name: "Chính sách - hành chính A4",
+    description: "Layout hành chính/chính sách, ưu tiên cấu trúc rõ, căn cứ, ít ảnh và nhiều đoạn giải thích.",
+    suitableFor: ["Bài chính sách", "Thông tin hành chính", "Nội dung quản trị"],
     estimatedPages: 5,
-    pageBudget: {
-      minPages: 4,
-      targetPages: 5,
-      maxPages: 6,
-      wordsPerPage: 560,
-      totalWords: { min: 2_100, target: 2_800, max: 3_300 },
-      figureSlots: { min: 0, target: 1, max: 2 },
-    },
+    density: "dense",
+    blockSequence: ["title", "sapo", "section-heading", "paragraph", "section-heading", "lead-in-list", "paragraph", "section-heading", "ordered-list", "conclusion"],
     allowedBlocks: A4_ALLOWED_BLOCKS,
-    defaultBlockPlan: [
-      "title",
-      "sapo",
-      "section-heading",
-      "paragraph",
-      "section-heading",
-      "lead-in-list",
-      "paragraph",
-      "section-heading",
-      "bullet-list",
-      "conclusion",
-    ],
-    recommendedFor: ["Bài chính sách", "Thông tin hành chính", "Nội dung quản trị"],
-    visualDensity: "dense",
+    requiredBlocks: BASE_REQUIRED_BLOCKS,
     placeholderPolicy: "optional",
-    stylePresetId: "hoa-tieu-a4-basic",
-  },
-  "photo-led-a4@1.0.0": {
-    layoutId: "photo-led-a4",
+    exportNotes: ["Ít ảnh, ưu tiên tính rõ ràng và kiểm chứng.", "Có thể dùng ordered-list cho căn cứ/quy trình."],
+    pageBudget: pageBudget(4, 5, 6, 560, 2100, 2800, 3300, 0, 1, 2),
+  }),
+  "photo-led-placeholder-a4@1.0.0": defineLayout({
+    layoutId: "photo-led-placeholder-a4",
     layoutVersion: "1.0.0",
-    label: "Ảnh dẫn dắt A4",
-    description: "Layout 5–6 trang cho bài nhiều ảnh, trong đó ảnh và chú thích là nhịp nội dung chính.",
+    name: "Ảnh dẫn dắt A4 (placeholder)",
+    description: "Layout bài nhiều ảnh nhưng chỉ dùng placeholder shape trong MVP, không upload/sinh ảnh thật.",
+    suitableFor: ["Bài ảnh", "Tường thuật nhiều hình", "Phản ánh hoạt động trực quan"],
     estimatedPages: 5,
-    pageBudget: {
-      minPages: 4,
-      targetPages: 5,
-      maxPages: 6,
-      wordsPerPage: 420,
-      totalWords: { min: 1_500, target: 2_100, max: 2_700 },
-      figureSlots: { min: 3, target: 5, max: 7 },
-    },
+    density: "photo-led",
+    blockSequence: ["title", "sapo", "figure-placeholder", "paragraph", "figure-placeholder", "section-heading", "paragraph", "figure-placeholder", "bullet-list", "figure-placeholder", "conclusion"],
     allowedBlocks: A4_ALLOWED_BLOCKS,
-    defaultBlockPlan: [
-      "title",
-      "sapo",
-      "figure-placeholder",
-      "paragraph",
-      "figure-placeholder",
-      "section-heading",
-      "paragraph",
-      "figure-placeholder",
-      "bullet-list",
-      "figure-placeholder",
-      "conclusion",
-    ],
-    recommendedFor: ["Bài ảnh", "Tường thuật có nhiều hình", "Phản ánh hoạt động trực quan"],
-    visualDensity: "photo-led",
+    requiredBlocks: BASE_REQUIRED_BLOCKS,
     placeholderPolicy: "photo-led",
-    stylePresetId: "hoa-tieu-a4-basic",
-  },
+    exportNotes: ["Placeholder là shape/box, không ảnh thật.", "Caption cần tách riêng khỏi paragraph."],
+    pageBudget: pageBudget(4, 5, 6, 420, 1500, 2100, 2700, 3, 5, 7),
+  }),
 } as const satisfies Record<string, ArticleLayoutDefinition>;
 
 export type ArticleLayoutKey = keyof typeof ARTICLE_LAYOUT_REGISTRY;
@@ -319,8 +226,13 @@ export function createArticleLayoutKey(layoutId: string, layoutVersion: string):
   return `${layoutId}@${layoutVersion}`;
 }
 
+function normalizeLegacyLayoutId(layoutId: string): string {
+  return layoutId === "photo-led-a4" ? "photo-led-placeholder-a4" : layoutId;
+}
+
 export function getArticleLayout(layoutId: string, layoutVersion: string): ArticleLayoutDefinition | undefined {
-  return ARTICLE_LAYOUT_REGISTRY[createArticleLayoutKey(layoutId, layoutVersion) as ArticleLayoutKey];
+  const normalizedLayoutId = normalizeLegacyLayoutId(layoutId);
+  return ARTICLE_LAYOUT_REGISTRY[createArticleLayoutKey(normalizedLayoutId, layoutVersion) as ArticleLayoutKey];
 }
 
 export function hasArticleLayout(layoutId: string, layoutVersion: string): boolean {

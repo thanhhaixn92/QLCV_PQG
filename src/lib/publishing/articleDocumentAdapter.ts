@@ -4,10 +4,12 @@ import {
   type ArticleBlock,
   type ArticleDocument,
   type ArticleLeadInItem,
+  type ArticleTableCell,
 } from "./articleDocument";
 import { ARTICLE_BLOCK_REGISTRY } from "./blockRegistry";
 import { getDefaultArticleLayout } from "./layoutRegistry";
 import { getDefaultArticleTemplate } from "./templateRegistry";
+import { normalizeEditorialBriefContent } from "../editorialBrief";
 
 export interface CreateArticleDocumentOptions {
   id?: string;
@@ -26,15 +28,21 @@ export interface CreateArticleDocumentOptions {
 }
 
 interface ParsedLine {
-  kind: "heading" | "paragraph" | "bullet" | "ordered" | "blank" | "figure";
+  kind: "heading" | "paragraph" | "bullet" | "ordered" | "blank" | "figure" | "table" | "quote" | "callout";
   level?: number;
   number?: number;
   text: string;
   caption?: string;
+  description?: string;
+  aspectRatio?: string;
+  tableCells?: string[];
+  tableSeparator?: boolean;
 }
 
 const PLACEHOLDER_MARKER_PATTERN = /\[(?:\s*PLACEHOLDER[^\]]*|\s*[—-]+\s*(?:ẢNH|ANH|PLACEHOLDER)\s*[—-]+\s*)\]/gi;
 const DRAFT_MARKER_PATTERN = /\[\s*(?:Bổ sung|Bo sung|Cần bổ sung|Can bo sung|Cần kiểm chứng|Can kiem chung)\s*:\s*([^\]]+)\]/gi;
+const SEPARATOR_LINE_PATTERN = /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/u;
+const TEXT_PLACEHOLDER_PATTERN = /^(?:\d+[.)]\s*)?(?:Placehold|Placeholder|Vị trí chèn)\s+hình\s+minh\s+h[oọ][aạ]\s*[:：-]?\s*(.*)$/iu;
 const LEAD_IN_CONTEXT_PATTERN = /(?:bao gồm|gồm|các nội dung sau|những nội dung sau|các điểm sau|cụ thể như sau)[:：]?$/i;
 const LEAD_IN_LINE_PATTERN = /^([^:：]{3,90})[:：]\s*(.{2,})$/;
 
@@ -86,13 +94,27 @@ function explicitCaptionFromText(value: string): string | undefined {
   return collapseDuplicatedCaption(`${match[1].trim()}: ${match[2].trim()}`);
 }
 
-function figureFromLine(line: string): { title: string; caption?: string } | null {
+function figureFromLine(line: string): { title: string; caption?: string; description?: string; aspectRatio?: string } | null {
   const imageMatch = line.match(/^!\[([^\]]*)\]\(([^)]*)\)\s*$/);
   if (imageMatch) {
     const altText = stripInlineMarkdown(imageMatch[1] || "");
     return {
       title: "Vị trí chèn ảnh minh họa",
       caption: altText ? collapseDuplicatedCaption(altText) : undefined,
+      description: "Ảnh minh họa sẽ được bổ sung ở bước xuất bản.",
+      aspectRatio: "16:9",
+    };
+  }
+
+  const textualPlaceholder = line.match(TEXT_PLACEHOLDER_PATTERN);
+  if (textualPlaceholder) {
+    const detail = stripInlineMarkdown(textualPlaceholder[1] || "");
+    const caption = explicitCaptionFromText(detail) || (detail && detail.length <= 180 ? collapseDuplicatedCaption(detail) : undefined);
+    return {
+      title: "Vị trí chèn ảnh minh họa",
+      caption,
+      description: detail && detail !== caption ? detail : "Ảnh minh họa dạng placeholder shape trong bản A4.",
+      aspectRatio: "16:9",
     };
   }
 
@@ -108,25 +130,68 @@ function figureFromLine(line: string): { title: string; caption?: string } | nul
     return {
       title: markerTitle || "Vị trí chèn ảnh minh họa",
       caption: explicitCaptionFromText(afterMarker),
+      description: "Ảnh minh họa dạng placeholder shape trong bản A4.",
+      aspectRatio: "16:9",
     };
   }
 
   return null;
 }
 
+function isMarkdownTableRow(line: string): boolean {
+  const text = line.trim();
+  return text.startsWith("|") && text.endsWith("|") && text.split("|").length >= 4;
+}
+
+function splitMarkdownTableRow(line: string): string[] {
+  return line
+    .trim()
+    .replace(/^\|/u, "")
+    .replace(/\|$/u, "")
+    .split("|")
+    .map((cell) => stripInlineMarkdown(cell))
+    .filter((cell) => cell.length > 0);
+}
+
+function isMarkdownTableSeparator(line: string): boolean {
+  if (!isMarkdownTableRow(line)) return false;
+  const cells = line
+    .trim()
+    .replace(/^\|/u, "")
+    .replace(/\|$/u, "")
+    .split("|")
+    .map((cell) => cell.trim());
+  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/u.test(cell.replace(/\s+/gu, "")));
+}
+
+
 function parseMarkdownLines(content: string): ParsedLine[] {
   return content.split(/\r?\n/).map((rawLine) => {
     const line = rawLine.trim();
     if (!line) return { kind: "blank", text: "" };
+    if (SEPARATOR_LINE_PATTERN.test(line)) return { kind: "blank", text: "" };
+    if (isMarkdownTableRow(line)) {
+      return { kind: "table", text: stripInlineMarkdown(line), tableCells: splitMarkdownTableRow(line), tableSeparator: isMarkdownTableSeparator(line) };
+    }
 
     const figure = figureFromLine(line);
     if (figure !== null) {
-      return { kind: "figure", text: figure.title, caption: figure.caption };
+      return { kind: "figure", text: figure.title, caption: figure.caption, description: figure.description, aspectRatio: figure.aspectRatio };
     }
 
     const headingMatch = line.match(/^(#{1,3})\s+(.+)$/);
     if (headingMatch) {
       return { kind: "heading", level: headingMatch[1].length, text: stripInlineMarkdown(headingMatch[2]) };
+    }
+
+    const quoteMatch = line.match(/^>\s+(.+)$/);
+    if (quoteMatch) {
+      return { kind: "quote", text: stripInlineMarkdown(quoteMatch[1]) };
+    }
+
+    const calloutMatch = line.match(/^\s*(?:Ghi chú|Lưu ý|Thông điệp chính|Điểm nhấn)\s*[:：]\s+(.+)$/iu);
+    if (calloutMatch) {
+      return { kind: "callout", text: stripInlineMarkdown(calloutMatch[1]) };
     }
 
     const bulletMatch = line.match(/^[-*+]\s+(.+)$/);
@@ -171,19 +236,16 @@ function shouldFlushOrderedAsLeadIn(lines: ParsedLine[], previousText: string): 
   return lines.every((line) => Boolean(parseLeadInItem(line.text)));
 }
 
-function isStrictIncreasingOrdered(lines: ParsedLine[]): boolean {
-  if (lines.length === 0) return false;
-  return lines.every((line, index) => line.number === index + 1);
-}
-
 function isDuplicateCaption(candidate: string, previousFigureCaption: string): boolean {
   return Boolean(previousFigureCaption && normalizeComparableText(candidate) === normalizeComparableText(previousFigureCaption));
 }
 
-function createFigureBlock(index: number, titleText: string, captionText?: string): ArticleBlock {
+function createFigureBlock(index: number, titleText: string, captionText?: string, descriptionText?: string, aspectRatio?: string): ArticleBlock {
   const caption = captionText ? collapseDuplicatedCaption(captionText) : undefined;
   return createBlock("figure-placeholder", index, {
     title: titleText || "Vị trí chèn ảnh minh họa",
+    description: descriptionText || "Ảnh minh họa dạng placeholder shape trong bản A4.",
+    aspectRatio: aspectRatio || "16:9",
     ...(caption ? { caption } : {}),
   });
 }
@@ -199,7 +261,7 @@ export function createArticleDocumentFromCurrentContent(
   const layoutId = options.layoutId || fallbackLayout.layoutId;
   const layoutVersion = options.layoutVersion || fallbackLayout.layoutVersion;
   const estimatedPages = options.estimatedPages ?? fallbackLayout.estimatedPages;
-  const parsedLines = parseMarkdownLines(content);
+  const parsedLines = parseMarkdownLines(normalizeEditorialBriefContent(content));
   const blocks: ArticleBlock[] = [];
   let blockIndex = 0;
   let resolvedTitle = options.title?.trim() || "Bài viết chưa có tiêu đề";
@@ -209,6 +271,7 @@ export function createArticleDocumentFromCurrentContent(
   let previousFigureCaption = "";
   const pendingBullets: string[] = [];
   const pendingOrdered: ParsedLine[] = [];
+  const pendingTableRows: string[][] = [];
 
   const rememberText = (text: string) => {
     if (text.trim()) previousText = text.trim();
@@ -219,6 +282,16 @@ export function createArticleDocumentFromCurrentContent(
     blocks.push(createBlock("bullet-list", blockIndex++, { items: [...pendingBullets] }));
     rememberText(pendingBullets[pendingBullets.length - 1] || "");
     pendingBullets.length = 0;
+  };
+
+  const flushTable = () => {
+    if (pendingTableRows.length === 0) return;
+    const rows: ArticleTableCell[][] = pendingTableRows.map((row, rowIndex) =>
+      row.map((text) => ({ text, header: rowIndex === 0 })),
+    );
+    blocks.push(createBlock("table", blockIndex++, { rows }));
+    rememberText(pendingTableRows[pendingTableRows.length - 1]?.join(" ") || "");
+    pendingTableRows.length = 0;
   };
 
   const flushOrdered = () => {
@@ -232,21 +305,18 @@ export function createArticleDocumentFromCurrentContent(
       return;
     }
 
-    // TODO: Add an ordered-list block only after template registry/export consumers allow it.
-    // Until then, keep ordered source as paragraphs to avoid rendering numbered items as bullets.
-    const strict = isStrictIncreasingOrdered(pendingOrdered);
-    pendingOrdered.forEach((line, index) => {
-      const prefix = strict ? `${index + 1}.` : `${line.number ?? index + 1}.`;
-      const text = `${prefix} ${line.text}`.trim();
-      blocks.push(createBlock("paragraph", blockIndex++, { text }));
-      rememberText(text);
-    });
+    const items = pendingOrdered.map((line) => line.text).filter(Boolean);
+    if (items.length > 0) {
+      blocks.push(createBlock("ordered-list", blockIndex++, { items }));
+      rememberText(items[items.length - 1] || "");
+    }
     pendingOrdered.length = 0;
   };
 
   const flushLists = () => {
     flushBullets();
     flushOrdered();
+    flushTable();
   };
 
   if (options.title?.trim()) {
@@ -262,6 +332,7 @@ export function createArticleDocumentFromCurrentContent(
       return;
     }
 
+    if (line.kind !== "table") flushTable();
     if (line.kind !== "bullet") flushBullets();
     if (line.kind !== "ordered") flushOrdered();
 
@@ -290,8 +361,28 @@ export function createArticleDocumentFromCurrentContent(
       return;
     }
 
+    if (line.kind === "table") {
+      previousFigureCaption = "";
+      if (!line.tableSeparator && line.tableCells && line.tableCells.length > 0) pendingTableRows.push(line.tableCells);
+      return;
+    }
+
+    if (line.kind === "quote") {
+      previousFigureCaption = "";
+      blocks.push(createBlock("quote", blockIndex++, { text: line.text }));
+      rememberText(line.text);
+      return;
+    }
+
+    if (line.kind === "callout") {
+      previousFigureCaption = "";
+      blocks.push(createBlock("callout", blockIndex++, { text: line.text }));
+      rememberText(line.text);
+      return;
+    }
+
     if (line.kind === "figure") {
-      blocks.push(createFigureBlock(blockIndex++, line.text, line.caption));
+      blocks.push(createFigureBlock(blockIndex++, line.text, line.caption, line.description, line.aspectRatio));
       previousFigureCaption = line.caption || "";
       return;
     }

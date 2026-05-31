@@ -11,7 +11,12 @@ export type ArticleBlockType =
   | "paragraph"
   | "lead-in-list"
   | "bullet-list"
+  | "ordered-list"
+  | "quote"
+  | "fact-box"
+  | "table"
   | "figure-placeholder"
+  | "callout"
   | "conclusion"
   | "page-break";
 
@@ -32,12 +37,20 @@ export interface ArticleLeadInItem {
   body: string;
 }
 
+export interface ArticleTableCell {
+  text: string;
+  header?: boolean;
+}
+
 export interface ArticleBlockSlots {
   text?: string;
   title?: string;
   caption?: string;
   note?: string;
+  description?: string;
+  aspectRatio?: string;
   items?: string[] | ArticleLeadInItem[];
+  rows?: ArticleTableCell[][];
 }
 
 export interface ArticleBlock {
