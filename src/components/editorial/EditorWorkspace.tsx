@@ -31,6 +31,7 @@ import {
 import { getArticleLayout, getDefaultArticleLayout } from '../../lib/publishing/layoutRegistry';
 import { buildArticleHtml, buildArticleHtmlFilename } from '../../lib/publishing/htmlExport';
 import { normalizeArticleDocumentForExport } from '../../lib/publishing/articleExportAdapter';
+import { processTask } from '../../services/geminiService';
 
 type EditorialCreationStep = "brief" | "recommendation" | "generating" | "draft";
 
@@ -50,7 +51,7 @@ function downloadHtmlFile(html: string, filename: string): void {
 export const EditorWorkspace = (props: any) => {
   const {
     selectedEditorialToolId, handleToolChange,
-    setTaskType, user, selectedSourceDocIds, documents, setIsPickingFromLibrary, handleSaveSlideOutline, handleCreateTaskFromSlideOutline, safeParseSlideOutline, output, taskType, outputFormat, setOutputFormat, input, setSourceActiveTab, sourceActiveTab, searchQuery, setSearchQuery, handleWebSearch, isLoading, searchResults, getHostname, addSearchResultAsSource, newTextName, setNewTextName, newTextContent, setNewTextContent, saveToLibrary, setSaveToLibrary, handleAddText, newLinkUrl, setNewLinkUrl, handleAddLink, isParsing, fileInputRef, getDocTypeLabel, getSourceTypeLabel, toggleDocSelection, setInput, setOutput, setError, aiCooldownUntil, editorialKind, setEditorialKind, isBuildingTasks, handleBuildTasks, handleProcess, builtTasks, setBuiltTasks, saveBuiltTasks, persistTask, toast, error, outputRef, setIsEditing, isEditing, currentSessionId, sessions, handleCopy, copySuccess, saveCurrentToSession, handleLocalIllustrationScan, isPlanningImages, handleAIIllustrationSuggestions, setSelectingParagraphForImage, auditEditorialPublish, illustrations, requestConfirmAsync, logActivity, stripResolvedPlaceholders, removeBrokenMarkdownImages, imagePlans, approveAllValidIllustrations, clearErrorImages, handleManualUpload, approveIllustration, rejectIllustration, setIllustrations, contentReview, isPublishableIllustration, updateImageLoadStatus, insertApprovedIllustrationsForPlainExport
+    setTaskType, user, selectedSourceDocIds, documents, setIsPickingFromLibrary, handleSaveSlideOutline, handleCreateTaskFromSlideOutline, safeParseSlideOutline, output, taskType, outputFormat, setOutputFormat, input, setSourceActiveTab, sourceActiveTab, searchQuery, setSearchQuery, handleWebSearch, isLoading, searchResults, getHostname, addSearchResultAsSource, newTextName, setNewTextName, newTextContent, setNewTextContent, saveToLibrary, setSaveToLibrary, handleAddText, newLinkUrl, setNewLinkUrl, handleAddLink, isParsing, fileInputRef, getDocTypeLabel, getSourceTypeLabel, toggleDocSelection, setInput, setOutput, setError, aiCooldownUntil, editorialKind, setEditorialKind, isBuildingTasks, handleBuildTasks, handleProcess, builtTasks, setBuiltTasks, saveBuiltTasks, persistTask, toast, error, outputRef, setIsEditing, isEditing, currentSessionId, sessions, handleCopy, copySuccess, saveCurrentToSession, handleLocalIllustrationScan, isPlanningImages, handleAIIllustrationSuggestions, setSelectingParagraphForImage, auditEditorialPublish, illustrations, requestConfirmAsync, logActivity, stripResolvedPlaceholders, removeBrokenMarkdownImages, imagePlans, approveAllValidIllustrations, clearErrorImages, handleManualUpload, approveIllustration, rejectIllustration, setIllustrations, contentReview, isPublishableIllustration, updateImageLoadStatus, insertApprovedIllustrationsForPlainExport, editorialDraftKey, clearEditorialDraft, createNewSession
   } = props;
 
   const currentTool = getEditorialTool(selectedEditorialToolId);
@@ -60,6 +61,197 @@ export const EditorWorkspace = (props: any) => {
   const [selectedLayoutId, setSelectedLayoutId] = React.useState<string | undefined>();
   const [selectedLayoutVersion, setSelectedLayoutVersion] = React.useState<string | undefined>();
   const [layoutRecommendationError, setLayoutRecommendationError] = React.useState<string | undefined>();
+
+
+  const hasGeneratedDraft = Boolean(output?.trim()) || currentStep === "draft";
+  const [isBriefPanelOpen, setIsBriefPanelOpen] = React.useState(true);
+  const [isDraftDirty, setIsDraftDirty] = React.useState(false);
+  const [lastSavedAt, setLastSavedAt] = React.useState<number | null>(null);
+  const [isSavingDraft, setIsSavingDraft] = React.useState(false);
+  const [aiEditPrompt, setAiEditPrompt] = React.useState("");
+  const [isAiEditingDraft, setIsAiEditingDraft] = React.useState(false);
+  const [aiEditError, setAiEditError] = React.useState<string | null>(null);
+  const lastToastAtRef = React.useRef<Record<string, number>>({});
+  const currentDraftId = React.useMemo(
+    () => currentSessionId || `local-${user?.uid || "guest"}-editorial-main`,
+    [currentSessionId, user?.uid],
+  );
+  const localDraftKey = editorialDraftKey || (user?.uid ? `vms:workspace:draft:${user.uid}:editorial:main` : null);
+
+  const dedupeToast = React.useCallback((id: string, run: () => void, cooldownMs = 2500) => {
+    const now = Date.now();
+    if ((lastToastAtRef.current[id] || 0) + cooldownMs > now) return;
+    lastToastAtRef.current[id] = now;
+    run();
+  }, []);
+
+  const markDraftDirty = React.useCallback(() => {
+    if (!hasGeneratedDraft) return;
+    setIsDraftDirty(true);
+  }, [hasGeneratedDraft]);
+
+  const clearLocalDraft = React.useCallback((showToast = true) => {
+    if (typeof clearEditorialDraft === "function") {
+      clearEditorialDraft();
+    } else if (localDraftKey) {
+      localStorage.removeItem(localDraftKey);
+      if (showToast) toast.success("Đã xóa bản nháp biên tập trên máy này.");
+    }
+    setIsDraftDirty(false);
+  }, [clearEditorialDraft, localDraftKey, toast]);
+
+  React.useEffect(() => {
+    if (!hasGeneratedDraft) {
+      setIsBriefPanelOpen(true);
+      return;
+    }
+    setIsBriefPanelOpen(false);
+    if (currentStep !== "draft") setCurrentStep("draft");
+  }, [currentStep, hasGeneratedDraft]);
+
+  React.useEffect(() => {
+    if (!localDraftKey) return;
+    const raw = localStorage.getItem(localDraftKey);
+    if (!raw) return;
+    try {
+      const saved = JSON.parse(raw) as { isDraftDirty?: boolean; lastSavedAt?: number | null };
+      if (saved.isDraftDirty === true) {
+        setIsDraftDirty(true);
+        setLastSavedAt(saved.lastSavedAt ?? null);
+      }
+    } catch {
+      // Ignore malformed local draft metadata.
+    }
+  }, [localDraftKey]);
+
+  React.useEffect(() => {
+    if (!localDraftKey || !isDraftDirty || !hasGeneratedDraft) return;
+    localStorage.setItem(localDraftKey, JSON.stringify({
+      input,
+      output,
+      selectedEditorialToolId,
+      taskType,
+      outputFormat,
+      editorialKind,
+      selectedSourceDocIds,
+      currentDraftId,
+      isDraftDirty: true,
+      lastSavedAt,
+      updatedAt: Date.now(),
+    }));
+  }, [currentDraftId, editorialKind, hasGeneratedDraft, input, isDraftDirty, lastSavedAt, localDraftKey, output, outputFormat, selectedEditorialToolId, selectedSourceDocIds, taskType]);
+
+  const resetWorkspaceForNewArticle = React.useCallback(() => {
+    setInput("");
+    setOutput("");
+    setError(null);
+    setIsEditing(false);
+    setCurrentStep("brief");
+    setIsBriefPanelOpen(true);
+    setRecommendationBrief("");
+    setRecommendedLayouts([]);
+    setSelectedLayoutId(undefined);
+    setSelectedLayoutVersion(undefined);
+    setLayoutRecommendationError(undefined);
+    setAiEditPrompt("");
+    setAiEditError(null);
+    setIsDraftDirty(false);
+    setLastSavedAt(null);
+  }, [setError, setInput, setIsEditing, setOutput]);
+
+  const handleCreateNewArticle = React.useCallback(async () => {
+    if (isDraftDirty) {
+      const confirmed = await requestConfirmAsync("Bản thảo hiện tại có thay đổi chưa lưu. Bạn muốn tạo bài mới và bỏ qua các thay đổi cục bộ?");
+      if (!confirmed) return;
+    }
+    clearLocalDraft(false);
+    if (typeof createNewSession === "function") {
+      createNewSession();
+    }
+    resetWorkspaceForNewArticle();
+  }, [clearLocalDraft, createNewSession, isDraftDirty, requestConfirmAsync, resetWorkspaceForNewArticle]);
+
+  const handleSaveDraft = React.useCallback(async () => {
+    if (!output?.trim()) return;
+    setIsSavingDraft(true);
+    try {
+      await saveCurrentToSession(output);
+      const savedAt = Date.now();
+      setLastSavedAt(savedAt);
+      setIsDraftDirty(false);
+      if (localDraftKey) localStorage.removeItem(localDraftKey);
+      toast.success(`Đã lưu bản thảo lúc ${new Date(savedAt).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}.`);
+    } catch (err: any) {
+      const message = err?.message || "Không lưu được bản thảo.";
+      setError(message);
+      toast.error(message);
+    } finally {
+      setIsSavingDraft(false);
+    }
+  }, [localDraftKey, output, saveCurrentToSession, setError, toast]);
+
+  const draftSaveLabel = isSavingDraft
+    ? "Đang lưu…"
+    : isDraftDirty
+      ? "Có thay đổi chưa lưu"
+      : lastSavedAt
+        ? `Đã lưu lúc ${new Date(lastSavedAt).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}`
+        : hasGeneratedDraft
+          ? "Chưa lưu"
+          : "Chưa có bản thảo";
+
+  const aiQuickPrompts = React.useMemo(() => [
+    "Tối ưu tiêu đề & sapo",
+    "Rút gọn",
+    "Tăng tính chính luận",
+    "Chuẩn hóa văn phong website",
+    "Kiểm tra lỗi & đề xuất sửa",
+    "Làm rõ số liệu/nguồn kiểm chứng",
+  ], []);
+
+  const applyAiEdit = React.useCallback(async (promptOverride?: string) => {
+    const prompt = (promptOverride || aiEditPrompt).trim();
+    if (!prompt) {
+      toast.error("Vui lòng nhập yêu cầu chỉnh sửa bản thảo.");
+      return;
+    }
+    if (!output?.trim()) return;
+
+    setIsAiEditingDraft(true);
+    setAiEditError(null);
+    try {
+      const token = user ? await user.getIdToken() : undefined;
+      const response = await processTask(
+        "EDITORIAL_POLITICAL",
+        [
+          "Hãy chỉnh sửa bản thảo hiện tại theo yêu cầu của người dùng.",
+          "Chỉ trả về toàn bộ bản thảo sau khi chỉnh sửa, không giải thích thêm.",
+          `Yêu cầu chỉnh sửa: ${prompt}`,
+          "Bản thảo hiện tại:",
+          output,
+        ].join("\n\n"),
+        "EDITORIAL",
+        outputFormat,
+        [],
+        token,
+      );
+      const nextOutput = typeof response === "string" ? response : response?.text || "";
+      if (!nextOutput.trim()) throw new Error("AI không trả về nội dung chỉnh sửa.");
+      setOutput(nextOutput);
+      setAiEditPrompt("");
+      setIsEditing(false);
+      setIsDraftDirty(true);
+      setCurrentStep("draft");
+      toast.success("Đã áp dụng chỉnh sửa bằng AI.");
+    } catch (err: any) {
+      const message = err?.message || "Không áp dụng được chỉnh sửa bằng AI.";
+      setAiEditError(message);
+      setError(message);
+      toast.error(message);
+    } finally {
+      setIsAiEditingDraft(false);
+    }
+  }, [aiEditPrompt, output, outputFormat, setError, setIsEditing, setOutput, toast, user]);
 
   const selectedLayout = React.useMemo(() => {
     if (!selectedLayoutId || !selectedLayoutVersion) return undefined;
@@ -89,18 +281,18 @@ export const EditorWorkspace = (props: any) => {
   const validateArticleBeforeExport = React.useCallback(async () => {
     if (hasPreflightBlockers) {
       const message = "Chưa thể xuất bản vì còn lỗi bắt buộc cần xử lý.";
-      toast.error(message);
+      dedupeToast("preflight-blocker", () => toast.error(message));
       setError(message);
       return false;
     }
 
     if (preflightCounts.warning > 0) {
-      toast("Bản thảo còn cảnh báo trước khi xuất bản chính thức.", { icon: "⚠️", duration: 4000 });
+      dedupeToast("preflight-warning", () => toast("Bản thảo còn cảnh báo trước khi xuất bản chính thức.", { icon: "⚠️", duration: 4000 }));
       return requestConfirmAsync("Bản thảo còn cảnh báo/cần bổ sung. Bạn vẫn muốn xuất file bản nháp?");
     }
 
     return true;
-  }, [hasPreflightBlockers, preflightCounts.warning, requestConfirmAsync, setError, toast]);
+  }, [dedupeToast, hasPreflightBlockers, preflightCounts.warning, requestConfirmAsync, setError, toast]);
 
   const [cooldownRemaining, setCooldownRemaining] = React.useState(0);
   const [exportingFormat, setExportingFormat] = React.useState<null | "pdf" | "docx" | "html">(null);
@@ -154,6 +346,8 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
     setCurrentStep("generating");
     await handleProcess();
     setCurrentStep("draft");
+    setIsDraftDirty(true);
+    setLastSavedAt(null);
   }, [handleProcess]);
 
   const handleSelectRecommendedLayout = React.useCallback((recommendation: LayoutRecommendation) => {
@@ -591,6 +785,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                         {/* Main Editor Area */}
                         <div className="space-y-6 min-w-0">
                           {/* Input Area */}
+                          {(!hasGeneratedDraft || isBriefPanelOpen) && (
                           <section className="bg-white rounded-md shadow-sm border border-slate-200 overflow-hidden flex flex-col min-h-[400px]">
                             <div className="px-5 sm:px-6 py-4 sm:py-5 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
                               <div className="flex items-center gap-3">
@@ -618,17 +813,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                   </span>
                                 )}
                                 <button
-                                  onClick={() => {
-                                    setInput("");
-                                    setOutput("");
-                                    setError(null);
-                                    setCurrentStep("brief");
-                                    setRecommendationBrief("");
-                                    setRecommendedLayouts([]);
-                                    setSelectedLayoutId(undefined);
-                                    setSelectedLayoutVersion(undefined);
-                                    setLayoutRecommendationError(undefined);
-                                  }}
+                                  onClick={handleCreateNewArticle}
                                   className="text-slate-300 hover:text-red-500 p-2 sm:p-2.5 rounded-md transition-all hover:bg-red-50"
                                   title="Làm mới vùng biên tập"
                                 >
@@ -660,16 +845,17 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                     initialValue={input}
                                     onChange={(value) => {
                                       setInput(value);
-                                      if (currentStep === "draft") {
-                                        setCurrentStep("brief");
-                                      }
+                                      if (hasGeneratedDraft) markDraftDirty();
                                     }}
                                   />
                                 </div>
                               ) : (
                                 <textarea
                                   value={input}
-                                  onChange={(e) => setInput(e.target.value)}
+                                  onChange={(e) => {
+                                    setInput(e.target.value);
+                                    if (hasGeneratedDraft) markDraftDirty();
+                                  }}
                                   placeholder={currentTool?.inputPlaceholder || "Nhập thông tin..."}
                                   className="flex-1 w-full p-6 sm:p-6 pb-32 focus:outline-none resize-none text-slate-800 text-base sm:text-lg leading-relaxed placeholder:text-slate-400 placeholder:font-medium bg-transparent"
                                 />
@@ -735,6 +921,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                               </div>
                             </div>
                           </section>
+                          )}
 
 
                           {/* Error Message */}
@@ -794,7 +981,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                       <div className="w-2.5 h-2.5 bg-emerald-500 rounded-full animate-pulse shrink-0"></div>
                                       <div className="flex flex-col">
                                         <span className="text-[10px] font-semibold text-slate-400 tracking-normal mb-0.5">
-                                          {currentTool?.resultLabel || "Sản phẩm đầu ra"}
+                                          {taskType === "WRITE_NEW" ? "Bản thảo văn bản" : (currentTool?.resultLabel || "Sản phẩm đầu ra")}
                                         </span>
                                         <div className="flex items-center gap-2">
                                           <button
@@ -817,6 +1004,47 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                               ? "Đang sửa"
                                               : "Sửa thủ công"}
                                           </button>
+                                          <button
+                                            onClick={() => setIsBriefPanelOpen((value) => !value)}
+                                            className="text-[10px] font-semibold px-3 py-1.5 rounded-md transition-all flex items-center gap-2 tracking-tight bg-white border border-blue-100 text-blue-700 hover:bg-blue-50"
+                                          >
+                                            <Edit3 className="w-3.5 h-3.5" />
+                                            {isBriefPanelOpen ? "Ẩn đầu vào" : "Chỉnh sửa đầu vào"}
+                                          </button>
+                                          <button
+                                            onClick={handleCreateNewArticle}
+                                            className="text-[10px] font-semibold px-3 py-1.5 rounded-md transition-all flex items-center gap-2 tracking-tight bg-white border border-emerald-100 text-emerald-700 hover:bg-emerald-50"
+                                          >
+                                            <Plus className="w-3.5 h-3.5" />
+                                            Tạo bài mới
+                                          </button>
+                                          <button
+                                            onClick={handleSaveDraft}
+                                            disabled={isSavingDraft || !output?.trim()}
+                                            className="text-[10px] font-semibold px-3 py-1.5 rounded-md transition-all flex items-center gap-2 tracking-tight bg-[#002D56] text-white hover:bg-slate-900 disabled:opacity-60 disabled:cursor-not-allowed"
+                                          >
+                                            {isSavingDraft ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                                            Lưu bản thảo
+                                          </button>
+                                          <span className={cn(
+                                            "text-[10px] font-semibold px-2.5 py-1 rounded-md border",
+                                            isDraftDirty
+                                              ? "bg-amber-50 text-amber-700 border-amber-200"
+                                              : lastSavedAt
+                                                ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                                                : "bg-slate-50 text-slate-500 border-slate-200",
+                                          )}>
+                                            {draftSaveLabel}
+                                          </span>
+                                          {isDraftDirty && (
+                                            <button
+                                              onClick={() => clearLocalDraft(true)}
+                                              className="text-[10px] font-semibold px-3 py-1.5 rounded-md transition-all flex items-center gap-2 tracking-tight bg-white border border-red-100 text-red-600 hover:bg-red-50"
+                                            >
+                                              <Trash2 className="w-3.5 h-3.5" />
+                                              Xóa bản nháp
+                                            </button>
+                                          )}
                                           {currentSessionId &&
                                             sessions.find(
                                               (s) => s.id === currentSessionId,
@@ -868,6 +1096,52 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                   </div>
 
                                   {taskType === "WRITE_NEW" && (
+                                    <div className="rounded-lg border border-blue-100 bg-blue-50/40 p-4 space-y-3">
+                                      <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                                        <div>
+                                          <h3 className="text-xs font-bold text-[#002D56] uppercase tracking-wide">Chỉnh sửa bằng AI</h3>
+                                          <p className="text-[11px] text-slate-500">Nhập yêu cầu riêng cho bản thảo hiện tại, tách khỏi thông tin tạo bài ban đầu.</p>
+                                        </div>
+                                        {isAiEditingDraft && (
+                                          <span className="text-[11px] font-semibold text-blue-700 flex items-center gap-1.5">
+                                            <Loader2 className="w-3.5 h-3.5 animate-spin" /> Đang chỉnh sửa…
+                                          </span>
+                                        )}
+                                      </div>
+                                      <div className="flex flex-wrap gap-2">
+                                        {aiQuickPrompts.map((prompt) => (
+                                          <button
+                                            key={prompt}
+                                            type="button"
+                                            onClick={() => setAiEditPrompt(prompt)}
+                                            className="rounded-full border border-blue-100 bg-white px-3 py-1.5 text-[10px] font-semibold text-blue-700 hover:bg-blue-100"
+                                          >
+                                            {prompt}
+                                          </button>
+                                        ))}
+                                      </div>
+                                      <div className="flex flex-col gap-2 lg:flex-row">
+                                        <textarea
+                                          value={aiEditPrompt}
+                                          onChange={(event) => setAiEditPrompt(event.target.value)}
+                                          placeholder="Ví dụ: Rút gọn đoạn mở đầu, tăng tính chính luận, viết lại tiêu đề hấp dẫn hơn..."
+                                          className="min-h-[84px] flex-1 rounded-lg border border-blue-100 bg-white px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-200"
+                                        />
+                                        <button
+                                          type="button"
+                                          onClick={() => void applyAiEdit()}
+                                          disabled={isAiEditingDraft || !aiEditPrompt.trim()}
+                                          className="inline-flex items-center justify-center gap-2 rounded-lg bg-[#002D56] px-4 py-2 text-xs font-bold text-white hover:bg-slate-900 disabled:cursor-not-allowed disabled:opacity-60 lg:w-48"
+                                        >
+                                          {isAiEditingDraft ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
+                                          Áp dụng chỉnh sửa bằng AI
+                                        </button>
+                                      </div>
+                                      {aiEditError && <p className="text-[11px] font-semibold text-red-600">{aiEditError}</p>}
+                                    </div>
+                                  )}
+
+                                  {taskType === "WRITE_NEW" && (
                                     <EditorialPreflightPanel
                                       kind={editorialKind}
                                       markdownContent={output}
@@ -903,14 +1177,14 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                                   title: `Bai_viet_HTMB_${Date.now()}`, 
                                                   profile: "article",
                                                   onValidationError: (msg) => {
-                                                    toast(`Lỗi: ${msg}`, { icon: '❌', duration: 4000 });
+                                                    dedupeToast(`pdf-validation-error-${msg}`, () => toast(`Lỗi: ${msg}`, { icon: '❌', duration: 4000 }));
                                                   },
                                                   onValidationWarning: (msg) => {
-                                                    toast(`Cảnh báo: ${msg}`, { icon: '⚠️', duration: 3000 });
+                                                    dedupeToast(`pdf-validation-warning-${msg}`, () => toast(`Cảnh báo: ${msg}`, { icon: '⚠️', duration: 3000 }));
                                                   }
                                                 }
                                               );
-                                              toast.success("Tải PDF thành công!");
+                                              dedupeToast("export-pdf-success", () => toast.success("Tải PDF thành công!"));
 
                                               if (currentSessionId) {
                                                 await logActivity({
@@ -932,7 +1206,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                                 });
                                               }
                                             } catch (err: any) {
-                                              toast.error(err?.message || "Không tạo được file PDF.");
+                                              dedupeToast("export-pdf-error", () => toast.error(err?.message || "Không tạo được file PDF."));
                                               setError(err.message);
                                             } finally {
                                               setExportingFormat(null);
@@ -980,6 +1254,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                                 kind: editorialKind,
                                               },
                                             );
+                                            dedupeToast("export-docx-success", () => toast.success("Tải Word thành công!"));
 
                                             if (currentSessionId) {
                                               await logActivity({
@@ -1000,7 +1275,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                               });
                                             }
                                           } catch (err: any) {
-                                            toast.error(err?.message || "Không tạo được file Word.");
+                                            dedupeToast("export-docx-error", () => toast.error(err?.message || "Không tạo được file Word."));
                                             setError(err.message);
                                           } finally {
                                             setExportingFormat(null);
@@ -1036,7 +1311,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                               const html = buildArticleHtml(articleDocument, { title });
                                               const filename = buildArticleHtmlFilename();
                                               downloadHtmlFile(html, filename);
-                                              toast.success("Tải HTML A4 thành công!");
+                                              dedupeToast("export-html-success", () => toast.success("Tải HTML A4 thành công!"));
 
                                               if (currentSessionId) {
                                                 await logActivity({
@@ -1056,7 +1331,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                               }
                                             } catch (err: unknown) {
                                               const message = err instanceof Error ? err.message : "Không tạo được file HTML.";
-                                              toast.error(message);
+                                              dedupeToast("export-html-error", () => toast.error(message));
                                               setError(message);
                                             } finally {
                                               setExportingFormat(null);
@@ -1092,9 +1367,10 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                     <div className="prose prose-slate max-w-none prose-headings:text-[#002D56] prose-headings:font-semibold prose-p:text-slate-700 prose-p:text-lg prose-p:leading-relaxed prose-li:text-slate-600 font-serif">
                                       <textarea
                                         value={output}
-                                        onChange={(e) =>
-                                          setOutput(e.target.value)
-                                        }
+                                        onChange={(e) => {
+                                          setOutput(e.target.value);
+                                          markDraftDirty();
+                                        }}
                                         className="w-full h-[600px] p-6 bg-slate-50 border border-dashed border-slate-200 rounded-lg text-lg leading-relaxed font-serif focus:outline-none focus:border-[#002D56] transition-all"
                                       />
                                     </div>
