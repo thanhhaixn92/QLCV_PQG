@@ -1,7 +1,9 @@
 import { Document, Packer, AlignmentType } from "docx";
 import { saveAs } from "file-saver";
 import { normalizeExportDom, normalizeVietnameseText } from "./exportContentNormalizer";
-import { ARTICLE_EXPORT_STYLE, buildExportArticleModel, cmToTwip, exportArticleModelToDocx } from "./exportArticleModel";
+import { ARTICLE_EXPORT_STYLE, buildExportArticleModel, cmToTwip, exportArticleModelToDocx, type ExportDocxBlock } from "./exportArticleModel";
+import type { ArticleExportModel } from "./publishing/articleExportModel";
+import { mapArticleExportModelToDocxBlocks } from "./publishing/articleDocxExport";
 
 export interface WordFromElementOptions {
   title?: string;
@@ -9,31 +11,8 @@ export interface WordFromElementOptions {
   kind?: string;
 }
 
-export async function exportWordFromElement(
-  elementId: string,
-  options: WordFromElementOptions = {},
-): Promise<void> {
-  const element = document.getElementById(elementId);
-  if (!element) {
-    throw new Error(`Không tìm thấy vùng nội dung có ID: "${elementId}" để xuất Word.`);
-  }
-
-  let children;
-  try {
-    const normalizedClone = normalizeExportDom(element);
-    const articleModel = buildExportArticleModel(normalizedClone);
-
-    if (articleModel.length === 0) {
-      throw new Error("Nội dung bài viết trống, không thể xuất Word.");
-    }
-
-    children = exportArticleModelToDocx(articleModel);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "Không thể chuẩn hóa nội dung để xuất Word.";
-    throw new Error(message);
-  }
-
-  const doc = new Document({
+function createWordDocument(children: ExportDocxBlock[], options: WordFromElementOptions): Document {
+  return new Document({
     creator: "VMS Navigator",
     title: options.title || "Bài viết",
     description: "Tài liệu xuất từ VMS Navigator",
@@ -130,10 +109,52 @@ export async function exportWordFromElement(
       children,
     }],
   });
+}
 
+async function saveWordDocument(children: ExportDocxBlock[], options: WordFromElementOptions): Promise<void> {
+  const doc = createWordDocument(children, options);
   const blob = await Packer.toBlob(doc);
   if (blob.size === 0) throw new Error("File DOCX sinh ra bị lỗi (0 bytes).");
   saveAs(blob, `${options.filename || "Bai_viet_HTMB"}.docx`);
+}
+
+export async function exportWordFromElement(
+  elementId: string,
+  options: WordFromElementOptions = {},
+): Promise<void> {
+  const element = document.getElementById(elementId);
+  if (!element) {
+    throw new Error(`Không tìm thấy vùng nội dung có ID: "${elementId}" để xuất Word.`);
+  }
+
+  try {
+    const normalizedClone = normalizeExportDom(element);
+    const articleModel = buildExportArticleModel(normalizedClone);
+
+    if (articleModel.length === 0) {
+      throw new Error("Nội dung bài viết trống, không thể xuất Word.");
+    }
+
+    await saveWordDocument(exportArticleModelToDocx(articleModel), options);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Không thể chuẩn hóa nội dung để xuất Word.";
+    throw new Error(message);
+  }
+}
+
+export async function exportWordFromArticleExportModel(
+  articleExportModel: ArticleExportModel,
+  options: WordFromElementOptions = {},
+): Promise<void> {
+  const articleModel = mapArticleExportModelToDocxBlocks(articleExportModel);
+  if (articleModel.length === 0) {
+    throw new Error("Nội dung bài viết trống, không thể xuất Word.");
+  }
+
+  await saveWordDocument(exportArticleModelToDocx(articleModel), {
+    ...options,
+    title: options.title || articleExportModel.title || "Bài viết",
+  });
 }
 
 export function extractExportTitle(input: string, output: string): { title: string, body: string } {

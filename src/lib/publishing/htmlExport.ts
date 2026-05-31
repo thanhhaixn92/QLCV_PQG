@@ -1,11 +1,11 @@
-import type { ArticleBlock, ArticleDocument, ArticleLeadInItem } from "./articleDocument";
+import type { ArticleDocument } from "./articleDocument";
+import type { ArticleExportBlock, ArticleExportModel } from "./articleExportModel";
+import { cleanArticleExportText, createArticleExportFilename, normalizeArticleDocumentForExport } from "./articleExportAdapter";
 
 export interface ArticleHtmlExportOptions {
   title?: string;
   generatedAt?: Date;
 }
-
-const DRAFT_MARKER_PATTERN = /\[(?:\s*Bổ sung\s*:|\s*Cần\s+(?:bổ sung|bổ sung\/kiểm chứng|kiểm chứng)\s*:?|\s*PLACEHOLDER\b|\s*[—-]+\s*(?:ẢNH|PLACEHOLDER)\s*[—-]+\s*)[^\]]*\]/giu;
 
 function escapeHtml(value: string): string {
   return value
@@ -16,120 +16,99 @@ function escapeHtml(value: string): string {
     .replace(/'/gu, "&#39;");
 }
 
-export function cleanTextForExport(value: unknown): string {
-  if (typeof value !== "string") return "";
-  return value
-    .replace(DRAFT_MARKER_PATTERN, "")
-    .replace(/\s+/gu, " ")
-    .trim();
-}
-
-function textSlot(block: ArticleBlock, slot: "text" | "title" | "caption" | "note" = "text"): string {
-  return cleanTextForExport(block.slots?.[slot]);
-}
+export const cleanTextForExport = cleanArticleExportText;
 
 function renderTextElement(tagName: string, className: string, text: string): string {
   if (!text) return "";
   return `<${tagName} class="${className}">${escapeHtml(text)}</${tagName}>`;
 }
 
-function stringItems(block: ArticleBlock): string[] {
-  if (!Array.isArray(block.slots?.items)) return [];
-  return block.slots.items
-    .map((item) => cleanTextForExport(item))
-    .filter((item) => item.length > 0);
-}
-
-function leadInItems(block: ArticleBlock): ArticleLeadInItem[] {
-  if (!Array.isArray(block.slots?.items)) return [];
-  return block.slots.items
-    .map((item) => {
-      if (!item || typeof item !== "object" || typeof item.label !== "string" || typeof item.body !== "string") {
-        return undefined;
-      }
-      const label = cleanTextForExport(item.label);
-      const body = cleanTextForExport(item.body);
-      if (!label && !body) return undefined;
-      return { label, body } satisfies ArticleLeadInItem;
-    })
-    .filter((item): item is ArticleLeadInItem => Boolean(item));
-}
-
 function renderListItems(items: string[]): string {
   return items.map((item) => `<li>${escapeHtml(item)}</li>`).join("\n");
 }
 
-function renderLeadInBlock(block: ArticleBlock): string {
-  const items = leadInItems(block);
-  if (items.length === 0) return "";
+function renderLeadInBlock(block: Extract<ArticleExportBlock, { type: "lead-in" }>): string {
+  if (block.items.length === 0) return "";
 
   if (block.variant === "paragraph") {
-    return `<div class="lead-in-list lead-in-paragraphs">${items
+    return `<div class="lead-in-list lead-in-paragraphs">${block.items
       .map((item) => `<p><strong>${escapeHtml(item.label)}:</strong> ${escapeHtml(item.body)}</p>`)
       .join("\n")}</div>`;
   }
 
-  return `<ul class="lead-in-list">${items
+  return `<ul class="lead-in-list">${block.items
     .map((item) => `<li><strong>${escapeHtml(item.label)}:</strong> ${escapeHtml(item.body)}</li>`)
     .join("\n")}</ul>`;
 }
 
-function renderFigurePlaceholder(block: ArticleBlock): string {
-  const title = textSlot(block, "title");
-  const caption = textSlot(block, "caption");
-  const note = textSlot(block, "note");
-  const boxLabel = title && title !== caption ? title : "Vị trí chèn ảnh minh họa";
+function renderFigurePlaceholder(block: Extract<ArticleExportBlock, { type: "figure-placeholder" }>): string {
+  const { label, caption, note } = block.figure;
 
   return `<figure class="figure-placeholder">
   <div class="figure-placeholder-box">
-    <span>${escapeHtml(boxLabel)}</span>
+    <span>${escapeHtml(label)}</span>
     ${note ? `<small>${escapeHtml(note)}</small>` : ""}
   </div>
   ${caption ? `<figcaption>${escapeHtml(caption)}</figcaption>` : ""}
 </figure>`;
 }
 
-function renderArticleBlock(block: ArticleBlock): string {
+function renderTable(block: Extract<ArticleExportBlock, { type: "table" }>): string {
+  const rows = block.table.rows
+    .map((row) => {
+      const cells = row
+        .map((cell) => {
+          const tagName = cell.header ? "th" : "td";
+          return `<${tagName}>${escapeHtml(cell.text)}</${tagName}>`;
+        })
+        .join("");
+      return `<tr>${cells}</tr>`;
+    })
+    .join("\n");
+  return rows ? `<table class="article-table"><tbody>${rows}</tbody></table>` : "";
+}
+
+function renderArticleBlock(block: ArticleExportBlock): string {
   switch (block.type) {
     case "title":
-      return renderTextElement("h1", "article-title", textSlot(block));
+      return renderTextElement("h1", "article-title", block.text);
     case "sapo":
-      return renderTextElement("p", "article-sapo", textSlot(block));
-    case "section-heading":
-      return renderTextElement("h2", "section-heading", textSlot(block));
+      return renderTextElement("p", "article-sapo", block.text);
+    case "heading":
+      return renderTextElement(block.level === 3 ? "h3" : "h2", "section-heading", block.text);
     case "paragraph":
-      return renderTextElement("p", "article-paragraph", textSlot(block));
+      return renderTextElement("p", "article-paragraph", block.text);
+    case "quote":
+      return renderTextElement("blockquote", "article-quote", block.text);
     case "conclusion":
-      return renderTextElement("p", "article-paragraph article-conclusion", textSlot(block));
-    case "bullet-list": {
-      const items = stringItems(block);
-      return items.length > 0 ? `<ul class="bullet-list">${renderListItems(items)}</ul>` : "";
-    }
-    case "lead-in-list":
+      return renderTextElement("p", "article-paragraph article-conclusion", block.text);
+    case "bullet-list":
+      return block.items.length > 0 ? `<ul class="bullet-list">${renderListItems(block.items)}</ul>` : "";
+    case "numbered-list":
+      return block.items.length > 0 ? `<ol class="numbered-list">${renderListItems(block.items)}</ol>` : "";
+    case "lead-in":
       return renderLeadInBlock(block);
     case "figure-placeholder":
       return renderFigurePlaceholder(block);
+    case "table":
+      return renderTable(block);
     case "page-break":
       return `<div class="page-break" aria-hidden="true"></div>`;
+    case "unknown":
+      return block.text ? renderTextElement("p", "article-paragraph", block.text) : "";
     default:
       return "";
   }
 }
 
-function findDocumentTitle(document: ArticleDocument, options: ArticleHtmlExportOptions): string {
-  const explicitTitle = cleanTextForExport(options.title);
+function findDocumentTitle(model: ArticleExportModel, options: ArticleHtmlExportOptions): string {
+  const explicitTitle = cleanArticleExportText(options.title);
   if (explicitTitle) return explicitTitle;
-
-  const metadataTitle = cleanTextForExport(document.metadata?.title);
-  if (metadataTitle) return metadataTitle;
-
-  const titleBlock = document.blocks.find((block) => block.type === "title");
-  const blockTitle = titleBlock ? textSlot(titleBlock) : "";
-  return blockTitle || "Bài viết A4";
+  return model.title || "Bài viết A4";
 }
 
-function renderArticleBody(document: ArticleDocument): string {
-  return document.blocks
+function renderArticleBody(model: ArticleExportModel): string {
+  return model.blocks
     .map(renderArticleBlock)
     .filter((html) => html.trim().length > 0)
     .join("\n\n");
@@ -323,13 +302,14 @@ export function buildArticleHtmlFilename(date: Date = new Date()): string {
   const day = padDatePart(date.getDate());
   const hours = padDatePart(date.getHours());
   const minutes = padDatePart(date.getMinutes());
-  return `bai-viet-a4-${year}${month}${day}-${hours}${minutes}.html`;
+  return createArticleExportFilename(`bai-viet-a4-${year}${month}${day}-${hours}${minutes}`, "html");
 }
 
 export function buildArticleHtml(document: ArticleDocument, options: ArticleHtmlExportOptions = {}): string {
-  const title = findDocumentTitle(document, options);
+  const model = normalizeArticleDocumentForExport(document);
+  const title = findDocumentTitle(model, options);
   const generatedAt = options.generatedAt || new Date();
-  const bodyHtml = renderArticleBody(document);
+  const bodyHtml = renderArticleBody(model);
 
   return `<!doctype html>
 <html lang="vi">
@@ -342,7 +322,7 @@ export function buildArticleHtml(document: ArticleDocument, options: ArticleHtml
   <style>${buildA4Css()}</style>
 </head>
 <body>
-  <main class="article-page" data-template-id="${escapeHtml(document.templateId)}" data-document-version="${escapeHtml(String(document.documentVersion))}">
+  <main class="article-page" data-template-id="${escapeHtml(model.layoutId)}" data-document-version="${escapeHtml(model.layoutVersion)}">
 ${bodyHtml}
   </main>
 </body>
