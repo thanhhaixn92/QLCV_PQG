@@ -1866,9 +1866,11 @@ function App() {
       outputFormat?: OutputFormat;
       editorialKind?: import("./types/editorial").EditorialDocumentKind;
       selectedSourceDocIds?: string[];
+      isDraftDirty?: boolean;
+      lastSavedAt?: number | null;
       updatedAt?: number;
     }>(editorialDraftKey);
-    if (!saved || (!saved.input && !saved.output)) {
+    if (!saved || saved.isDraftDirty !== true || (!saved.input && !saved.output)) {
       restoredEditorialDraftKeyRef.current = editorialDraftKey;
       return;
     }
@@ -1925,6 +1927,8 @@ function App() {
 
   useEffect(() => {
     if (!editorialDraftKey) return;
+    const existing = safeReadJson<{ isDraftDirty?: boolean; lastSavedAt?: number | null; currentDraftId?: string }>(editorialDraftKey);
+    if (existing?.isDraftDirty !== true) return;
     if (!input.trim() && !output.trim()) return;
     safeWriteJson(editorialDraftKey, {
       input,
@@ -1935,9 +1939,13 @@ function App() {
       outputFormat,
       editorialKind,
       selectedSourceDocIds,
+      currentDraftId: existing.currentDraftId || currentSessionId || "local-editorial-main",
+      isDraftDirty: true,
+      lastSavedAt: existing.lastSavedAt ?? null,
       updatedAt: Date.now(),
     });
   }, [
+    currentSessionId,
     editorialDraftKey,
     input,
     output,
@@ -3665,8 +3673,8 @@ function App() {
       setLastAiOutput(generatedOutput);
       setIsEditing(false);
 
-      // Auto save to session
-      saveCurrentToSession(generatedOutput);
+      // The publishing workspace now exposes an explicit "Lưu bản thảo" action.
+      // Keep newly generated drafts dirty until the user saves them intentionally.
 
       // Auto local plan
       const localAnalysis = buildLocalImageAnalysis(
@@ -5499,6 +5507,7 @@ Nội dung văn bản:\n` + content,
               }}
               className={cn(
                 "w-full flex items-center gap-4 px-5 py-4 rounded-xl transition-all relative group mb-1",
+                isEffectiveSidebarCollapsed && !isSidebarOpen ? "justify-center gap-0 px-0" : "",
                 activeTab === item.id
                   ? "bg-white text-[#002D56] shadow-xl shadow-blue-900/20 active:scale-95"
                   : "text-white/60 hover:bg-white/5 hover:text-white",
@@ -5508,6 +5517,7 @@ Nội dung văn bản:\n` + content,
               <item.icon
                 className={cn(
                   "w-5 h-5 shrink-0 transition-transform group-hover:scale-110",
+                  isEffectiveSidebarCollapsed && !isSidebarOpen ? "mx-auto opacity-100" : "",
                   activeTab === item.id ? "text-[#002D56]" : "text-white/40",
                 )}
               />
@@ -5904,6 +5914,9 @@ Nội dung văn bản:\n` + content,
                       isPublishableIllustration={isPublishableIllustration}
                       updateImageLoadStatus={updateImageLoadStatus}
                       insertApprovedIllustrationsForPlainExport={insertApprovedIllustrationsForPlainExport}
+                      editorialDraftKey={editorialDraftKey}
+                      clearEditorialDraft={clearEditorialDraft}
+                      createNewSession={createNewSession}
                     />
                   ) : activeTab === "proposals" ? (
                     selectedProposalId ? (
