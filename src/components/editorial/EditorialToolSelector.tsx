@@ -1,7 +1,7 @@
 import React from 'react';
 import { cn } from '../../lib/utils';
-import { EditorialToolConfig, EDITORIAL_TOOLS, EditorialToolGroup } from '../../lib/editorialTools';
-import { Target, Zap, Search, LayoutTemplate, Briefcase, PlaySquare } from 'lucide-react';
+import { EDITORIAL_TOOLS, EditorialToolGroup } from '../../lib/editorialTools';
+import { Target, Zap, Search, LayoutTemplate } from 'lucide-react';
 
 interface EditorialToolSelectorProps {
   value: string;
@@ -13,8 +13,6 @@ const GROUP_CONFIG: Record<EditorialToolGroup, { label: string; icon: React.Elem
   edit: { label: "Biên tập", icon: Zap },
   review: { label: "Rà soát", icon: Search },
   summary: { label: "Tóm tắt", icon: LayoutTemplate },
-  task: { label: "Công việc", icon: Briefcase },
-  slide: { label: "Trình chiếu", icon: PlaySquare },
 };
 
 export const EditorialToolSelector: React.FC<EditorialToolSelectorProps> = ({ value, onChange }) => {
