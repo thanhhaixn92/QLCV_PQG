@@ -235,8 +235,11 @@ function createFigurePlaceholderBlock(
   };
 }
 
-function figurePlaceholderBoxText(): string {
-  return FIGURE_PLACEHOLDER_LABEL;
+function figurePlaceholderBoxText(label?: string): string {
+  const normalizedLabel = normalizeDisplayText(label || "");
+  if (!normalizedLabel) return FIGURE_PLACEHOLDER_LABEL;
+  if (isGenericFigurePlaceholderLabel(normalizedLabel)) return "Khung giữ chỗ hình ảnh";
+  return `Khung giữ chỗ hình ảnh: ${normalizedLabel}`;
 }
 
 function parseKpiCandidateFromText(text: string): { label: string; value: string } | null {
@@ -613,7 +616,7 @@ function pdfFigure(block: Extract<ExportArticleBlock, { type: "figurePlaceholder
         body: [
           [
             {
-              text: figurePlaceholderBoxText(),
+              text: figurePlaceholderBoxText(block.label),
               alignment: "center",
               bold: true,
               color: "#334155",
@@ -638,6 +641,17 @@ function pdfFigure(block: Extract<ExportArticleBlock, { type: "figurePlaceholder
       text: caption,
       style: "caption",
       alignment: "center",
+      margin: [0, 0, 0, block.note ? 4 : 12],
+    });
+  }
+
+  if (block.note) {
+    content.push({
+      text: block.note,
+      style: "caption",
+      alignment: "center",
+      fontSize: 12,
+      color: "#64748B",
       margin: [0, 0, 0, 12],
     });
   }
@@ -834,7 +848,7 @@ export function exportArticleModelToDocx(blocks: ExportArticleBlock[]): ExportDo
                     new Paragraph({
                       children: [
                         new TextRun({
-                          text: figurePlaceholderBoxText(),
+                          text: figurePlaceholderBoxText(block.label),
                           font: ARTICLE_EXPORT_STYLE.font.body,
                           size: ptToHalfPoints(ARTICLE_EXPORT_STYLE.sizePt.placeholder),
                           bold: true,
