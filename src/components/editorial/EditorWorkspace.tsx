@@ -24,9 +24,27 @@ import {
 } from './LayoutRecommendationPanel';
 import { createArticleDocumentFromCurrentContent } from '../../lib/publishing/articleDocumentAdapter';
 import { validateArticleDocument } from '../../lib/publishing/validateArticleDocument';
+import {
+  countPreflightIssuesBySeverity,
+  hasBlockingPreflightIssues,
+} from '../../lib/publishing/preflightIssue';
 import { getArticleLayout, getDefaultArticleLayout } from '../../lib/publishing/layoutRegistry';
+import { buildArticleHtml, buildArticleHtmlFilename } from '../../lib/publishing/htmlExport';
 
 type EditorialCreationStep = "brief" | "recommendation" | "generating" | "draft";
+
+function downloadHtmlFile(html: string, filename: string): void {
+  const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.rel = "noopener";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
 
 export const EditorWorkspace = (props: any) => {
   const {
@@ -62,26 +80,29 @@ export const EditorWorkspace = (props: any) => {
     });
   }, [illustrations, insertApprovedIllustrationsForPlainExport, output, selectedLayout, user?.displayName, user?.email]);
 
-  const validateArticleBeforeExport = React.useCallback(async () => {
-    const validation = validateArticleDocument(articleDocument);
+  const articleValidation = React.useMemo(() => validateArticleDocument(articleDocument), [articleDocument]);
+  const preflightIssues = React.useMemo(() => articleValidation.preflightIssues, [articleValidation]);
+  const preflightCounts = React.useMemo(() => countPreflightIssuesBySeverity(preflightIssues), [preflightIssues]);
+  const hasPreflightBlockers = React.useMemo(() => hasBlockingPreflightIssues(preflightIssues), [preflightIssues]);
 
-    if (!validation.valid) {
-      const message = validation.errors[0]?.message || "ArticleDocument chưa hợp lệ, không thể xuất file.";
+  const validateArticleBeforeExport = React.useCallback(async () => {
+    if (hasPreflightBlockers) {
+      const message = "Chưa thể xuất bản vì còn lỗi bắt buộc cần xử lý.";
       toast.error(message);
       setError(message);
       return false;
     }
 
-    if (validation.warnings.length > 0) {
+    if (preflightCounts.warning > 0) {
       toast("Bản thảo còn cảnh báo trước khi xuất bản chính thức.", { icon: "⚠️", duration: 4000 });
       return requestConfirmAsync("Bản thảo còn cảnh báo/cần bổ sung. Bạn vẫn muốn xuất file bản nháp?");
     }
 
     return true;
-  }, [articleDocument, requestConfirmAsync, setError, toast]);
+  }, [hasPreflightBlockers, preflightCounts.warning, requestConfirmAsync, setError, toast]);
 
   const [cooldownRemaining, setCooldownRemaining] = React.useState(0);
-  const [exportingFormat, setExportingFormat] = React.useState<null | "pdf" | "docx">(null);
+  const [exportingFormat, setExportingFormat] = React.useState<null | "pdf" | "docx" | "html">(null);
   React.useEffect(() => {
     if (!aiCooldownUntil) {
       setCooldownRemaining(0);
@@ -477,6 +498,8 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                         </label>
                                       </div>
                                     )}
+
+
                                   </div>
                                 </motion.div>
                               )}
@@ -847,6 +870,8 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                     <EditorialPreflightPanel
                                       kind={editorialKind}
                                       markdownContent={output}
+                                      articleDocument={articleDocument}
+                                      issues={preflightIssues}
                                     />
                                   )}
 
@@ -857,18 +882,15 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                           onClick={async () => {
                                             if (exportingFormat) return;
                                             setExportingFormat("pdf");
-                                            const audit = auditEditorialPublish(illustrations);
-                                            if (audit.suggestedCount > 0) {
-                                              const confirmed = await requestConfirmAsync(
-                                                `Còn ${audit.suggestedCount} hình ảnh chưa được duyệt. Bạn có muốn tiếp tục xuất bản PDF mà không có các hình này?`,
-                                              );
-                                              if (!confirmed) {
-                                                setExportingFormat(null);
-                                                return;
-                                              }
-                                            }
                                             try {
                                               if (!(await validateArticleBeforeExport())) return;
+                                              const audit = auditEditorialPublish(illustrations);
+                                              if (audit.suggestedCount > 0) {
+                                                const confirmed = await requestConfirmAsync(
+                                                  `Còn ${audit.suggestedCount} hình ảnh chưa được duyệt. Bạn có muốn tiếp tục xuất bản PDF mà không có các hình này?`,
+                                                );
+                                                if (!confirmed) return;
+                                              }
                                               toast(
                                                 "Đang tạo file PDF...",
                                                 { icon: "ℹ️", duration: 5000 },
@@ -916,8 +938,12 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                             }
                                           }}
                                           disabled={Boolean(exportingFormat)}
-                                          className="flex items-center gap-2 px-3 py-2.5 rounded-md text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100/80 transition-all shrink-0 active:scale-[0.98] shadow-sm disabled:opacity-50"
-                                          title="Xuất bản PDF chất lượng cao có thể tìm kiếm và chọn được văn bản"
+                                          aria-disabled={hasPreflightBlockers || Boolean(exportingFormat)}
+                                          className={cn(
+                                            "flex items-center gap-2 px-3 py-2.5 rounded-md text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100/80 transition-all shrink-0 active:scale-[0.98] shadow-sm disabled:opacity-50",
+                                            hasPreflightBlockers && "border-red-200 bg-red-50 text-red-700 hover:bg-red-50",
+                                          )}
+                                          title={hasPreflightBlockers ? "Chưa thể xuất bản vì còn lỗi bắt buộc cần xử lý." : "Xuất bản PDF chất lượng cao có thể tìm kiếm và chọn được văn bản"}
                                         >
                                           <FileDown className="w-4 h-4 text-emerald-600" />
                                           <span className="text-[10px] font-bold uppercase tracking-wider">
@@ -930,18 +956,15 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                         onClick={async () => {
                                           if (exportingFormat) return;
                                           setExportingFormat("docx");
-                                          const audit = auditEditorialPublish(illustrations);
-                                          if (audit.suggestedCount > 0) {
-                                            const confirmed = await requestConfirmAsync(
-                                              `Còn ${audit.suggestedCount} hình ảnh chưa được duyệt. Bạn có muốn tiếp tục xuất bản Word mà không có các hình này?`,
-                                            );
-                                            if (!confirmed) {
-                                              setExportingFormat(null);
-                                              return;
-                                            }
-                                          }
                                           try {
                                             if (!(await validateArticleBeforeExport())) return;
+                                            const audit = auditEditorialPublish(illustrations);
+                                            if (audit.suggestedCount > 0) {
+                                              const confirmed = await requestConfirmAsync(
+                                                `Còn ${audit.suggestedCount} hình ảnh chưa được duyệt. Bạn có muốn tiếp tục xuất bản Word mà không có các hình này?`,
+                                              );
+                                              if (!confirmed) return;
+                                            }
                                             const { exportWordFromElement } = await import("../../lib/exportUtils");
                                             await exportWordFromElement(
                                               "printable-article",
@@ -983,8 +1006,12 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                           }
                                         }}
                                         disabled={Boolean(exportingFormat)}
-                                        className="flex items-center gap-2 px-3 py-2.5 rounded-md text-[10px] font-semibold bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100/80 transition-all shrink-0 active:scale-[0.98] shadow-sm disabled:opacity-50"
-                                        title="Xuất Word (DOCX)"
+                                        aria-disabled={hasPreflightBlockers || Boolean(exportingFormat)}
+                                        className={cn(
+                                          "flex items-center gap-2 px-3 py-2.5 rounded-md text-[10px] font-semibold bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100/80 transition-all shrink-0 active:scale-[0.98] shadow-sm disabled:opacity-50",
+                                          hasPreflightBlockers && "border-red-200 bg-red-50 text-red-700 hover:bg-red-50",
+                                        )}
+                                        title={hasPreflightBlockers ? "Chưa thể xuất bản vì còn lỗi bắt buộc cần xử lý." : "Xuất Word (DOCX)"}
                                       >
                                         <FileText className="w-4 h-4 text-blue-600" />
                                         <span className="text-[10px] font-bold uppercase tracking-wider">
@@ -994,6 +1021,60 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                     )}
                                       </>
                                     )}
+                                        <button
+                                          onClick={async () => {
+                                            if (exportingFormat) return;
+                                            setExportingFormat("html");
+                                            try {
+                                              if (!(await validateArticleBeforeExport())) return;
+                                              const title =
+                                                sessions.find((s) => s.id === currentSessionId)?.title ||
+                                                input ||
+                                                articleDocument.metadata?.title ||
+                                                "Bài viết A4";
+                                              const html = buildArticleHtml(articleDocument, { title });
+                                              const filename = buildArticleHtmlFilename();
+                                              downloadHtmlFile(html, filename);
+                                              toast.success("Tải HTML A4 thành công!");
+
+                                              if (currentSessionId) {
+                                                await logActivity({
+                                                  module: "editorial",
+                                                  action: "exported",
+                                                  entityType: "editorial_session",
+                                                  entityId: currentSessionId,
+                                                  entityTitle:
+                                                    sessions.find((s) => s.id === currentSessionId)?.title || "Bài viết",
+                                                  title: "Xuất HTML A4",
+                                                  summary: "Đã xuất bài viết ra định dạng HTML A4 độc lập.",
+                                                  metadata: {
+                                                    exportFormat: "html",
+                                                    source: "client",
+                                                  },
+                                                });
+                                              }
+                                            } catch (err: unknown) {
+                                              const message = err instanceof Error ? err.message : "Không tạo được file HTML.";
+                                              toast.error(message);
+                                              setError(message);
+                                            } finally {
+                                              setExportingFormat(null);
+                                            }
+                                          }}
+                                          disabled={Boolean(exportingFormat)}
+                                          aria-disabled={hasPreflightBlockers || Boolean(exportingFormat)}
+                                          className={cn(
+                                            "flex items-center gap-2 px-3 py-2.5 rounded-md text-[10px] font-semibold bg-slate-50 text-slate-700 border border-slate-200 hover:bg-slate-100/80 transition-all shrink-0 active:scale-[0.98] shadow-sm disabled:opacity-50",
+                                            hasPreflightBlockers && "border-red-200 bg-red-50 text-red-700 hover:bg-red-50",
+                                          )}
+                                          title={hasPreflightBlockers ? "Chưa thể xuất bản vì còn lỗi bắt buộc cần xử lý." : "Xuất HTML A4 độc lập"}
+                                        >
+                                          <Globe className="w-4 h-4 text-slate-600" />
+                                          <span className="text-[10px] font-bold uppercase tracking-wider">
+                                            HTML A4
+                                          </span>
+                                        </button>
+
                                   </div>
                                 </div>
 

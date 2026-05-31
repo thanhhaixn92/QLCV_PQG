@@ -2,6 +2,8 @@ import React from "react";
 import type { ArticleBlock, ArticleDocument, ArticleLeadInItem } from "../../lib/publishing/articleDocument";
 import { ARTICLE_BLOCK_REGISTRY } from "../../lib/publishing/blockRegistry";
 import { validateArticleDocument } from "../../lib/publishing/validateArticleDocument";
+import { countPreflightIssuesBySeverity } from "../../lib/publishing/preflightIssue";
+import { cleanTextForExport } from "../../lib/publishing/htmlExport";
 
 interface A4PrintPreviewProps {
   document: ArticleDocument;
@@ -10,27 +12,41 @@ interface A4PrintPreviewProps {
   showValidationSummary?: boolean;
 }
 
-function textSlot(block: ArticleBlock): string {
-  return typeof block.slots.text === "string" ? block.slots.text : "";
+function textSlot(block: ArticleBlock, slot: "text" | "title" | "caption" | "note" = "text"): string {
+  return cleanTextForExport(block.slots?.[slot]);
+}
+
+function optionalStringSlot(block: ArticleBlock, slot: string): string {
+  const slots = block.slots as Record<string, unknown> | undefined;
+  return cleanTextForExport(slots?.[slot]);
 }
 
 function stringItems(block: ArticleBlock): string[] {
-  return Array.isArray(block.slots.items)
-    ? block.slots.items.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+  return Array.isArray(block.slots?.items)
+    ? block.slots.items
+        .map((item) => cleanTextForExport(item))
+        .filter((item) => item.length > 0)
     : [];
 }
 
 function leadInItems(block: ArticleBlock): ArticleLeadInItem[] {
-  return Array.isArray(block.slots.items)
-    ? block.slots.items.filter(
-        (item): item is ArticleLeadInItem =>
-          Boolean(
-            item &&
-              typeof item === "object" &&
-              typeof (item as ArticleLeadInItem).label === "string" &&
-              typeof (item as ArticleLeadInItem).body === "string",
-          ),
-      )
+  return Array.isArray(block.slots?.items)
+    ? block.slots.items
+        .map((item) => {
+          if (
+            !item ||
+            typeof item !== "object" ||
+            typeof (item as ArticleLeadInItem).label !== "string" ||
+            typeof (item as ArticleLeadInItem).body !== "string"
+          ) {
+            return undefined;
+          }
+          const label = cleanTextForExport((item as ArticleLeadInItem).label);
+          const body = cleanTextForExport((item as ArticleLeadInItem).body);
+          if (!label && !body) return undefined;
+          return { label, body } satisfies ArticleLeadInItem;
+        })
+        .filter((item): item is ArticleLeadInItem => Boolean(item))
     : [];
 }
 
@@ -51,26 +67,40 @@ function renderBlock(block: ArticleBlock): React.ReactNode {
   const className = blockStyleClass(block);
 
   switch (block.type) {
-    case "title":
-      return <h1 className={className}>{textSlot(block)}</h1>;
-    case "sapo":
-      return <p className={className}>{textSlot(block)}</p>;
-    case "section-heading":
-      return <h2 className={className}>{textSlot(block)}</h2>;
-    case "paragraph":
-      return <p className={className}>{textSlot(block)}</p>;
-    case "conclusion":
-      return <p className={`${className} a4-conclusion`}>{textSlot(block)}</p>;
-    case "bullet-list":
+    case "title": {
+      const text = textSlot(block);
+      return text ? <h1 className={className}>{text}</h1> : null;
+    }
+    case "sapo": {
+      const text = textSlot(block);
+      return text ? <p className={className}>{text}</p> : null;
+    }
+    case "section-heading": {
+      const text = textSlot(block);
+      return text ? <h2 className={className}>{text}</h2> : null;
+    }
+    case "paragraph": {
+      const text = textSlot(block);
+      return text ? <p className={className}>{text}</p> : null;
+    }
+    case "conclusion": {
+      const text = textSlot(block);
+      return text ? <p className={`${className} a4-conclusion`}>{text}</p> : null;
+    }
+    case "bullet-list": {
+      const items = stringItems(block);
+      if (items.length === 0) return null;
       return (
         <ul className={className}>
-          {stringItems(block).map((item, index) => (
+          {items.map((item, index) => (
             <li key={`${block.id}-item-${index}`}>{item}</li>
           ))}
         </ul>
       );
+    }
     case "lead-in-list": {
       const items = leadInItems(block);
+      if (items.length === 0) return null;
       const listClassName = block.variant === "paragraph" ? `${className} a4-lead-in-paragraphs` : className;
       if (block.variant === "paragraph") {
         return (
@@ -96,15 +126,17 @@ function renderBlock(block: ArticleBlock): React.ReactNode {
       );
     }
     case "figure-placeholder": {
-      const title = typeof block.slots.title === "string" ? block.slots.title.trim() : "";
-      const caption = typeof block.slots.caption === "string" ? block.slots.caption.trim() : "";
-      const note = typeof block.slots.note === "string" ? block.slots.note.trim() : "";
+      const title = textSlot(block, "title");
+      const caption = textSlot(block, "caption");
+      const note = textSlot(block, "note");
+      const source = optionalStringSlot(block, "source");
       const boxLabel = title && title !== caption ? title : "Vị trí chèn ảnh minh họa";
       return (
         <figure className={className}>
-          <div className="a4-figure-placeholder-box">
+          <div className="a4-figure-placeholder-box" role="img" aria-label={caption || boxLabel}>
             <span>{boxLabel}</span>
             {note && <small>{note}</small>}
+            {source && source !== note && <small>Nguồn: {source}</small>}
           </div>
           {caption && <figcaption>{caption}</figcaption>}
         </figure>
@@ -128,26 +160,27 @@ export const A4PrintPreview = ({
   showValidationSummary = true,
 }: A4PrintPreviewProps) => {
   const validation = React.useMemo(() => validateArticleDocument(document), [document]);
+  const validationCounts = React.useMemo(
+    () => countPreflightIssuesBySeverity(validation.preflightIssues),
+    [validation.preflightIssues],
+  );
 
   return (
     <>
-      {showValidationSummary && (!validation.valid || validation.warnings.length > 0) && (
+      {showValidationSummary && validation.preflightIssues.length > 0 && (
         <aside
           className="a4-validation-summary"
-          aria-label="Kiểm tra ArticleDocument"
+          aria-label="Tóm tắt kiểm tra ArticleDocument"
           data-export-exclude="true"
         >
-          {!validation.valid ? (
-            <strong>ArticleDocument cần kiểm tra trước khi xuất bản.</strong>
-          ) : (
-            <strong>Bản thảo còn cảnh báo trước khi xuất bản chính thức.</strong>
-          )}
-          {validation.errors.map((error) => (
-            <p key={`error-${error.path}`} title={error.detail || error.path}>Lỗi: {error.message}</p>
-          ))}
-          {validation.warnings.map((warning) => (
-            <p key={`warning-${warning.path}`} title={warning.detail || warning.path}>Cảnh báo: {warning.message}</p>
-          ))}
+          <strong>
+            {validationCounts.blocker > 0
+              ? "ArticleDocument cần xử lý blocker trước khi xuất bản."
+              : "Bản thảo còn cảnh báo trước khi xuất bản chính thức."}
+          </strong>
+          <p>
+            Blocker: {validationCounts.blocker} · Warning: {validationCounts.warning} · Info: {validationCounts.info}
+          </p>
         </aside>
       )}
       {/* MVP hiện là A4 styled continuous article; paginated preview sẽ làm sau. */}
