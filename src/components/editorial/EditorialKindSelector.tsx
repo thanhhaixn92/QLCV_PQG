@@ -9,6 +9,8 @@ interface Props {
   onChange: (kind: EditorialDocumentKind) => void;
 }
 
+const HIDDEN_EDITORIAL_MVP_KINDS = new Set<EditorialDocumentKind>(["slide_outline"]);
+
 const KIND_ICONS: Record<EditorialDocumentKind, React.ElementType> = {
   website_article: FileText,
   news: Newspaper,
@@ -27,7 +29,9 @@ const KIND_ICONS: Record<EditorialDocumentKind, React.ElementType> = {
 export function EditorialKindSelector({ value, onChange }: Props) {
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-2 xl:grid-cols-3 gap-3">
-      {(Object.keys(EDITORIAL_KIND_CONFIG) as EditorialDocumentKind[]).map((key) => {
+      {(Object.keys(EDITORIAL_KIND_CONFIG) as EditorialDocumentKind[])
+        .filter((key) => !HIDDEN_EDITORIAL_MVP_KINDS.has(key))
+        .map((key) => {
         const config = EDITORIAL_KIND_CONFIG[key];
         const Icon = (KIND_ICONS[key] as React.ElementType) || FileText;
         const isSelected = value === key;
