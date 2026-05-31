@@ -69,7 +69,7 @@ export type ExportArticleBlock =
   | { type: "kpiTable"; rows: { label: string; value: string }[] }
   | { type: "list"; ordered: boolean; items: ExportListItem[] }
   | { type: "pageBreak" }
-  | { type: "table"; rows: ExportTableCell[][] };
+  | { type: "table"; rows: ExportTableCell[][]; caption?: string };
 
 const KPI_LABEL_RE =
   /^(Sản lượng dẫn tàu|Tổng GTHL|Tổng doanh thu|Doanh thu|Sản lượng|GTHL|Kế hoạch|Kết quả|Chỉ tiêu)\b/iu;
@@ -735,6 +735,14 @@ export function exportArticleModelToPdfmake(blocks: ExportArticleBlock[]): any[]
     }
 
     if (block.type === "table") {
+      if (block.caption) {
+        content.push({
+          text: block.caption,
+          style: "caption",
+          alignment: "center",
+          margin: [0, 8, 0, 4],
+        });
+      }
       content.push({
         table: {
           widths: block.rows[0]?.map(() => "*") || ["*"],
@@ -973,6 +981,23 @@ export function exportArticleModelToDocx(blocks: ExportArticleBlock[]): ExportDo
     }
 
     if (block.type === "table") {
+      if (block.caption) {
+        children.push(
+          new Paragraph({
+            children: [
+              new TextRun({
+                text: block.caption,
+                font: ARTICLE_EXPORT_STYLE.font.body,
+                size: ptToHalfPoints(ARTICLE_EXPORT_STYLE.sizePt.caption),
+                bold: true,
+              }),
+            ],
+            alignment: AlignmentType.CENTER,
+            spacing: { before: 160, after: 80, line: lineSpacingTwip(ARTICLE_EXPORT_STYLE.sizePt.caption, ARTICLE_EXPORT_STYLE.lineHeight.caption) },
+            keepNext: true,
+          }),
+        );
+      }
       children.push(
         new Table({
           rows: block.rows.map(

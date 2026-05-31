@@ -1,6 +1,6 @@
 import type { ArticleDocument } from "./articleDocument";
 import type { ArticleExportBlock, ArticleExportModel } from "./articleExportModel";
-import { cleanArticleExportText, createArticleExportFilename, normalizeArticleDocumentForExport } from "./articleExportAdapter";
+import { cleanArticleExportText, createArticleExportFilename, normalizeArticleDocumentForExport, sanitizeExportTitle } from "./articleExportAdapter";
 
 export interface ArticleHtmlExportOptions {
   title?: string;
@@ -104,7 +104,8 @@ function renderArticleBlock(block: ArticleExportBlock): string {
 }
 
 function findDocumentTitle(model: ArticleExportModel, options: ArticleHtmlExportOptions): string {
-  const explicitTitle = cleanArticleExportText(options.title);
+  // Sanitize: bỏ qua options.title nếu là nhãn kỹ thuật prompt/brief
+  const explicitTitle = sanitizeExportTitle(options.title || "", "");
   if (explicitTitle) return explicitTitle;
   return model.title || "Bài viết A4";
 }

@@ -11,6 +11,20 @@ import type {
 } from "./articleExportModel";
 
 const DEFAULT_EXPORT_TITLE = "Bài viết A4";
+
+// Nhãn kỹ thuật từ prompt/brief không được dùng làm metadata title
+const TECHNICAL_LABEL_PATTERN = /^(?:Yêu cầu\s*(?:\/\s*Bối cảnh)?|Yêu cầu chung\s*(?:\/\s*Bối cảnh)?|Nội dung chính cần có|Thời gian\s*&\s*Địa điểm|Thành phần\s*\/\s*Nhân vật|Định dạng đầu ra)$/iu;
+
+function isTechnicalLabel(value: string): boolean {
+  const normalized = value.trim().replace(/\s+/g, " ");
+  return TECHNICAL_LABEL_PATTERN.test(normalized);
+}
+
+export function sanitizeExportTitle(value: string, fallback: string = DEFAULT_EXPORT_TITLE): string {
+  const cleaned = cleanArticleExportText(value);
+  if (!cleaned || isTechnicalLabel(cleaned)) return fallback;
+  return cleaned;
+}
 const DEFAULT_LAYOUT_ID = "legacy-a4";
 const DEFAULT_LAYOUT_VERSION = "legacy";
 
@@ -345,10 +359,12 @@ export function normalizeArticleDocumentForExport(articleDocument: ArticleDocume
 
   const metadataTitle = cleanArticleExportText(metadata.title);
   const metadataSapo = cleanArticleExportText(metadata.sapo);
-  const titleFromMetadata = isMarkdownTableRow(metadataTitle) ? "" : metadataTitle;
+  // Bỏ qua metadata title nếu là nhãn kỹ thuật prompt/brief hoặc là markdown table row
+  const titleFromMetadata = (!isMarkdownTableRow(metadataTitle) && !isTechnicalLabel(metadataTitle)) ? metadataTitle : "";
   const titleFromBlock = mappedBlocks.reduce((value, block) => (value || (block.type === "title" && !isMarkdownTableRow(block.text) ? block.text : "")), "");
   const sapoFromBlock = mappedBlocks.reduce((value, block) => (value || (block.type === "sapo" && !isMarkdownTableRow(block.text) ? block.text : "")), "");
-  const title = titleFromMetadata || titleFromBlock || DEFAULT_EXPORT_TITLE;
+  // Ưu tiên: tiêu đề từ block document > metadata sạch > fallback an toàn
+  const title = sanitizeExportTitle(titleFromBlock || titleFromMetadata, DEFAULT_EXPORT_TITLE);
   const sapo = metadataSapo && !isMarkdownTableRow(metadataSapo) ? metadataSapo : sapoFromBlock || undefined;
   const layoutId = cleanArticleExportText(document.layoutId) || cleanArticleExportText(document.templateId) || DEFAULT_LAYOUT_ID;
   const layoutVersion = cleanArticleExportText(document.layoutVersion) || cleanArticleExportText(document.templateVersion) || DEFAULT_LAYOUT_VERSION;

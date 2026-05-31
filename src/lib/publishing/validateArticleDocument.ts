@@ -36,6 +36,21 @@ const DRAFT_MARKER_PATTERN = /\[(?:\s*Bổ sung\s*:|\s*Cần\s+(?:bổ sung|bổ
 const DRAFT_MARKER_WARNING = "Bản thảo còn dữ liệu cần bổ sung/kiểm chứng trước khi xuất bản chính thức.";
 const LONG_CAPTION_WARNING = "Chú thích ảnh hơi dài, nên rút gọn trước khi xuất bản chính thức.";
 
+// Artifact kỹ thuật thô không được xuất hiện trong body/metadata
+const RAW_ARTIFACT_PATTERN = /(?:^|\s)(?:undefined|null|\[object Object\])(?:\s|$)/i;
+// Nhãn kỹ thuật prompt/brief không được xuất hiện trong metadata title
+const TECHNICAL_LABEL_PATTERN_VALIDATE = /^(?:Yêu cầu\s*(?:\/\s*Bối cảnh)?|Yêu cầu chung\s*(?:\/\s*Bối cảnh)?|Nội dung chính cần có|Thời gian\s*&\s*Địa điểm|Thành phần\s*\/\s*Nhân vật|Định dạng đầu ra)$/iu;
+const MAX_TABLE_COLUMNS_WARNING = 7;
+const MAX_HEADING_LENGTH = 200;
+
+function hasRawArtifact(value: string): boolean {
+  return RAW_ARTIFACT_PATTERN.test(value) || value.trim() === "undefined" || value.trim() === "null" || value.trim() === "[object Object]";
+}
+
+function isTechnicalLabelTitle(value: string): boolean {
+  return TECHNICAL_LABEL_PATTERN_VALIDATE.test(value.trim().replace(/\s+/g, " "));
+}
+
 function hasHtml(value: string): boolean {
   return HTML_PATTERN.test(value);
 }
@@ -79,6 +94,11 @@ function validatePlainText(
 ): void {
   if (typeof value !== "string" || value.trim().length === 0) {
     errors.push({ path, message: "Slot plain text phải là chuỗi không rỗng." });
+    return;
+  }
+  // Blocker: artifact kỹ thuật thô không được có trong nội dung
+  if (hasRawArtifact(value)) {
+    errors.push({ path, message: "Nội dung chứa artifact kỹ thuật thô (undefined/null/[object Object]) — phải xử lý trước khi xuất bản." });
     return;
   }
   addDraftMarkerWarning(value, path, warnings);
@@ -191,6 +211,29 @@ function validateBlock(
 
   if (block.styleId && !hasArticleStyle(block.styleId)) {
     result.errors.push({ path: `${path}.styleId`, message: "styleId không thuộc style registry." });
+  }
+
+  // Kiểm tra bổ sung cho bảng: thiếu caption, quá nhiều cột
+  if (block.type === "table") {
+    const rows = Array.isArray(block.slots.rows) ? block.slots.rows : [];
+    const captionVal = typeof block.slots.caption === "string" ? block.slots.caption.trim() : "";
+    if (!captionVal) {
+      result.warnings.push({ path: `${path}.slots.caption`, message: "Bảng chưa có caption/tiêu đề bảng — nên bổ sung trước khi xuất bản chính thức." });
+    }
+    const maxCols = rows.reduce((max: number, row: unknown) => Array.isArray(row) ? Math.max(max, row.length) : max, 0);
+    if (maxCols > MAX_TABLE_COLUMNS_WARNING) {
+      result.warnings.push({ path: `${path}.slots.rows`, message: `Bảng có ${maxCols} cột — quá rộng, có thể bị cắt khi in A4.` });
+    }
+  }
+
+  // Kiểm tra heading: rỗng hoặc quá dài
+  if (block.type === "section-heading") {
+    const headingText = typeof block.slots.text === "string" ? block.slots.text.trim() : "";
+    if (!headingText) {
+      result.errors.push({ path: `${path}.slots.text`, message: "Tiêu đề mục không được rỗng." });
+    } else if (headingText.length > MAX_HEADING_LENGTH) {
+      result.warnings.push({ path: `${path}.slots.text`, message: `Tiêu đề mục quá dài (${headingText.length} ký tự) — nên rút gọn dưới ${MAX_HEADING_LENGTH} ký tự.` });
+    }
   }
 }
 
@@ -426,7 +469,16 @@ export function validateArticleDocument(document: ArticleDocument): ValidationRe
   if (!document.metadata?.title) {
     result.errors.push({ path: "metadata.title", message: "metadata.title là bắt buộc." });
   } else {
-    addDraftMarkerWarning(document.metadata.title, "metadata.title", result.warnings);
+    const titleValue = document.metadata.title;
+    // Blocker: metadata title chứa artifact kỹ thuật thô
+    if (hasRawArtifact(titleValue)) {
+      result.errors.push({ path: "metadata.title", message: "Tiêu đề chứa artifact kỹ thuật thô (undefined/null/[object Object]) — phải xử lý trước khi xuất bản." });
+    } else if (isTechnicalLabelTitle(titleValue)) {
+      // Blocker: metadata title là nhãn prompt/brief kỹ thuật
+      result.errors.push({ path: "metadata.title", message: `Tiêu đề bài không được là nhãn kỹ thuật prompt/brief ("${titleValue}") — hãy nhập tiêu đề bài thật.` });
+    } else {
+      addDraftMarkerWarning(titleValue, "metadata.title", result.warnings);
+    }
   }
 
   if (document.metadata?.sapo) {

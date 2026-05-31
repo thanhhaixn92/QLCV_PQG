@@ -51,6 +51,7 @@ function mapArticleExportBlockToDocxBlocks(block: ArticleExportBlock): ExportArt
       return [{
         type: "table",
         rows: block.table.rows.map((row) => row.map(tableCellToDocxCell)),
+        ...(block.table.caption ? { caption: block.table.caption } : {}),
       }];
     case "page-break":
       return [{ type: "pageBreak" }];

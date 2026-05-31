@@ -40,8 +40,9 @@ interface ParsedLine {
 }
 
 const PLACEHOLDER_MARKER_PATTERN = /\[(?:\s*PLACEHOLDER[^\]]*|\s*[—-]+\s*(?:ẢNH|ANH|PLACEHOLDER)\s*[—-]+\s*)\]/gi;
-// Nhận diện dòng caption bảng kiểu "Bảng 1: …" hoặc "Bảng 1 — …" hoặc "Bảng: …"
-const TABLE_CAPTION_PATTERN = /^Bảng\s*(?:\d+\s*)?[:\-–—]\s*(.{2,180})$/iu;
+// Nhận diện dòng caption bảng kiểu "Bảng 1: …", "Bảng 1. …", "Bảng 2.1. …", "Bảng: …"
+// Hỗ trợ số thứ tự nhiều cấp (2.1, 3.1.2) và dấu phân cách: : . ： - – —
+const TABLE_CAPTION_PATTERN = /^Bảng\s*(?:\d+(?:\.\d+)*\.?\s*)?[:.：\-–—]\s*(.{2,180})$/iu;
 const DRAFT_MARKER_PATTERN = /\[\s*(?:Bổ sung|Bo sung|Cần bổ sung|Can bo sung|Cần kiểm chứng|Can kiem chung)\s*:\s*([^\]]+)\]/gi;
 const SEPARATOR_LINE_PATTERN = /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/u;
 const TEXT_PLACEHOLDER_PATTERN = /^(?:\d+[.)]\s*)?(?:Placehold|Placeholder|Vị trí chèn)\s+hình\s+minh\s+h[oọ][aạ]\s*[:：-]?\s*(.*)$/iu;

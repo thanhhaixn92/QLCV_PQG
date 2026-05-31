@@ -51,6 +51,7 @@ function mapArticleExportBlockToPdfBlocks(block: ArticleExportBlock): ExportArti
       return [{
         type: "table",
         rows: block.table.rows.map((row) => row.map(tableCellToPdfCell)),
+        ...(block.table.caption ? { caption: block.table.caption } : {}),
       }];
     case "page-break":
       return [{ type: "pageBreak" }];
