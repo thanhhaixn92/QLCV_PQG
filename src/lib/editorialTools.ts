@@ -9,17 +9,13 @@ export type EditorialToolId =
   | "create_titles"
   | "review_content"
   | "summary_card"
-  | "summary_doc"
-  | "task_builder"
-  | "slide_outline";
+  | "summary_doc";
 
 export type EditorialToolGroup =
   | "draft"
   | "edit"
   | "review"
-  | "summary"
-  | "task"
-  | "slide";
+  | "summary";
 
 export interface EditorialToolConfig {
   id: EditorialToolId;
@@ -51,7 +47,7 @@ export const EDITORIAL_TOOLS: EditorialToolConfig[] = [
     inputLabel: "Thông tin cần đưa vào văn bản",
     inputPlaceholder: "Nhập bối cảnh, sự kiện, số liệu, yêu cầu, đối tượng nhận hoặc tài liệu nguồn...",
     resultLabel: "Bản thảo văn bản",
-    allowImageTools: true,
+    allowImageTools: false,
     allowWordExport: true,
     allowPdfExport: true,
   },
@@ -152,34 +148,6 @@ export const EDITORIAL_TOOLS: EditorialToolConfig[] = [
     allowImageTools: false,
     allowWordExport: true,
     allowPdfExport: true,
-  },
-  {
-    id: "task_builder",
-    group: "task",
-    label: "Tạo công việc",
-    description: "Tách nhiệm vụ, người phụ trách, hạn xử lý từ nội dung chỉ đạo.",
-    taskType: "TASK_BUILDER",
-    outputFormat: "ARTICLE",
-    inputLabel: "Nội dung cần tách việc",
-    inputPlaceholder: "Dán kết luận cuộc họp, chỉ đạo, kế hoạch hoặc nội dung cần chuyển thành task...",
-    resultLabel: "Danh sách công việc",
-    allowImageTools: false,
-    allowWordExport: false,
-    allowPdfExport: false,
-  },
-  {
-    id: "slide_outline",
-    group: "slide",
-    label: "Phác thảo slide",
-    description: "Tạo cấu trúc trình chiếu theo chủ đề, thời lượng, số slide.",
-    taskType: "SLIDE_OUTLINE",
-    outputFormat: "SLIDE_OUTLINE",
-    inputLabel: "Yêu cầu trình chiếu",
-    inputPlaceholder: "Nhập chủ đề, số slide/thời lượng, đối tượng nghe và thông điệp chính...",
-    resultLabel: "Phác thảo trình chiếu",
-    allowImageTools: false,
-    allowWordExport: true,
-    allowPdfExport: false,
   },
 ];
 
