@@ -151,12 +151,12 @@ export function FloatingCopilot({
   return (
     <section
       className={cn(
-        "fixed z-40 flex flex-col overflow-hidden border border-slate-200 bg-white shadow-2xl shadow-slate-900/20",
+        "fixed flex flex-col overflow-hidden border border-slate-200 bg-white shadow-2xl shadow-slate-900/20",
         isFullscreen
-          ? "inset-0 rounded-none"
-          : "bottom-5 right-5 top-[92px] w-[min(420px,calc(100vw-2rem))] rounded-2xl",
+          ? "inset-0 z-[70] h-[100dvh] w-screen max-w-none rounded-none"
+          : "bottom-5 right-5 top-[92px] z-40 w-[min(420px,calc(100vw-2rem))] rounded-2xl",
       )}
-      aria-label="Intelligent Canvas Copilot"
+      aria-label="Trợ lý Canvas thông minh"
     >
       <header className="flex items-start justify-between gap-3 border-b border-slate-100 px-4 py-3">
         <div className="min-w-0">
@@ -165,12 +165,12 @@ export function FloatingCopilot({
               <Bot className="h-5 w-5" />
             </span>
             <div>
-              <p className="text-[13px] font-black uppercase tracking-[0.16em] text-[#002D56]">Copilot</p>
-              <p className="text-xs font-medium text-slate-500">Intelligent Canvas Assistant</p>
+              <p className="text-[13px] font-black uppercase tracking-[0.16em] text-[#002D56]">Trợ lý biên tập</p>
+              <p className="text-xs font-medium text-slate-500">Trợ lý Canvas thông minh</p>
             </div>
           </div>
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex shrink-0 items-center gap-1">
           {isFullscreen ? (
             <button type="button" onClick={onReturnToCanvas} className="rounded-lg px-3 py-2 text-xs font-bold text-[#002D56] hover:bg-blue-50">
               <Minimize2 className="mr-1 inline h-4 w-4" /> Quay về Canvas
@@ -280,11 +280,11 @@ export function FloatingCopilot({
               <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-slate-800">{pendingProposal.proposedText}</p>
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
-              <button type="button" disabled={!pendingProposal.canApply || isBusy} onClick={onApplyProposal} className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-50">
-                <Check className="h-4 w-4" /> Apply
+              <button type="button" disabled={!pendingProposal.canApply || isBusy} onClick={onApplyProposal} className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-600 disabled:opacity-100" aria-disabled={!pendingProposal.canApply || isBusy}>
+                <Check className="h-4 w-4" /> {pendingProposal.canApply ? "Áp dụng" : "Không thể áp dụng"}
               </button>
               <button type="button" onClick={onCancelProposal} className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50">
-                <RotateCcw className="h-4 w-4" /> Cancel
+                <RotateCcw className="h-4 w-4" /> Hủy
               </button>
               <button type="button" onClick={() => onInputChange("Hãy sửa tiếp đề xuất này theo hướng: ")} className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50">
                 Yêu cầu sửa tiếp
@@ -307,7 +307,7 @@ export function FloatingCopilot({
             {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
           </button>
         </div>
-        <p className="mt-2 flex items-center gap-1 text-[11px] text-slate-500"><Trash2 className="h-3.5 w-3.5" /> Copilot chỉ áp dụng sửa nội dung sau khi bạn bấm Apply.</p>
+        <p className="mt-2 flex items-center gap-1 text-[11px] text-slate-500"><Trash2 className="h-3.5 w-3.5" /> Copilot chỉ áp dụng sửa nội dung sau khi bạn bấm Áp dụng.</p>
       </footer>
     </section>
   );
