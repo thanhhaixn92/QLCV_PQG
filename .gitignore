@@ -8,8 +8,3 @@ coverage/
 !.env.example
 scripts/garbage/
 tmp_effect.txt
-playwright-report/
-test-results/
-screenshots/
-videos/
-traces/
