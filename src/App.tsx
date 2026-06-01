@@ -4792,10 +4792,6 @@ Nội dung văn bản:\n` + content,
     );
   };
 
-  const getCategoryName = (code: string) => {
-    return TASK_CATEGORIES.find((c) => c.code === code)?.name || code;
-  };
-
   const saveBuiltTasks = async () => {
     if (!user) {
       toast.error("Vui lòng đăng nhập để lưu công việc");
