@@ -21,7 +21,7 @@ export const HistoryWorkspace = (props: any) => {
           </div>
           <div className="min-w-0">
             <h2 className="text-base sm:text-lg font-semibold text-slate-800 tracking-tight truncate">
-              Bài báo AI đã tạo
+              Lịch sử văn bản
             </h2>
             <p className="text-[10px] sm:text-xs text-slate-500 font-medium truncate">
               Lưu trữ các bài viết và phiên bản chỉnh sửa.
@@ -44,7 +44,7 @@ export const HistoryWorkspace = (props: any) => {
             onClick={createNewSession}
             className="w-full sm:w-auto bg-[#002D56] text-white px-6 py-3 rounded-md font-semibold text-xs tracking-normal hover:bg-slate-900 transition-all flex items-center justify-center gap-2 shadow-sm shadow-[#002D56]/20 shrink-0"
           >
-            <Plus className="w-4 h-4" /> Soạn bài mới
+            <Plus className="w-4 h-4" /> Tạo văn bản mới
           </button>
         </div>
       </div>
@@ -112,7 +112,7 @@ export const HistoryWorkspace = (props: any) => {
                     onClick={() => loadSession(session)}
                     className="flex-1 bg-white text-[#002D56] border border-[#002D56] py-2 rounded-md text-[12px] font-medium hover:bg-slate-50 transition-colors flex items-center justify-center gap-2"
                   >
-                    <Edit3 className="w-4 h-4" /> Tiếp tục
+                    <Edit3 className="w-4 h-4" /> Mở biên tập
                   </button>
                   <button
                     onClick={async (e) => {

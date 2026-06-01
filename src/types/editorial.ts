@@ -111,3 +111,11 @@ export interface SuggestedTask {
   dueDate?: string;
   assignee?: string;
 }
+
+export type EditorialWorkspaceMode =
+  | "history"
+  | "create"
+  | "edit"
+  | "review"
+  | "summarize"
+  | "sources";
