@@ -1747,97 +1747,126 @@ function App() {
     });
   }, [allTasks]);
 
+  const activeNonArchivedTasks = useMemo(
+    () => activeTasks.filter((t) => t.status !== "archived"),
+    [activeTasks],
+  );
+
   const taskStats = useMemo(() => {
     return {
-      total: activeTasks.length,
-      todo: activeTasks.filter((t) => t.status === "todo" || t.status === "pending").length,
-      doing: activeTasks.filter((t) => t.status === "doing" || t.status === "in_progress").length,
-      waiting: activeTasks.filter((t) => t.status === "waiting" || t.status === "review").length,
-      blocked: activeTasks.filter((t) => t.status === "blocked").length,
-      done: activeTasks.filter((t) => t.status === "done" || t.status === "completed").length,
-      overdue: activeTasks.filter((t) => isTaskOverdue(t)).length,
-      upcoming: activeTasks.filter((t) => isTaskUpcoming(t)).length,
-      highPriority: activeTasks.filter(
+      total: activeNonArchivedTasks.length,
+      todo: activeNonArchivedTasks.filter((t) => t.status === "todo" || t.status === "pending").length,
+      doing: activeNonArchivedTasks.filter((t) => t.status === "doing" || t.status === "in_progress").length,
+      waiting: activeNonArchivedTasks.filter((t) => t.status === "waiting" || t.status === "review").length,
+      blocked: activeNonArchivedTasks.filter((t) => t.status === "blocked").length,
+      done: activeNonArchivedTasks.filter((t) => t.status === "done" || t.status === "completed").length,
+      overdue: activeNonArchivedTasks.filter((t) => isTaskOverdue(t)).length,
+      upcoming: activeNonArchivedTasks.filter((t) => isTaskUpcoming(t)).length,
+      highPriority: activeNonArchivedTasks.filter(
         (t) => t.priority === "urgent" || t.priority === "high",
       ).length,
     };
-  }, [activeTasks]);
+  }, [activeNonArchivedTasks]);
 
   const filteredTasks = useMemo(() => {
-    return activeTasks.filter((t) => {
-      const isSearchMatched =
-        !taskFilters.search ||
-        t.title.toLowerCase().includes(taskFilters.search.toLowerCase()) ||
-        t.description
-          .toLowerCase()
-          .includes(taskFilters.search.toLowerCase()) ||
-        t.assignee.toLowerCase().includes(taskFilters.search.toLowerCase());
+    const searchTerm = String(taskFilters.search || "").trim().toLowerCase();
+    const getDateKey = (value: string | undefined) => String(value || "").slice(0, 10);
+    const todayKey = new Date().toISOString().slice(0, 10);
+    const now = new Date();
+    const weekStart = new Date(now);
+    const day = weekStart.getDay();
+    const diff = weekStart.getDate() - day + (day === 0 ? -6 : 1);
+    weekStart.setDate(diff);
+    weekStart.setHours(0, 0, 0, 0);
+    const weekEnd = new Date(weekStart);
+    weekEnd.setDate(weekStart.getDate() + 6);
+    weekEnd.setHours(23, 59, 59, 999);
 
-      let matchesStatus = taskFilters.status === "all" && t.status !== "archived";
-      if (taskFilters.status === "todo") matchesStatus = t.status === "todo" || t.status === "pending";
-      if (taskFilters.status === "developing" || taskFilters.status === "doing" || taskFilters.status === "in_progress") {
-        matchesStatus = t.status === "doing" || t.status === "in_progress";
-      }
-      if (taskFilters.status === "waiting" || taskFilters.status === "review") {
-        matchesStatus = t.status === "waiting" || t.status === "review";
-      }
-      if (taskFilters.status === "done") {
-        matchesStatus = t.status === "done" || t.status === "completed";
-      }
-      if (taskFilters.status === "archived") matchesStatus = t.status === "archived";
-      if (taskFilters.status === "blocked") matchesStatus = t.status === "blocked";
+    return activeTasks
+      .filter((t) => {
+        const title = String(t.title || "").toLowerCase();
+        const description = String(t.description || "").toLowerCase();
+        const assignee = String(t.assignee || "").toLowerCase();
+        const categoryLabel = getCategoryName(t.categoryCode || "").toLowerCase();
+        const isSearchMatched =
+          !searchTerm ||
+          title.includes(searchTerm) ||
+          description.includes(searchTerm) ||
+          assignee.includes(searchTerm) ||
+          categoryLabel.includes(searchTerm) ||
+          String(t.categoryCode || "").toLowerCase().includes(searchTerm);
 
-      const priorityFilterValue = taskFilters.priority;
-      let matchesPriority = true;
-      if (priorityFilterValue === "all") {
-        matchesPriority = true;
-      } else if (priorityFilterValue === HIGH_PRIORITY_FILTER) {
-        matchesPriority = t.priority === "urgent" || t.priority === "high";
-      } else {
-        matchesPriority = t.priority === priorityFilterValue;
-      }
-
-      const matchesCategory =
-        taskFilters.category === "all" ||
-        t.categoryCode === taskFilters.category;
-
-      if (taskFilters.status === "overdue") matchesStatus = isTaskOverdue(t);
-      if (taskFilters.status === "upcoming") matchesStatus = isTaskUpcoming(t);
-      
-      // new filter: mytasks, today, thisweek
-      if (taskFilters.status === "mytasks") {
-        const userSearch = user?.email?.split("@")[0] || user?.displayName || "";
-        matchesStatus = user && userSearch && t.assignee.toLowerCase().includes(userSearch.toLowerCase());
-      }
-      if (taskFilters.status === "today") {
-        const today = new Date().toISOString().split("T")[0];
-        matchesStatus = t.dueDate && t.dueDate.startsWith(today);
-      }
-      if (taskFilters.status === "thisweek") {
-        if (!t.dueDate) matchesStatus = false;
-        else {
-          const due = new Date(t.dueDate);
-          const now = new Date();
-          const day = now.getDay();
-          const diff = now.getDate() - day + (day === 0 ? -6 : 1);
-          const startOfWeek = new Date(now.setDate(diff));
-          const endOfWeek = new Date(now.setDate(startOfWeek.getDate() + 6));
-          matchesStatus = due >= startOfWeek && due <= endOfWeek;
+        let matchesStatus = taskFilters.status === "all" && t.status !== "archived";
+        if (taskFilters.status === "todo") matchesStatus = t.status === "todo" || t.status === "pending";
+        if (taskFilters.status === "developing" || taskFilters.status === "doing" || taskFilters.status === "in_progress") {
+          matchesStatus = t.status === "doing" || t.status === "in_progress";
         }
-      }
+        if (taskFilters.status === "waiting" || taskFilters.status === "review") {
+          matchesStatus = t.status === "waiting" || t.status === "review";
+        }
+        if (taskFilters.status === "done") {
+          matchesStatus = t.status === "done" || t.status === "completed";
+        }
+        if (taskFilters.status === "archived") matchesStatus = t.status === "archived";
+        if (taskFilters.status === "blocked") matchesStatus = t.status === "blocked";
 
-      const matchesProposal = 
-        taskFilters.proposalId === "all" || 
-        t.proposalId === taskFilters.proposalId;
+        const priorityFilterValue = taskFilters.priority;
+        let matchesPriority = true;
+        if (priorityFilterValue === "all") {
+          matchesPriority = true;
+        } else if (priorityFilterValue === HIGH_PRIORITY_FILTER) {
+          matchesPriority = t.priority === "urgent" || t.priority === "high";
+        } else {
+          matchesPriority = t.priority === priorityFilterValue;
+        }
 
-      return (
-        isSearchMatched && 
-        matchesStatus && 
-        matchesPriority && 
-        matchesCategory &&
-        matchesProposal
-      );
-    });
+        const matchesCategory =
+          taskFilters.category === "all" ||
+          t.categoryCode === taskFilters.category;
+
+        if (taskFilters.status === "overdue") matchesStatus = isTaskOverdue(t);
+        if (taskFilters.status === "upcoming") matchesStatus = isTaskUpcoming(t);
+
+        // new filter: mytasks, today, thisweek
+        if (taskFilters.status === "mytasks") {
+          const userSearch = user?.email?.split("@")[0] || user?.displayName || "";
+          matchesStatus = Boolean(user && userSearch && assignee.includes(userSearch.toLowerCase()));
+        }
+        if (taskFilters.status === "today") {
+          matchesStatus = getDateKey(t.dueDate) === todayKey && t.status !== "archived";
+        }
+        if (taskFilters.status === "thisweek") {
+          if (!t.dueDate || t.status === "archived") matchesStatus = false;
+          else {
+            const due = new Date(t.dueDate);
+            matchesStatus = due >= weekStart && due <= weekEnd;
+          }
+        }
+
+        const matchesProposal =
+          taskFilters.proposalId === "all" ||
+          t.proposalId === taskFilters.proposalId;
+
+        return (
+          isSearchMatched &&
+          matchesStatus &&
+          matchesPriority &&
+          matchesCategory &&
+          matchesProposal
+        );
+      })
+      .sort((a, b) => {
+        const aOverdue = isTaskOverdue(a) ? 1 : 0;
+        const bOverdue = isTaskOverdue(b) ? 1 : 0;
+        if (aOverdue !== bOverdue) return bOverdue - aOverdue;
+        const priorityWeight: Record<string, number> = { urgent: 4, high: 3, medium: 2, low: 1 };
+        const priorityDiff = (priorityWeight[b.priority] || 0) - (priorityWeight[a.priority] || 0);
+        if (priorityDiff !== 0) return priorityDiff;
+        const aDue = getTaskDueEndTime(a.dueDate) || Number.MAX_SAFE_INTEGER;
+        const bDue = getTaskDueEndTime(b.dueDate) || Number.MAX_SAFE_INTEGER;
+        if (aDue !== bDue) return aDue - bDue;
+        return (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0);
+      });
   }, [activeTasks, taskFilters, user]);
 
   useEffect(() => {
@@ -3450,8 +3479,14 @@ function App() {
           ? taskDataOrPartial.categoryCode
           : "LV_DH";
 
+      const trimmedTitle = String(taskDataOrPartial.title || "").trim();
+      if (!trimmedTitle) {
+        toast.error("Vui lòng nhập tiêu đề công việc.");
+        return null;
+      }
+
       const finalData = {
-        title: String(taskDataOrPartial.title || "").trim(),
+        title: trimmedTitle,
         assignee: String(taskDataOrPartial.assignee || "").trim(),
         dueDate: String(taskDataOrPartial.dueDate || ""),
         categoryCode,
@@ -3562,8 +3597,10 @@ function App() {
         status,
         updatedAt: Date.now(),
       };
-      if (status === "done") {
+      if (status === "done" || status === "completed") {
         updateData.completedAt = Date.now();
+      } else {
+        updateData.completedAt = null;
       }
       await updateDoc(taskRef, updateData);
 
@@ -4210,14 +4247,19 @@ Nội dung văn bản:\n` + content,
 
   const saveAiTasks = async (tasks: any[]) => {
     if (!user) return;
+    const tasksToCreate = tasks.filter((t) => String(t.title || "").trim());
+    if (!tasksToCreate.length) {
+      toast.error("Chưa có công việc hợp lệ để lưu.");
+      return;
+    }
     try {
       const batch = writeBatch(db);
-      tasks.forEach((t) => {
+      tasksToCreate.forEach((t) => {
         const ref = doc(collection(db, "users", user.uid, "tasks"));
         const { id, clientId, selected, ...safeTask } = t;
         batch.set(ref, {
           ...safeTask,
-          title: t.title || "Công việc không tên",
+          title: String(t.title || "").trim(),
           priority: t.priority || "medium",
           categoryCode: t.categoryCode || "LV_DH",
           assignee: t.assignee || "",
@@ -4230,7 +4272,7 @@ Nội dung văn bản:\n` + content,
         });
       });
       await batch.commit();
-      toast.success(`Đã lưu ${tasks.length} công việc!`);
+      toast.success(`Đã lưu ${tasksToCreate.length} công việc!`);
     } catch (e: any) {
       toast.error("Lưu công việc thất bại: " + e.message);
     }

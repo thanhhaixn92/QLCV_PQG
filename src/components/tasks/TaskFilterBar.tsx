@@ -1,5 +1,6 @@
 import React from "react";
 import { cn } from "../../lib/utils";
+import { HIGH_PRIORITY_FILTER } from "./TaskHelpers";
 
 export const TaskFilterBar = ({ filters, setFilters }: any) => {
   const toggleFilter = (key: string, val: string) => {
@@ -12,7 +13,7 @@ export const TaskFilterBar = ({ filters, setFilters }: any) => {
     { label: "Hôm nay", key: "status", value: "today" },
     { label: "Tuần này", key: "status", value: "thisweek" },
     { label: "Quá hạn", key: "status", value: "overdue", alert: true },
-    { label: "Ưu tiên cao", key: "priority", value: "high", alert: true },
+    { label: "Ưu tiên cao", key: "priority", value: HIGH_PRIORITY_FILTER, alert: true },
     { label: "Đang xử lý", key: "status", value: "doing" },
     { label: "Chờ phản hồi", key: "status", value: "waiting" },
     { label: "Hoàn thành", key: "status", value: "done" },
@@ -22,7 +23,7 @@ export const TaskFilterBar = ({ filters, setFilters }: any) => {
   return (
     <div className="flex gap-2 overflow-x-auto hide-scrollbar pb-2 sm:pb-0 shrink-0 max-w-full">
       {chips.map((chip, idx) => {
-        const isActive = filters[chip.key] === chip.value || (chip.value === "high" && filters[chip.key] === "high");
+        const isActive = filters[chip.key] === chip.value;
         return (
           <button
             key={`task-filter-${chip.key}-${chip.value}`}

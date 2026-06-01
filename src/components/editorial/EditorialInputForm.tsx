@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { EditorialDocumentKind } from '../../types/editorial';
 import { EDITORIAL_KIND_CONFIG } from '../../lib/editorialTemplates';
 
@@ -8,15 +8,63 @@ interface Props {
   initialValue?: string;
 }
 
+const FIELD_LABELS: Array<{ field: string; pattern: RegExp }> = [
+  { field: 'generalContext', pattern: /^Yêu\s*cầu(?:\s*chung)?\s*\/\s*Bối\s*cảnh\s*[:：]\s*/iu },
+  { field: 'timeAndPlace', pattern: /^Thời\s*gian\s*&\s*Địa\s*điểm\s*[:：]\s*/iu },
+  { field: 'characters', pattern: /^(?:Thành\s*phần\s*\/\s*Nhân\s*vật|Thành\s*phần\s*tham\s*dự)\s*[:：]\s*/iu },
+  { field: 'recipients', pattern: /^(?:Gửi\s*đến|Cơ\s*quan\s*\/\s*Cá\s*nhân\s*nhận|Nơi\s*nhận)\s*[:：]\s*/iu },
+  { field: 'mainPoints', pattern: /^(?:Nội\s*dung\s*chính\s*cần\s*có|Các\s*ý\s*chính\s*bắt\s*buộc\s*phải\s*có)\s*[:：]\s*/iu },
+];
+
+function parseCompiledGuidance(value: string): Record<string, string> {
+  const parsed: Record<string, string> = {};
+  const blocks = String(value || '')
+    .replace(/\u00a0/gu, ' ')
+    .split(/\n{2,}/u)
+    .map((block) => block.trim())
+    .filter(Boolean);
+
+  blocks.forEach((block) => {
+    const matchedLabel = FIELD_LABELS.find(({ pattern }) => pattern.test(block));
+    if (!matchedLabel) {
+      parsed.generalContext = [parsed.generalContext, block].filter(Boolean).join('\n\n');
+      return;
+    }
+
+    const fieldValue = block.replace(matchedLabel.pattern, '').trim();
+    if (!fieldValue) return;
+    parsed[matchedLabel.field] = [parsed[matchedLabel.field], fieldValue].filter(Boolean).join('\n\n');
+  });
+
+  return { generalContext: '', ...parsed };
+}
+
+function pickFieldsForKind(formData: Record<string, string>, kind: EditorialDocumentKind): Record<string, string> {
+  const allowTimeAndPlace = ['news', 'press_release', 'meeting_minutes'].includes(kind);
+  const allowRecipients = ['official_letter', 'announcement', 'administrative_report'].includes(kind);
+
+  return {
+    generalContext: formData.generalContext || '',
+    ...(allowTimeAndPlace && formData.timeAndPlace ? { timeAndPlace: formData.timeAndPlace } : {}),
+    ...(allowTimeAndPlace && formData.characters ? { characters: formData.characters } : {}),
+    ...(allowRecipients && formData.recipients ? { recipients: formData.recipients } : {}),
+    ...(formData.mainPoints ? { mainPoints: formData.mainPoints } : {}),
+  };
+}
+
 export function EditorialInputForm({ kind, onChange, initialValue = '' }: Props) {
   const config = EDITORIAL_KIND_CONFIG[kind];
   
-  const [formData, setFormData] = useState<Record<string, string>>({
-    generalContext: initialValue
-  });
+  const [formData, setFormData] = useState<Record<string, string>>(() => parseCompiledGuidance(initialValue));
+  const lastCompiledGuidanceRef = useRef('');
 
   useEffect(() => {
-    setFormData({ generalContext: formData.generalContext || '' });
+    if (initialValue === lastCompiledGuidanceRef.current) return;
+    setFormData(parseCompiledGuidance(initialValue));
+  }, [initialValue]);
+
+  useEffect(() => {
+    setFormData((current) => pickFieldsForKind(current, kind));
   }, [kind]);
 
   useEffect(() => {
@@ -34,8 +82,10 @@ export function EditorialInputForm({ kind, onChange, initialValue = '' }: Props)
     
     if (formData.mainPoints) parts.push(`Nội dung chính cần có: ${formData.mainPoints}`);
     
-    onChange(parts.join('\n\n'));
-  }, [formData, kind]);
+    const compiledGuidance = parts.join('\n\n');
+    lastCompiledGuidanceRef.current = compiledGuidance;
+    onChange(compiledGuidance);
+  }, [formData, kind, onChange]);
 
   const handleChange = (field: string, val: string) => {
     setFormData(prev => ({ ...prev, [field]: val }));

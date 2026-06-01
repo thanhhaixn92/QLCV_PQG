@@ -12,16 +12,18 @@ export const TaskBoardView = ({ tasks, documents, openTaskEditor }: any) => {
     { title: "Đang xử lý", status: "doing", color: "border-blue-100 bg-blue-50/50", headerColor: "text-blue-700" },
     { title: "Chờ phản hồi", status: "waiting", color: "border-amber-100 bg-amber-50/50", headerColor: "text-amber-700" },
     { title: "Hoàn thành", status: "done", color: "border-emerald-100 bg-emerald-50/50", headerColor: "text-emerald-700" },
+    { title: "Lưu trữ", status: "archived", color: "border-slate-200 bg-slate-100/70", headerColor: "text-slate-600" },
   ];
 
   return (
-    <div className="flex gap-4 overflow-x-auto pb-4 hide-scrollbar snap-x h-[calc(100vh-280px)] min-h-[500px] items-stretch">
+    <div className="flex gap-4 overflow-x-auto pb-[calc(7rem+env(safe-area-inset-bottom))] hide-scrollbar snap-x h-[calc(100vh-280px)] min-h-[500px] items-stretch">
       {columns.map((col) => {
         const columnTasks = tasks.filter((t: any) => {
           if (col.status === "todo") return t.status === "todo" || t.status === "pending";
           if (col.status === "doing") return t.status === "doing" || t.status === "in_progress";
           if (col.status === "waiting") return t.status === "waiting" || t.status === "review";
           if (col.status === "done") return t.status === "done" || t.status === "completed";
+          if (col.status === "archived") return t.status === "archived";
           return false;
         });
 

@@ -226,6 +226,8 @@ export const EditorWorkspace = (props: any) => {
         [
           "Hãy chỉnh sửa bản thảo hiện tại theo yêu cầu của người dùng.",
           "Chỉ trả về toàn bộ bản thảo sau khi chỉnh sửa, không giải thích thêm.",
+          "Bắt buộc bảo toàn cấu trúc xuất bản hiện có: tiêu đề, sapo, heading, bullet list, ordered list, bảng markdown, caption bảng, placeholder ảnh và caption ảnh.",
+          "Không xóa placeholder ảnh có chủ đích; không biến bảng/list/caption thành đoạn văn thường; không thêm nhãn prompt kỹ thuật như Yêu cầu / Bối cảnh vào nội dung.",
           `Yêu cầu chỉnh sửa: ${prompt}`,
           "Bản thảo hiện tại:",
           normalizeEditorialBriefContent(output),
@@ -270,6 +272,7 @@ export const EditorWorkspace = (props: any) => {
     });
   }, [output, selectedLayout, user?.displayName, user?.email]);
 
+  const articleExportModel = React.useMemo(() => normalizeArticleDocumentForExport(articleDocument), [articleDocument]);
   const articleValidation = React.useMemo(() => validateArticleDocument(articleDocument), [articleDocument]);
   const preflightIssues = React.useMemo(() => articleValidation.preflightIssues, [articleValidation]);
   const preflightCounts = React.useMemo(() => countPreflightIssuesBySeverity(preflightIssues), [preflightIssues]);
@@ -1163,8 +1166,8 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                               const { exportPrintablePdfFromArticleExportModel } =
                                                 await import("../../lib/printablePdfExport");
                                               await exportPrintablePdfFromArticleExportModel(
-                                                normalizeArticleDocumentForExport(articleDocument), {
-                                                  title: `Bai_viet_HTMB_${Date.now()}`, 
+                                                articleExportModel, {
+                                                  title: articleExportModel.title || `Bai_viet_HTMB_${Date.now()}`,
                                                   profile: "article",
                                                   onValidationError: (msg) => {
                                                     dedupeToast(`pdf-validation-error-${msg}`, () => toast(`Lỗi: ${msg}`, { icon: '❌', duration: 4000 }));
@@ -1225,14 +1228,9 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                             if (!(await validateArticleBeforeExport())) return;
                                             const { exportWordFromArticleExportModel } = await import("../../lib/exportUtils");
                                             await exportWordFromArticleExportModel(
-                                              normalizeArticleDocumentForExport(articleDocument),
+                                              articleExportModel,
                                               {
-                                                title:
-                                                  sessions.find(
-                                                    (s) => s.id === currentSessionId,
-                                                  )?.title ||
-                                                  normalizeEditorialBriefInput(input) ||
-                                                  "Bài viết",
+                                                title: articleExportModel.title || "Bài viết",
                                                 filename: `Bai_viet_HTMB_${Date.now()}`,
                                                 kind: editorialKind,
                                               },
@@ -1286,11 +1284,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                             setExportingFormat("html");
                                             try {
                                               if (!(await validateArticleBeforeExport())) return;
-                                              const title =
-                                                sessions.find((s) => s.id === currentSessionId)?.title ||
-                                                normalizeEditorialBriefInput(input) ||
-                                                articleDocument.metadata?.title ||
-                                                "Bài viết A4";
+                                              const title = articleExportModel.title || articleDocument.metadata?.title || "Bài viết A4";
                                               const html = buildArticleHtml(articleDocument, { title });
                                               const filename = buildArticleHtmlFilename();
                                               downloadHtmlFile(html, filename);
