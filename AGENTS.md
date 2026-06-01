@@ -400,6 +400,295 @@ Rules for future AI outputs:
 
 ⸻
 
+10.1 Editorial UX Target Architecture — Intelligent Canvas Assistant
+
+Target architecture của module Trợ lý biên tập là Intelligent Canvas Assistant.
+
+Triết lý thiết kế:
+
+* Canvas là nơi xem, chọn ngữ cảnh, kiểm chứng và áp dụng kết quả.
+* Copilot là trung tâm cho các hành động thông minh.
+* Header chỉ giữ thao tác hệ thống tối thiểu.
+
+Header mục tiêu chỉ gồm:
+
+* tên bài;
+* trạng thái lưu;
+* Lưu;
+* Xuất;
+* menu ba chấm cho thao tác phụ.
+
+Rules:
+
+* Không tiếp tục mở rộng module panel 6 mục như hướng dài hạn.
+* Module panel 6 mục hiện tại nếu còn trong source chỉ là trạng thái transitional/legacy.
+* Không biến app thành chat-only tuyệt đối: Lưu/Xuất/trạng thái tài liệu vẫn là thao tác hệ thống.
+* Không đưa “Lịch sử”, “Nguồn tư liệu”, “Mẫu”, “Rà soát”, “Tóm tắt” thành menu ngang chính cạnh tranh với Copilot.
+* Canvas phải là vùng chính để xem bản thảo/A4 Preview, kết quả rà soát/tóm tắt, nguồn tư liệu, lịch sử văn bản và proposal/diff trước khi áp dụng.
+
+⸻
+
+10.2 Floating Copilot Implementation Rules
+
+Copilot có đúng 3 trạng thái chính:
+
+* collapsed;
+* expanded;
+* fullscreen.
+
+Rules:
+
+* Không dùng nhiều snap states như peek/half nếu không có yêu cầu riêng.
+* Không auto-open Copilot mặc định khi single click.
+* Single click/tap block chỉ:
+    * highlight block;
+    * hiện pill “Hỏi AI”;
+    * hiển thị badge context trên Copilot icon.
+* Bấm pill, double click hoặc bấm Copilot icon mới mở Copilot.
+* Nếu Copilot đang mở thì chọn block mới có thể cập nhật context ngay.
+
+Pill “Hỏi AI” rules:
+
+* Chọn 1 block: hiện pill gần block.
+* Chọn 2–3 block: hiện một pill tổng.
+* Chọn trên 3 block: chỉ hiện badge trên Copilot icon.
+* Pill tự ẩn sau khoảng 5 giây nếu không bấm.
+* Pill không được lệch khi scroll.
+* Pill phải có z-index đủ cao nhưng không che nội dung chính.
+
+State rules:
+
+* Copilot state không được dùng global window variable.
+* State nên tập trung trong React Context, store hiện có, hoặc component workspace rõ ràng.
+* State tối thiểu:
+    * isCopilotOpen;
+    * copilotViewMode;
+    * selectedContextItems;
+    * activeCommandId;
+    * pendingProposal;
+    * onboardingSeen.
+
+⸻
+
+10.3 Context Attachment Rules
+
+Context attachment là cách đưa nội dung đang chọn vào Copilot.
+
+Các loại context gợi ý:
+
+* paragraph;
+* heading;
+* table;
+* figure;
+* source;
+* preflight_issue;
+* history_session;
+* draft;
+* selection.
+
+UI rules:
+
+* UI không hiển thị khái niệm primary/supporting context cho user.
+* UI chỉ hiển thị đơn giản, ví dụ:
+    * “Đã chọn: 1 đoạn văn”;
+    * “Đã chọn: 1 bảng”;
+    * “Đã chọn: 2 nguồn tư liệu”.
+* Mỗi attachment nên có:
+    * loại context;
+    * title/excerpt ngắn;
+    * nút bỏ context.
+* Không attach full text dài nếu chỉ cần excerpt.
+* Không đưa secret/token/API key vào context.
+
+⸻
+
+10.4 Proposal / Apply / Cancel Safety Rules
+
+AI/rule không được tự ghi đè nội dung.
+
+Mọi sửa đổi nội dung phải qua:
+
+* proposal preview;
+* Apply;
+* Cancel.
+
+Rules:
+
+* Apply mới cập nhật nội dung.
+* Cancel không thay đổi nội dung gốc.
+* Nếu chưa làm visual diff phức tạp, dùng preview card rõ:
+    * nội dung hiện tại;
+    * đề xuất mới.
+* Khi Apply:
+    * cập nhật đúng block nếu xác định được;
+    * đánh dấu draft dirty;
+    * không tự lưu đè session nếu user chưa lưu.
+* Nếu không xác định được block an toàn, không apply tự động; báo rõ cần người dùng copy/sửa tay.
+
+⸻
+
+10.5 Editorial Workflow Router MVP Rules
+
+Tên tầng là Editorial Workflow Router MVP.
+
+Naming rules:
+
+* Không gọi là Learning Loop.
+* Không gọi là Hermes-like.
+* Không gọi là auto-learning.
+
+PR1 của router là rule-first + AI fallback.
+
+Router order:
+
+1. exact commandId;
+2. alias hợp lệ;
+3. keyword + contextType;
+4. confidence threshold mặc định 0.85 cho keyword/context match;
+5. AI fallback.
+
+Rules:
+
+* Exact commandId và alias hợp lệ được coi là match chắc chắn.
+* Threshold 0.85 phải là hằng số cấu hình, không hard-code rải rác.
+* Không fuzzy matching.
+* Không Levenshtein.
+* Không embedding.
+* Không ML classifier.
+* Không AI classifier để chọn rule trong MVP.
+* Không auto-generate rule.
+* Không tự học từ Apply.
+
+⸻
+
+10.6 EditorialExecutionResult Schema Rules
+
+Rule và AI fallback phải trả cùng một schema thống nhất.
+
+Rules:
+
+* UI Copilot dùng chung schema để render Proposal / Preview / Apply / Cancel.
+* Dùng source: "rule" | "ai".
+* Không thêm executedBy nếu đã có source.
+* Nên có:
+    * commandId;
+    * proposal;
+    * confidence;
+    * ruleId/ruleName/ruleVersion;
+    * model;
+    * fallbackReason;
+    * telemetry;
+    * error.
+* Proposal nên là discriminated union, ví dụ:
+    * replace_block;
+    * insert_before;
+    * insert_after;
+    * add_caption;
+    * review_report;
+    * checklist;
+    * message.
+
+⸻
+
+10.7 Static Rule Registry Rules
+
+Rule registry ở MVP là static, reviewable.
+
+Rules:
+
+* Không để AI tự tạo rule.
+* Core rules bắt buộc của PR1 router:
+    1. create_table_caption;
+    2. create_figure_caption;
+    3. normalize_caption_title;
+    4. check_missing_source_or_caption;
+    5. remove_bad_technical_markers;
+    6. create_a4_review_checklist;
+    7. check_long_paragraph;
+    8. normalize_basic_heading.
+* Optional rules chỉ làm nếu không tăng rủi ro:
+    * normalize_inline_spacing;
+    * detect_table_missing_title;
+    * suggest_list_to_table;
+    * check_placeholder_caption.
+* Tác vụ semantic như viết lại, tóm tắt, phản biện, phân tích pháp lý phải fallback AI, không giả lập bằng template cứng.
+
+⸻
+
+10.8 AI Case Logging and Telemetry Rules
+
+Logging rules:
+
+* Chỉ logging AI case khi gọi AI thật.
+* Nếu codebase có backend/API proxy và Firebase token verification thì logging phải đi qua backend API.
+* Không cho frontend ghi tùy tiện vào collection review/cases nếu chưa có pattern an toàn.
+* Không refactor Auth/Firebase rules/Admin role chỉ để logging trong PR1.
+
+Case logging chỉ lưu:
+
+* userId;
+* sessionId nếu có;
+* commandId;
+* source;
+* model;
+* contextTypes;
+* excerpt ngắn;
+* hash để đối chiếu, nhưng không coi hash là bảo mật;
+* proposal type;
+* applied status;
+* timestamps;
+* error/fallbackReason nếu có.
+
+Không lưu:
+
+* full text dài;
+* file content đầy đủ;
+* API key;
+* token;
+* dữ liệu nhạy cảm toàn văn.
+
+Telemetry nhẹ cho rule/AI command có thể gồm:
+
+* commandId;
+* source;
+* ruleId;
+* model;
+* contextTypes;
+* durationMs;
+* ok;
+* errorCode;
+* applied.
+
+Không làm Admin Dashboard/Rule Management trong MVP.
+
+⸻
+
+10.9 PR Sequencing and Dependency Rules
+
+Rules:
+
+* Trước khi làm PR phụ thuộc, phải kiểm tra source thực tế đã có nền PR trước chưa.
+* Ví dụ trước khi làm Workflow Router phải kiểm tra:
+    * src/components/copilot/FloatingCopilot.tsx có tồn tại không;
+    * A4PrintPreview.tsx đã hỗ trợ selectable blocks chưa;
+    * EditorWorkspace.tsx đã có proposal/apply/cancel workflow chưa.
+* Nếu PR nền chưa tích hợp vào source hiện tại, không được viết code giả định nó đã tồn tại.
+* Không stack PR phụ thuộc lên PR chưa runtime PASS nếu user chưa yêu cầu.
+* Nếu cần tiếp tục trên branch chưa merge, báo rõ branch phụ thuộc và changed files.
+
+⸻
+
+10.10 AI Studio / ZIP Handoff for Copilot Work
+
+Rules:
+
+* Khi ZIP handoff liên quan Copilot/A4 Preview, chỉ gồm file changed.
+* Không đưa #printable-article wrapper app UI vào export.
+* Interactive UI như pill, highlight, Copilot panel phải có cơ chế export-exclude hoặc không nằm trong #printable-article.
+* Sau apply phải test export HTML/PDF/Word để chắc chắn không dính Copilot UI.
+
+⸻
+
 11. Required Response Format for Investigation
 
 When investigating, respond with:

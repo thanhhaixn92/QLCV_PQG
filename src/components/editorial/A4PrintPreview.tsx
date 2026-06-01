@@ -10,9 +10,13 @@ interface A4PrintPreviewProps {
   className?: string;
   rootId?: string;
   showValidationSummary?: boolean;
+  selectableBlocks?: boolean;
+  selectedBlockIds?: string[];
+  onBlockSelect?: (block: ArticleBlock, event: React.MouseEvent<HTMLElement>) => void;
+  onBlockOpen?: (block: ArticleBlock, event: React.MouseEvent<HTMLElement>) => void;
 }
 
-function textSlot(block: ArticleBlock, slot: keyof ArticleBlock["slots"] = "text"): string {
+export function getArticleBlockText(block: ArticleBlock, slot: keyof ArticleBlock["slots"] = "text"): string {
   return cleanTextForExport(block.slots?.[slot]);
 }
 
@@ -88,28 +92,86 @@ function blockStyleClass(block: ArticleBlock): string {
     .join(" ");
 }
 
+export function getArticleBlockExcerpt(block: ArticleBlock): string {
+  const directText = getArticleBlockText(block) || getArticleBlockText(block, "caption") || getArticleBlockText(block, "title");
+  if (directText) return directText;
+
+  const items = stringItems(block);
+  if (items.length > 0) return items.slice(0, 2).join(" • ");
+
+  const rows = tableRows(block);
+  if (rows.length > 0) return rows.slice(0, 2).map((row) => row.map((cell) => cell.text).join(" | ")).join(" / ");
+
+  const leadItems = leadInItems(block);
+  if (leadItems.length > 0) return leadItems.slice(0, 2).map((item) => `${item.label}: ${item.body}`).join(" • ");
+
+  return block.type;
+}
+
+function withSelectableBlock(
+  node: React.ReactNode,
+  block: ArticleBlock,
+  options?: {
+    selectableBlocks?: boolean;
+    selectedBlockIds?: string[];
+    onBlockSelect?: (block: ArticleBlock, event: React.MouseEvent<HTMLElement>) => void;
+    onBlockOpen?: (block: ArticleBlock, event: React.MouseEvent<HTMLElement>) => void;
+  },
+): React.ReactNode {
+  if (!options?.selectableBlocks || !React.isValidElement(node)) return node;
+
+  const element = node as React.ReactElement<any>;
+  const isSelected = options.selectedBlockIds?.includes(block.id) === true;
+  const className = [element.props.className, "a4-canvas-selectable cursor-pointer rounded-sm transition-shadow hover:ring-2 hover:ring-blue-200 focus:outline-none focus:ring-2 focus:ring-blue-300", isSelected ? "a4-canvas-selected ring-2 ring-blue-400 bg-blue-50/30" : ""].filter(Boolean).join(" ");
+
+  return React.cloneElement(element, {
+    className,
+    tabIndex: 0,
+    role: element.props.role || "button",
+    "data-canvas-block-id": block.id,
+    "data-canvas-block-type": block.type,
+    onClick: (event: React.MouseEvent<HTMLElement>) => {
+      element.props.onClick?.(event);
+      event.stopPropagation();
+      options.onBlockSelect?.(block, event);
+    },
+    onDoubleClick: (event: React.MouseEvent<HTMLElement>) => {
+      element.props.onDoubleClick?.(event);
+      event.stopPropagation();
+      options.onBlockOpen?.(block, event);
+    },
+    onKeyDown: (event: React.KeyboardEvent<HTMLElement>) => {
+      element.props.onKeyDown?.(event);
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        options.onBlockOpen?.(block, event as unknown as React.MouseEvent<HTMLElement>);
+      }
+    },
+  });
+}
+
 function renderBlock(block: ArticleBlock): React.ReactNode {
   const className = blockStyleClass(block);
 
   switch (block.type) {
     case "title": {
-      const text = textSlot(block);
+      const text = getArticleBlockText(block);
       return text ? <h1 className={className}>{text}</h1> : null;
     }
     case "sapo": {
-      const text = textSlot(block);
+      const text = getArticleBlockText(block);
       return text ? <p className={className}>{text}</p> : null;
     }
     case "section-heading": {
-      const text = textSlot(block);
+      const text = getArticleBlockText(block);
       return text ? <h2 className={className}>{text}</h2> : null;
     }
     case "paragraph": {
-      const text = textSlot(block);
+      const text = getArticleBlockText(block);
       return text ? <p className={className}>{text}</p> : null;
     }
     case "conclusion": {
-      const text = textSlot(block);
+      const text = getArticleBlockText(block);
       return text ? <p className={`${className} a4-conclusion`}>{text}</p> : null;
     }
     case "bullet-list": {
@@ -135,20 +197,20 @@ function renderBlock(block: ArticleBlock): React.ReactNode {
       );
     }
     case "quote": {
-      const text = textSlot(block);
-      const caption = textSlot(block, "caption");
+      const text = getArticleBlockText(block);
+      const caption = getArticleBlockText(block, "caption");
       return text ? <blockquote className={className}>{text}{caption && <cite>{caption}</cite>}</blockquote> : null;
     }
     case "callout": {
-      const title = textSlot(block, "title");
-      const text = textSlot(block);
-      const note = textSlot(block, "note");
+      const title = getArticleBlockText(block, "title");
+      const text = getArticleBlockText(block);
+      const note = getArticleBlockText(block, "note");
       return text ? <aside className={`${className} a4-callout`}>{title && <strong>{title}</strong>}<p>{text}</p>{note && <small>{note}</small>}</aside> : null;
     }
     case "fact-box": {
-      const title = textSlot(block, "title") || "Thông tin nổi bật";
+      const title = getArticleBlockText(block, "title") || "Thông tin nổi bật";
       const items = stringItems(block);
-      const note = textSlot(block, "note");
+      const note = getArticleBlockText(block, "note");
       return items.length > 0 ? (
         <aside className={`${className} a4-fact-box`}>
           <strong>{title}</strong>
@@ -159,7 +221,7 @@ function renderBlock(block: ArticleBlock): React.ReactNode {
     }
     case "table": {
       const rows = tableRows(block);
-      const caption = textSlot(block, "caption");
+      const caption = getArticleBlockText(block, "caption");
       if (rows.length === 0) return null;
       return (
         <figure className={`${className} a4-table-figure`}>
@@ -209,11 +271,11 @@ function renderBlock(block: ArticleBlock): React.ReactNode {
       );
     }
     case "figure-placeholder": {
-      const title = textSlot(block, "title");
-      const caption = textSlot(block, "caption");
-      const note = textSlot(block, "note");
-      const description = textSlot(block, "description");
-      const aspectRatio = textSlot(block, "aspectRatio") || "16:9";
+      const title = getArticleBlockText(block, "title");
+      const caption = getArticleBlockText(block, "caption");
+      const note = getArticleBlockText(block, "note");
+      const description = getArticleBlockText(block, "description");
+      const aspectRatio = getArticleBlockText(block, "aspectRatio") || "16:9";
       const source = optionalStringSlot(block, "source");
       const boxLabel = title && title !== caption ? title : "Vị trí chèn ảnh minh họa";
       return (
@@ -235,8 +297,18 @@ function renderBlock(block: ArticleBlock): React.ReactNode {
   }
 }
 
-export function renderArticleDocumentToHtmlA4(document: ArticleDocument): React.ReactNode {
-  return document.blocks.map((block) => <React.Fragment key={block.id}>{renderBlock(block)}</React.Fragment>);
+export function renderArticleDocumentToHtmlA4(
+  document: ArticleDocument,
+  options?: {
+    selectableBlocks?: boolean;
+    selectedBlockIds?: string[];
+    onBlockSelect?: (block: ArticleBlock, event: React.MouseEvent<HTMLElement>) => void;
+    onBlockOpen?: (block: ArticleBlock, event: React.MouseEvent<HTMLElement>) => void;
+  },
+): React.ReactNode {
+  return document.blocks.map((block) => (
+    <React.Fragment key={block.id}>{withSelectableBlock(renderBlock(block), block, options)}</React.Fragment>
+  ));
 }
 
 export const A4PrintPreview = ({
@@ -244,6 +316,10 @@ export const A4PrintPreview = ({
   className = "",
   rootId,
   showValidationSummary = true,
+  selectableBlocks = false,
+  selectedBlockIds = [],
+  onBlockSelect,
+  onBlockOpen,
 }: A4PrintPreviewProps) => {
   const validation = React.useMemo(() => validateArticleDocument(document), [document]);
   const validationCounts = React.useMemo(
@@ -275,7 +351,7 @@ export const A4PrintPreview = ({
         className={["print-layout", "a4-preview", className].filter(Boolean).join(" ")}
         data-template-id={document.templateId}
       >
-        {renderArticleDocumentToHtmlA4(document)}
+        {renderArticleDocumentToHtmlA4(document, { selectableBlocks, selectedBlockIds, onBlockSelect, onBlockOpen })}
       </article>
     </>
   );
