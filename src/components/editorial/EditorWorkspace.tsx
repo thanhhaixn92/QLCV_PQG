@@ -130,6 +130,33 @@ function buildContextFromBlock(block: ArticleBlock): CopilotContextItem {
   };
 }
 
+const COPILOT_TARGET_SCOPED_COMMANDS = new Set<CopilotCommandId>(["rewrite_selection", "shorten_selection", "fix_selection", "strengthen_argument"]);
+const COPILOT_SECTION_HEADING_PATTERN = /^(?:tiêu đề|sapo|sa-pô|thân bài|mở bài|kết luận|nội dung|heading|title)\s*[:：]/imu;
+const COPILOT_MARKDOWN_LINE_PREFIX = /^(?:#{1,6}|[-*+]\s+|\d+[.)]\s+|>\s*)+/u;
+
+function sanitizeProposalReplacement(value: string, targetType?: CopilotContextItem["type"]): string {
+  const cleaned = String(value || "")
+    .split(/\r?\n/)
+    .map((line) => line.replace(COPILOT_MARKDOWN_LINE_PREFIX, "").replace(/(?:\*\*|__|`)/g, "").trim())
+    .filter(Boolean)
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  if (targetType === "heading") {
+    return cleaned.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)[0]?.replace(COPILOT_SECTION_HEADING_PATTERN, "").trim() || "";
+  }
+  return cleaned;
+}
+
+function isSafeReplacementForTarget(value: string, targetType?: CopilotContextItem["type"]): boolean {
+  const cleaned = value.trim();
+  if (!cleaned || COPILOT_SECTION_HEADING_PATTERN.test(cleaned)) return false;
+  const lines = cleaned.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (targetType === "heading") return lines.length === 1 && cleaned.length <= 180;
+  if (targetType === "paragraph") return !lines.some((line) => COPILOT_SECTION_HEADING_PATTERN.test(line) || COPILOT_MARKDOWN_LINE_PREFIX.test(line));
+  return true;
+}
+
 function extractDocumentText(document: any): string {
   if (!document) return "";
   const candidates = [document.content, document.text, document.summary, document.description, document.excerpt, document.name, document.title];
@@ -613,40 +640,55 @@ export const EditorWorkspace = (props: any) => {
     }
 
     if (proposal.type === "replace_block") {
+      const targetContext = selectedContextItems.find((item) => item.blockId === proposal.targetBlockId) || selectedBlockContext;
+      const sanitizedText = sanitizeProposalReplacement(proposal.afterText, targetContext?.type);
+      const isTargetScopedCommand = COPILOT_TARGET_SCOPED_COMMANDS.has(result.commandId as CopilotCommandId);
+      const canApply = Boolean(
+        result.ok &&
+        !result.error &&
+        proposal.targetBlockId &&
+        proposal.beforeText?.trim() &&
+        sanitizedText &&
+        isSafeReplacementForTarget(sanitizedText, targetContext?.type) &&
+        (!isTargetScopedCommand || proposal.targetBlockId === targetContext?.blockId),
+      );
       return {
         commandId: result.commandId,
-        title: result.ruleName || "Đề xuất thay thế block",
+        title: result.ruleName || (canApply ? "Đề xuất thay thế block" : "Đề xuất tham khảo"),
         targetContextId: proposal.targetBlockId,
         currentText: proposal.beforeText,
-        proposedText: proposal.afterText,
-        note: proposal.reason,
-        canApply: result.ok,
+        proposedText: sanitizedText || proposal.afterText,
+        note: canApply ? proposal.reason : result.error?.message || "Chưa đủ điều kiện xác định target/replacement an toàn để áp dụng tự động.",
+        canApply,
         executionResult: result,
       };
     }
 
     if (proposal.type === "add_caption") {
+      const canApply = Boolean(result.ok && !result.error && proposal.targetBlockId && proposal.caption.trim());
       return {
         commandId: result.commandId,
         title: result.ruleName || (proposal.captionKind === "table" ? "Đề xuất caption bảng" : "Đề xuất caption hình"),
         targetContextId: proposal.targetBlockId,
         currentText: selectedBlockContext?.excerpt,
-        proposedText: proposal.caption,
+        proposedText: sanitizeProposalReplacement(proposal.caption),
         note: proposal.reason,
-        canApply: result.ok,
+        canApply,
         executionResult: result,
       };
     }
 
     if (proposal.type === "insert_before" || proposal.type === "insert_after") {
+      const sanitizedText = sanitizeProposalReplacement(proposal.text, selectedBlockContext?.type);
+      const canApply = Boolean(result.ok && !result.error && proposal.targetBlockId && selectedBlockContext?.excerpt?.trim() && sanitizedText);
       return {
         commandId: result.commandId,
         title: proposal.type === "insert_before" ? "Đề xuất chèn trước block" : "Đề xuất chèn sau block",
         targetContextId: proposal.targetBlockId,
         currentText: selectedBlockContext?.excerpt,
-        proposedText: proposal.text,
+        proposedText: sanitizedText || proposal.text,
         note: proposal.reason,
-        canApply: result.ok,
+        canApply,
         executionResult: result,
       };
     }
@@ -688,7 +730,7 @@ export const EditorWorkspace = (props: any) => {
       canApply: false,
       executionResult: result,
     };
-  }, [selectedBlockContext?.excerpt]);
+  }, [selectedBlockContext, selectedContextItems]);
 
   const effectiveCopilotContexts = React.useCallback((): CopilotContextItem[] => {
     const draftText = normalizeEditorialBriefContent(output || "");
@@ -751,25 +793,49 @@ export const EditorWorkspace = (props: any) => {
   const handleApplyCopilotProposal = React.useCallback(() => {
     if (!pendingProposal) return;
     const executionProposal = pendingProposal.executionResult?.proposal;
-    if (!pendingProposal.canApply || !executionProposal) {
+    if (!pendingProposal.canApply || !executionProposal || pendingProposal.executionResult?.error) {
       setCopilotStatusMessage("Đề xuất này là kết quả tham khảo nên không áp dụng trực tiếp vào bản thảo.");
       return;
     }
 
     let nextOutput: string | null = null;
     if (executionProposal.type === "add_caption") {
-      nextOutput = applyCaptionProposalToOutput(executionProposal);
+      if (!executionProposal.targetBlockId || !pendingProposal.proposedText.trim()) {
+        setCopilotStatusMessage("Không đủ target/caption an toàn để áp dụng tự động.");
+        return;
+      }
+      nextOutput = applyCaptionProposalToOutput({ ...executionProposal, caption: pendingProposal.proposedText });
       if (!nextOutput) {
         const currentText = pendingProposal.currentText || selectedBlockContext?.excerpt || "";
-        nextOutput = replaceOutputText(currentText, `${currentText}\n${executionProposal.caption}`);
+        nextOutput = replaceOutputText(currentText, `${currentText}
+${pendingProposal.proposedText}`);
       }
     } else if (executionProposal.type === "replace_block") {
-      nextOutput = replaceOutputText(executionProposal.beforeText || pendingProposal.currentText || selectedBlockContext?.excerpt || "", executionProposal.afterText);
+      const targetContext = selectedContextItems.find((item) => item.blockId === executionProposal.targetBlockId) || selectedBlockContext;
+      const replacement = sanitizeProposalReplacement(pendingProposal.proposedText, targetContext?.type);
+      const isTargetScopedCommand = COPILOT_TARGET_SCOPED_COMMANDS.has(pendingProposal.commandId as CopilotCommandId);
+      if (
+        !executionProposal.targetBlockId ||
+        !executionProposal.beforeText?.trim() ||
+        !replacement ||
+        !isSafeReplacementForTarget(replacement, targetContext?.type) ||
+        (isTargetScopedCommand && executionProposal.targetBlockId !== targetContext?.blockId)
+      ) {
+        setCopilotStatusMessage("Đề xuất thiếu target/replacement an toàn nên không thể Apply tự động.");
+        return;
+      }
+      nextOutput = replaceOutputText(executionProposal.beforeText, replacement);
     } else if (executionProposal.type === "insert_before" || executionProposal.type === "insert_after") {
+      if (!executionProposal.targetBlockId || !pendingProposal.proposedText.trim()) {
+        setCopilotStatusMessage("Không đủ target/nội dung an toàn để chèn tự động.");
+        return;
+      }
       const currentText = pendingProposal.currentText || selectedBlockContext?.excerpt || "";
       const replacement = executionProposal.type === "insert_before"
-        ? `${executionProposal.text}\n${currentText}`
-        : `${currentText}\n${executionProposal.text}`;
+        ? `${pendingProposal.proposedText}
+${currentText}`
+        : `${currentText}
+${pendingProposal.proposedText}`;
       nextOutput = replaceOutputText(currentText, replacement);
     }
 
@@ -786,7 +852,7 @@ export const EditorWorkspace = (props: any) => {
       console.info("[editorial-workflow-router] apply telemetry", getEditorialWorkflowTelemetry(pendingProposal.executionResult, selectedContextItems, true));
     }
     toast.success("Đã áp dụng đề xuất vào bản thảo. Hãy kiểm tra lại trên Canvas trước khi lưu.");
-  }, [applyCaptionProposalToOutput, pendingProposal, replaceOutputText, selectedBlockContext?.excerpt, selectedContextItems, setOutput, toast]);
+  }, [applyCaptionProposalToOutput, pendingProposal, replaceOutputText, selectedBlockContext, selectedContextItems, setOutput, toast]);
 
   const handleSubmitCopilotPrompt = React.useCallback(async () => {
     const prompt = normalizeEditorialBriefInput(copilotInput);
