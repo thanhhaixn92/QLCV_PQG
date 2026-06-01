@@ -27,8 +27,6 @@ This project prioritizes:
 * A4 print-ready article preview.
 * Reliable DOCX/PDF export.
 * Minimal, reviewable changes.
-* Human-in-the-loop AI actions.
-* Data safety before UI ambition.
 
 ⸻
 
@@ -48,7 +46,6 @@ Rules:
 * Health endpoint: /api/health.
 * /api/health must always return JSON.
 * Do not make /api/health depend on authenticated user state, Firestore availability, AI provider availability, or rate-limited user flows.
-* If npm run test:e2e exists, run it when the environment supports Playwright/browser execution. If blocked by browser/system dependencies, report clearly and do not pretend PASS.
 
 ⸻
 
@@ -126,9 +123,6 @@ src/lib/publishing/articleDocument.ts
     * .env;
     * service account JSON;
     * PDF/DOCX test output;
-    * HTML export output;
-    * Playwright report/test-results;
-    * screenshots/videos/traces;
     * temporary patch files;
     * unrelated source folders.
 6. Do not commit the ZIP.
@@ -156,13 +150,11 @@ Do not commit:
 * service account JSON;
 * private keys;
 * generated PDF/DOCX/ZIP outputs;
-* generated HTML export outputs;
 * patch/test artifacts;
-* Playwright reports/test-results/screenshots/videos/traces;
 * node_modules;
 * dist unless explicitly required by deployment workflow.
 
-Do not change the following unless the task directly asks for it and the verified root cause requires it:
+Do not change the following unless the task directly asks for it and the root cause requires it:
 
 * Auth/Login/Profile/Admin role behavior.
 * Firebase config.
@@ -292,7 +284,6 @@ Be extra careful with:
 * A4 Print Preview / publishing engine.
 * Rate limiter and /api/health.
 * AI chatbox.
-* Floating Copilot / Editorial Copilot.
 * API key management.
 * User API key encryption/decryption.
 * Render configuration.
@@ -328,8 +319,7 @@ Rules:
 
 * There should be one primary preview: A4 Print Preview.
 * Do not maintain a separate “web preview” and “print preview” unless explicitly requested.
-* #printable-article must refer to the exportable A4 article content, not a wrapper containing toolbar, validation panels, editor controls, Copilot UI, pill UI, selection highlights, or app UI.
-* Interactive UI such as Copilot panel, pill “Hỏi AI”, context highlight, selection badge, toolbars, and validation panels must not be included in exported HTML/PDF/DOCX.
+* #printable-article must refer to the exportable A4 article content, not a wrapper containing toolbar, validation panels, editor controls, or app UI.
 * Validation warnings may be displayed in UI, but must not be included in exported PDF/DOCX unless explicitly designed as part of the article.
 * Do not let .prose or global typography styles accidentally override A4 print layout.
 * Keep CSS scoped to the A4 preview/export container.
@@ -410,410 +400,296 @@ Rules for future AI outputs:
 
 ⸻
 
-11. Editorial UX Target Architecture — Intelligent Canvas Assistant
+10.1 Editorial UX Target Architecture — Intelligent Canvas Assistant
 
-Target architecture of the Editorial Assistant is:
+Target architecture của module Trợ lý biên tập là Intelligent Canvas Assistant.
 
-Intelligent Canvas Assistant
-= Canvas-first
-+ Copilot-primary
-+ Header-minimal
-+ Human-in-the-loop AI actions
+Triết lý thiết kế:
 
-Principles:
+* Canvas là nơi xem, chọn ngữ cảnh, kiểm chứng và áp dụng kết quả.
+* Copilot là trung tâm cho các hành động thông minh.
+* Header chỉ giữ thao tác hệ thống tối thiểu.
 
-* Canvas is where the user reads, selects context, verifies output, and applies results.
-* Copilot is the central place for intelligent actions.
-* Header only holds minimal system actions.
-* The app must not become chat-only: Save/Export/document state remain system actions.
-* Do not continue expanding the 6-item module panel as the long-term UX direction.
-* If the 6-item module panel still exists in source, treat it as transitional/legacy.
-* Do not introduce a second module sidebar that competes with the Canvas.
-* Global app sidebar may exist, but must be thin/icon-only/collapsible where possible.
+Header mục tiêu chỉ gồm:
 
-Target header:
-
-[Document title]   [Saved / Unsaved status]   [Save] [Export ▾] [⋯]
-
-Export dropdown:
-
-* Word
-* PDF
-* HTML A4
-
-Overflow menu may contain:
-
-* Lịch sử văn bản
-* Nguồn tư liệu
-* Mẫu văn bản
-* Cài đặt xuất bản
-* Xóa bản nháp
-
-These overflow actions must not become a heavy horizontal module menu.
-
-⸻
-
-12. Floating Copilot Implementation Rules
-
-Floating Copilot has three states only:
-
-* collapsed
-* expanded
-* fullscreen
+* tên bài;
+* trạng thái lưu;
+* Lưu;
+* Xuất;
+* menu ba chấm cho thao tác phụ.
 
 Rules:
 
-* Do not introduce many snap states such as peek or half unless explicitly requested.
-* Do not auto-open Copilot by default on single click.
-* Single click/tap block should only:
-    * highlight the block;
-    * show pill “Hỏi AI”;
-    * show context badge on Copilot icon.
-* Open Copilot only when user:
-    * clicks pill “Hỏi AI”;
-    * double-clicks a supported block;
-    * clicks Copilot icon;
-    * uses a supported shortcut if implemented.
-* If Copilot is already open, selecting another supported block may update the context immediately.
-* If user scrolls, taps empty space, clicks a system button, or navigates normally, Copilot must not open unexpectedly.
+* Không tiếp tục mở rộng module panel 6 mục như hướng dài hạn.
+* Module panel 6 mục hiện tại nếu còn trong source chỉ là trạng thái transitional/legacy.
+* Không biến app thành chat-only tuyệt đối: Lưu/Xuất/trạng thái tài liệu vẫn là thao tác hệ thống.
+* Không đưa “Lịch sử”, “Nguồn tư liệu”, “Mẫu”, “Rà soát”, “Tóm tắt” thành menu ngang chính cạnh tranh với Copilot.
+* Canvas phải là vùng chính để xem bản thảo/A4 Preview, kết quả rà soát/tóm tắt, nguồn tư liệu, lịch sử văn bản và proposal/diff trước khi áp dụng.
+
+⸻
+
+10.2 Floating Copilot Implementation Rules
+
+Copilot có đúng 3 trạng thái chính:
+
+* collapsed;
+* expanded;
+* fullscreen.
+
+Rules:
+
+* Không dùng nhiều snap states như peek/half nếu không có yêu cầu riêng.
+* Không auto-open Copilot mặc định khi single click.
+* Single click/tap block chỉ:
+    * highlight block;
+    * hiện pill “Hỏi AI”;
+    * hiển thị badge context trên Copilot icon.
+* Bấm pill, double click hoặc bấm Copilot icon mới mở Copilot.
+* Nếu Copilot đang mở thì chọn block mới có thể cập nhật context ngay.
 
 Pill “Hỏi AI” rules:
 
-* Selecting 1 block: show pill near the block.
-* Selecting 2–3 blocks: show one aggregate pill, for example “Hỏi AI về 3 nội dung”.
-* Selecting more than 3 blocks: do not show multiple pills; only show badge on Copilot icon.
-* Pill should auto-hide after about 5 seconds if not clicked.
-* Pill should reappear when user interacts again with the selected block.
-* Pill must have enough z-index, but must not obscure core reading/editing content.
-* Pill position must be anchored reliably and must not drift badly during scroll.
-* There must be a clear way to clear selected context.
+* Chọn 1 block: hiện pill gần block.
+* Chọn 2–3 block: hiện một pill tổng.
+* Chọn trên 3 block: chỉ hiện badge trên Copilot icon.
+* Pill tự ẩn sau khoảng 5 giây nếu không bấm.
+* Pill không được lệch khi scroll.
+* Pill phải có z-index đủ cao nhưng không che nội dung chính.
 
-Copilot state rules:
+State rules:
 
-* Do not use global window variables for Copilot state.
-* Keep state in React Context, an existing store, or a clearly scoped workspace component.
-* Minimum state shape should cover:
-    * isCopilotOpen
-    * copilotViewMode
-    * selectedContextItems
-    * activeCommandId
-    * pendingProposal
-    * onboardingSeen
-
-Onboarding:
-
-* If Copilot opens expanded on first visit, it must happen only once.
-* Use a clear flag such as vms-editorial-copilot-onboarding-seen.
-* Do not reopen onboarding every time the user enters the module.
+* Copilot state không được dùng global window variable.
+* State nên tập trung trong React Context, store hiện có, hoặc component workspace rõ ràng.
+* State tối thiểu:
+    * isCopilotOpen;
+    * copilotViewMode;
+    * selectedContextItems;
+    * activeCommandId;
+    * pendingProposal;
+    * onboardingSeen.
 
 ⸻
 
-13. Context Attachment Rules
+10.3 Context Attachment Rules
 
-Context attachment is how selected Canvas content is passed into Copilot.
+Context attachment là cách đưa nội dung đang chọn vào Copilot.
 
-Suggested context types:
+Các loại context gợi ý:
 
-* paragraph
-* heading
-* table
-* figure
-* source
-* preflight_issue
-* history_session
-* draft
-* selection
+* paragraph;
+* heading;
+* table;
+* figure;
+* source;
+* preflight_issue;
+* history_session;
+* draft;
+* selection.
 
 UI rules:
 
-* Do not expose primary/supporting context terminology to users.
-* User-facing text should be simple:
-    * “Đã chọn: 1 đoạn văn”
-    * “Đã chọn: 1 bảng”
-    * “Đã chọn: 2 nguồn tư liệu”
-* Each attachment should include:
-    * context type;
-    * short title/excerpt;
-    * remove button.
-* Do not attach full long text when a short excerpt and stable reference are enough.
-* Do not include secrets, tokens, API keys, private keys, or raw credential values in context attachment.
-* If selected content changes after attachment, the UI should avoid stale/confusing actions. A lightweight refresh/clear mechanism is acceptable.
+* UI không hiển thị khái niệm primary/supporting context cho user.
+* UI chỉ hiển thị đơn giản, ví dụ:
+    * “Đã chọn: 1 đoạn văn”;
+    * “Đã chọn: 1 bảng”;
+    * “Đã chọn: 2 nguồn tư liệu”.
+* Mỗi attachment nên có:
+    * loại context;
+    * title/excerpt ngắn;
+    * nút bỏ context.
+* Không attach full text dài nếu chỉ cần excerpt.
+* Không đưa secret/token/API key vào context.
 
 ⸻
 
-14. Proposal / Apply / Cancel Safety Rules
+10.4 Proposal / Apply / Cancel Safety Rules
 
-AI/rule output must not overwrite user content automatically.
+AI/rule không được tự ghi đè nội dung.
 
-Every content-changing operation must go through:
+Mọi sửa đổi nội dung phải qua:
 
-Proposal preview
-→ Apply
-→ Cancel
+* proposal preview;
+* Apply;
+* Cancel.
 
 Rules:
 
-* Apply is the only action that changes content.
-* Cancel must leave original content unchanged.
-* If visual diff is too complex, show a clear preview card with:
-    * current content;
-    * proposed content.
-* When Apply:
-    * update the correct block if safely identifiable;
-    * mark draft dirty;
-    * do not auto-save over session unless the user explicitly saves.
-* If the correct target block cannot be safely identified:
-    * do not apply automatically;
-    * show a message requiring user review/copy/manual edit.
-* Apply/Cancel must not reset input/output/source/session.
-* Proposal UI must work the same whether the result comes from a rule or AI fallback.
+* Apply mới cập nhật nội dung.
+* Cancel không thay đổi nội dung gốc.
+* Nếu chưa làm visual diff phức tạp, dùng preview card rõ:
+    * nội dung hiện tại;
+    * đề xuất mới.
+* Khi Apply:
+    * cập nhật đúng block nếu xác định được;
+    * đánh dấu draft dirty;
+    * không tự lưu đè session nếu user chưa lưu.
+* Nếu không xác định được block an toàn, không apply tự động; báo rõ cần người dùng copy/sửa tay.
 
 ⸻
 
-15. Editorial Workflow Router MVP Rules
+10.5 Editorial Workflow Router MVP Rules
 
-The workflow layer name is:
+Tên tầng là Editorial Workflow Router MVP.
 
-Editorial Workflow Router MVP
+Naming rules:
 
-Do not call it:
+* Không gọi là Learning Loop.
+* Không gọi là Hermes-like.
+* Không gọi là auto-learning.
 
-* Learning Loop
-* Hermes-like
-* Auto-learning
-* Self-learning workflow
-
-PR1 of this router must be:
-
-Rule-first + AI fallback
+PR1 của router là rule-first + AI fallback.
 
 Router order:
 
-1. exact commandId
-2. valid alias
-3. keyword + contextType
-4. default confidence threshold 0.85 for keyword/context match
-5. AI fallback
+1. exact commandId;
+2. alias hợp lệ;
+3. keyword + contextType;
+4. confidence threshold mặc định 0.85 cho keyword/context match;
+5. AI fallback.
 
 Rules:
 
-* Exact commandId and valid aliases are considered deterministic matches.
-* DEFAULT_RULE_CONFIDENCE_THRESHOLD = 0.85 should be a module-level constant.
-* Do not hard-code threshold values in many places.
-* Do not use fuzzy matching.
-* Do not use Levenshtein.
-* Do not use embedding.
-* Do not use ML classifier.
-* Do not use AI classifier to choose deterministic rules in MVP.
-* Do not auto-generate rules.
-* Do not learn new rules from Apply/Cancel.
-* Do not create an admin dashboard or rule management UI in MVP.
-* Do not create a parallel workflow engine if an existing AIWorkflowManager, workflowService, or equivalent service exists. Extend or wrap existing patterns.
-
-Semantic tasks must fallback AI:
-
-* rewrite paragraph;
-* summarize source;
-* critique content;
-* legal/policy analysis;
-* long-form drafting;
-* complex comparison;
-* argumentative strengthening.
-
-Do not fake semantic quality with rigid templates.
+* Exact commandId và alias hợp lệ được coi là match chắc chắn.
+* Threshold 0.85 phải là hằng số cấu hình, không hard-code rải rác.
+* Không fuzzy matching.
+* Không Levenshtein.
+* Không embedding.
+* Không ML classifier.
+* Không AI classifier để chọn rule trong MVP.
+* Không auto-generate rule.
+* Không tự học từ Apply.
 
 ⸻
 
-16. EditorialExecutionResult Schema Rules
+10.6 EditorialExecutionResult Schema Rules
 
-Rule and AI fallback must return a shared schema so the Copilot UI can render Proposal / Preview / Apply / Cancel consistently.
-
-Use:
-
-source: "rule" | "ai"
-
-Do not add executedBy if source already exists.
-
-Suggested fields:
-
-* ok
-* source
-* commandId
-* proposal
-* confidence
-* ruleId
-* ruleName
-* ruleVersion
-* model
-* fallbackReason
-* telemetry
-* error
-
-Proposal should be a discriminated union, with variants such as:
-
-* replace_block
-* insert_before
-* insert_after
-* add_caption
-* review_report
-* checklist
-* message
+Rule và AI fallback phải trả cùng một schema thống nhất.
 
 Rules:
 
-* Do not let UI implement separate rendering branches for rule vs AI beyond small badges.
-* UI should show:
-    * Rule badge + rule name/version for rule source;
-    * AI badge + model for AI source.
-* Missing data must produce structured error/message, not crashes.
+* UI Copilot dùng chung schema để render Proposal / Preview / Apply / Cancel.
+* Dùng source: "rule" | "ai".
+* Không thêm executedBy nếu đã có source.
+* Nên có:
+    * commandId;
+    * proposal;
+    * confidence;
+    * ruleId/ruleName/ruleVersion;
+    * model;
+    * fallbackReason;
+    * telemetry;
+    * error.
+* Proposal nên là discriminated union, ví dụ:
+    * replace_block;
+    * insert_before;
+    * insert_after;
+    * add_caption;
+    * review_report;
+    * checklist;
+    * message.
 
 ⸻
 
-17. Static Rule Registry Rules
+10.7 Static Rule Registry Rules
 
-Rule registry in MVP is static and reviewable.
-
-Do not let AI create or mutate rules.
-
-Core rules for Editorial Workflow Router PR1:
-
-1. create_table_caption
-2. create_figure_caption
-3. normalize_caption_title
-4. check_missing_source_or_caption
-5. remove_bad_technical_markers
-6. create_a4_review_checklist
-7. check_long_paragraph
-8. normalize_basic_heading
-
-Optional rules only if low-risk:
-
-9. normalize_inline_spacing
-10. detect_table_missing_title
-11. suggest_list_to_table
-12. check_placeholder_caption
+Rule registry ở MVP là static, reviewable.
 
 Rules:
 
-* If optional rules are not implemented, report them as Remaining risks / future work.
-* Do not silently claim optional rules are implemented if they are not.
-* Rule output must use EditorialExecutionResult.
-* Rule must not directly apply content changes.
-* Rule must produce proposal/review/checklist/message for UI preview.
+* Không để AI tự tạo rule.
+* Core rules bắt buộc của PR1 router:
+    1. create_table_caption;
+    2. create_figure_caption;
+    3. normalize_caption_title;
+    4. check_missing_source_or_caption;
+    5. remove_bad_technical_markers;
+    6. create_a4_review_checklist;
+    7. check_long_paragraph;
+    8. normalize_basic_heading.
+* Optional rules chỉ làm nếu không tăng rủi ro:
+    * normalize_inline_spacing;
+    * detect_table_missing_title;
+    * suggest_list_to_table;
+    * check_placeholder_caption.
+* Tác vụ semantic như viết lại, tóm tắt, phản biện, phân tích pháp lý phải fallback AI, không giả lập bằng template cứng.
 
 ⸻
 
-18. AI Case Logging and Telemetry Rules
+10.8 AI Case Logging and Telemetry Rules
 
-AI case logging applies only when real AI is called.
+Logging rules:
 
-If the codebase has backend/API proxy and Firebase token verification:
+* Chỉ logging AI case khi gọi AI thật.
+* Nếu codebase có backend/API proxy và Firebase token verification thì logging phải đi qua backend API.
+* Không cho frontend ghi tùy tiện vào collection review/cases nếu chưa có pattern an toàn.
+* Không refactor Auth/Firebase rules/Admin role chỉ để logging trong PR1.
 
-* AI case logging should go through backend API.
-* Do not let frontend write arbitrary case logs directly to review/cases collections unless there is a safe existing pattern.
+Case logging chỉ lưu:
 
-If no safe endpoint exists:
+* userId;
+* sessionId nếu có;
+* commandId;
+* source;
+* model;
+* contextTypes;
+* excerpt ngắn;
+* hash để đối chiếu, nhưng không coi hash là bảo mật;
+* proposal type;
+* applied status;
+* timestamps;
+* error/fallbackReason nếu có.
 
-* Either create a minimal endpoint with Firebase ID token verification, or report the limitation.
-* Do not refactor Auth/Firebase rules/Admin role just for logging in MVP.
-* Do not modify Firestore rules unless explicitly required and approved.
+Không lưu:
 
-AI case logging may store:
-
-* userId
-* sessionId if available
-* commandId
-* source: "ai"
-* model
-* contextTypes
-* short excerpt with clear character limit
-* hash for correlation, but never treat hash as security
-* proposal type
-* applied status: pending | applied | cancelled
-* timestamps
-* error/fallbackReason if any
-
-AI case logging must not store:
-
-* full long text;
-* full file contents;
+* full text dài;
+* file content đầy đủ;
 * API key;
 * token;
-* service account data;
-* sensitive data in full.
+* dữ liệu nhạy cảm toàn văn.
 
-Telemetry for rule/AI command may include:
+Telemetry nhẹ cho rule/AI command có thể gồm:
 
-* commandId
-* source
-* ruleId
-* model
-* contextTypes
-* durationMs
-* ok
-* errorCode
-* applied
+* commandId;
+* source;
+* ruleId;
+* model;
+* contextTypes;
+* durationMs;
+* ok;
+* errorCode;
+* applied.
 
-Do not build Admin Dashboard / Rule Management / Analytics UI in MVP.
+Không làm Admin Dashboard/Rule Management trong MVP.
 
 ⸻
 
-19. PR Sequencing and Dependency Rules
-
-Before implementing a PR that depends on a previous PR, check the actual source first.
-
-Examples:
-
-Before implementing Editorial Workflow Router, verify whether:
-
-* src/components/copilot/FloatingCopilot.tsx exists;
-* A4PrintPreview.tsx supports selectable blocks;
-* EditorWorkspace.tsx has proposal/apply/cancel workflow;
-* Copilot command IDs already exist.
+10.9 PR Sequencing and Dependency Rules
 
 Rules:
 
-* If a foundation PR is not present in the source, do not write code assuming it exists.
-* Do not stack dependent PRs on an unmerged/unapplied foundation unless the user explicitly asks to continue on that branch.
-* If continuing on a non-main branch, report the branch dependency clearly.
-* If the user needs AI Studio handoff, only package the correct changed files for the branch being tested.
-* Do not merge/cherry-pick/sync without explicit user confirmation.
+* Trước khi làm PR phụ thuộc, phải kiểm tra source thực tế đã có nền PR trước chưa.
+* Ví dụ trước khi làm Workflow Router phải kiểm tra:
+    * src/components/copilot/FloatingCopilot.tsx có tồn tại không;
+    * A4PrintPreview.tsx đã hỗ trợ selectable blocks chưa;
+    * EditorWorkspace.tsx đã có proposal/apply/cancel workflow chưa.
+* Nếu PR nền chưa tích hợp vào source hiện tại, không được viết code giả định nó đã tồn tại.
+* Không stack PR phụ thuộc lên PR chưa runtime PASS nếu user chưa yêu cầu.
+* Nếu cần tiếp tục trên branch chưa merge, báo rõ branch phụ thuộc và changed files.
 
 ⸻
 
-20. AI Studio / ZIP Handoff for Copilot Work
+10.10 AI Studio / ZIP Handoff for Copilot Work
 
-When ZIP handoff relates to Copilot/A4 Preview:
+Rules:
 
-* Include only changed files.
-* Ensure relative paths are exact.
-* Do not include the entire project unless explicitly requested.
-* Do not include output artifacts.
-* Do not include .env, service account JSON, node_modules, dist, .git, Playwright reports, screenshots, videos, traces.
-
-Export safety:
-
-* #printable-article must remain exportable article content only.
-* Copilot panel, pill “Hỏi AI”, context highlights, selection UI, validation UI, toolbar UI, and app shell UI must not be inside export content.
-* After apply, runtime test must include export HTML/PDF/Word to ensure Copilot UI does not leak into output.
-
-AI Studio prompt must require:
-
-* apply uploaded ZIP/source only;
-* no self-fix;
-* no refactor;
-* no dependency change;
-* no stage/commit/sync;
-* run lint/build;
-* open Preview;
-* report changed files;
-* report file cấm;
-* report output artifacts;
-* runtime checklist.
+* Khi ZIP handoff liên quan Copilot/A4 Preview, chỉ gồm file changed.
+* Không đưa #printable-article wrapper app UI vào export.
+* Interactive UI như pill, highlight, Copilot panel phải có cơ chế export-exclude hoặc không nằm trong #printable-article.
+* Sau apply phải test export HTML/PDF/Word để chắc chắn không dính Copilot UI.
 
 ⸻
 
-21. Required Response Format for Investigation
+11. Required Response Format for Investigation
 
 When investigating, respond with:
 
@@ -832,7 +708,7 @@ Do not include secrets, tokens, API keys, Firebase private keys, or service acco
 
 ⸻
 
-22. Required Response Format for Fix Reports
+12. Required Response Format for Fix Reports
 
 When fixing code, respond with:
 
@@ -852,26 +728,25 @@ If a requested branch/PR/fetch cannot be completed because the environment lacks
 
 ⸻
 
-23. Default “Do Not Touch” List
+13. Default “Do Not Touch” List
 
 Unless explicitly required by the verified root cause, do not modify:
 
-* AGENTS.md
-* server.ts
-* package.json
-* package-lock.json
-* metadata.json
-* .env
-* firestore.rules
-* storage.rules
-* Firebase config / Firestore database ID
-* Auth provider config
-* Admin role behavior
-* Rate limiter / API gateway
-* Render config
-* Task module
-* API key encryption/decryption
-* Export PDF/DOCX engine
+AGENTS.md
+server.ts
+package.json
+package-lock.json
+metadata.json
+.env
+firestore.rules
+storage.rules
+Firebase config / Firestore database ID
+Auth provider config
+Admin role behavior
+Rate limiter / API gateway
+Render config
+Task module
+API key encryption/decryption
 
 For export/publishing tasks, do not modify backend/auth/rate-limiter files.
 
@@ -879,11 +754,9 @@ For auth/API-key tasks, do not modify export/publishing files.
 
 For task module tasks, do not modify export/auth/publishing files unless the root cause directly crosses modules.
 
-For Copilot/editorial UX tasks, do not modify Task module, Auth/Admin, Firebase rules, or export engine unless the verified root cause directly requires it.
-
 ⸻
 
-24. Final Gate Before Handoff
+14. Final Gate Before Handoff
 
 Before reporting completion:
 
@@ -895,5 +768,3 @@ Before reporting completion:
 6. Provide runtime checklist.
 7. Do not merge.
 8. Do not sync AI Studio/GitHub on behalf of the user.
-9. If creating ZIP, include only changed files and report internal file list.
-10. If runtime cannot be tested, say exactly what remains unverified.
