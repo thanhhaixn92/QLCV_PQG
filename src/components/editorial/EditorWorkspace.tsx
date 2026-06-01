@@ -15,7 +15,7 @@ import { EditorialPreflightPanel } from './EditorialPreflightPanel';
 import { TaskType, OutputFormat } from '../../types';
 import type { EditorialWorkspaceMode } from '../../types/editorial';
 import type { ArticleBlock } from '../../lib/publishing/articleDocument';
-import { FloatingCopilot, type CopilotCommand, type CopilotContextItem, type CopilotProposal, type CopilotViewMode } from '../copilot/FloatingCopilot';
+import { FloatingCopilot, type CopilotCommand, type CopilotContextItem, type CopilotDraftFlowState, type CopilotManualEditState, type CopilotProposal, type CopilotViewMode } from '../copilot/FloatingCopilot';
 
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '../../lib/utils';
@@ -49,6 +49,7 @@ const COPILOT_ONBOARDING_KEY = "vms-editorial-copilot-onboarding-seen";
 
 type CopilotCommandId =
   | "draft_new"
+  | "manual_edit"
   | "rewrite_selection"
   | "shorten_selection"
   | "fix_selection"
@@ -79,6 +80,7 @@ type CopilotCommandId =
 
 const COMMAND_LABELS: Record<CopilotCommandId, string> = {
   draft_new: "Soạn văn bản mới",
+  manual_edit: "Sửa thủ công",
   rewrite_selection: "Viết lại",
   shorten_selection: "Rút gọn",
   fix_selection: "Sửa lỗi",
@@ -207,6 +209,10 @@ export const EditorWorkspace = (props: any) => {
   const [copilotInput, setCopilotInput] = React.useState("");
   const [copilotStatusMessage, setCopilotStatusMessage] = React.useState<string | null>(null);
   const [isCopilotBusy, setIsCopilotBusy] = React.useState(false);
+  const [isCopilotDraftFlowOpen, setIsCopilotDraftFlowOpen] = React.useState(false);
+  const [copilotDraftExtraNotes, setCopilotDraftExtraNotes] = React.useState("");
+  const [copilotDraftFlowError, setCopilotDraftFlowError] = React.useState<string | null>(null);
+  const [manualEditState, setManualEditState] = React.useState<(CopilotManualEditState & { contextId: string; blockId: string; originalText: string; contextType: CopilotContextItem["type"] }) | null>(null);
   const [pillAnchor, setPillAnchor] = React.useState<{ top: number; left: number } | null>(null);
   const [isContextPillVisible, setIsContextPillVisible] = React.useState(false);
   const [autoOpenCopilotOnSelect, setAutoOpenCopilotOnSelect] = React.useState(false);
@@ -338,6 +344,10 @@ export const EditorWorkspace = (props: any) => {
     setAiEditError(null);
     setIsDraftDirty(false);
     setLastSavedAt(null);
+    setIsCopilotDraftFlowOpen(false);
+    setCopilotDraftExtraNotes("");
+    setCopilotDraftFlowError(null);
+    setManualEditState(null);
   }, [setError, setInput, setIsEditing, setOutput]);
 
   const hasProtectedWorkspaceData = React.useMemo(() => (
@@ -475,7 +485,7 @@ export const EditorWorkspace = (props: any) => {
     }
 
     if (preflightCounts.warning > 0) {
-      dedupeToast("preflight-warning", () => toast("Bản thảo còn cảnh báo trước khi xuất bản chính thức.", { icon: "⚠️", duration: 4000 }));
+      dedupeToast("preflight-warning", () => toast("Bản thảo còn cảnh báo trước khi xuất bản chính thức.", { id: "export-warning", icon: "⚠️", duration: 4000 }));
       return requestConfirmAsync("Bản thảo còn cảnh báo/cần bổ sung. Bạn vẫn muốn xuất file bản nháp?");
     }
 
@@ -512,13 +522,13 @@ export const EditorWorkspace = (props: any) => {
       ];
     }
     if (firstContext.type === "paragraph" || firstContext.type === "heading" || firstContext.type === "selection") {
-      return [makeCommand("rewrite_selection"), makeCommand("shorten_selection"), makeCommand("fix_selection"), makeCommand("strengthen_argument"), makeCommand("more")];
+      return [makeCommand("manual_edit", "Chỉnh trực tiếp block đã chọn"), makeCommand("rewrite_selection"), makeCommand("shorten_selection"), makeCommand("fix_selection"), makeCommand("more")];
     }
     if (firstContext.type === "table") {
-      return [makeCommand("create_caption"), makeCommand("normalize_table"), makeCommand("check_table_numbers"), makeCommand("table_to_analysis"), makeCommand("more")];
+      return [makeCommand("manual_edit", "Chỉnh trực tiếp block đã chọn"), makeCommand("create_caption"), makeCommand("normalize_table"), makeCommand("check_table_numbers"), makeCommand("more")];
     }
     if (firstContext.type === "figure") {
-      return [makeCommand("figure_caption"), makeCommand("suggest_figure"), makeCommand("describe_figure"), makeCommand("check_figure_position"), makeCommand("more")];
+      return [makeCommand("manual_edit", "Chỉnh trực tiếp block đã chọn"), makeCommand("figure_caption"), makeCommand("suggest_figure"), makeCommand("describe_figure"), makeCommand("more")];
     }
     if (firstContext.type === "source") {
       return [makeCommand("summarize_selected_source"), makeCommand("use_source_to_update_draft"), makeCommand("attach_source_to_draft"), makeCommand("compare_source_with_draft"), makeCommand("more")];
@@ -537,25 +547,48 @@ export const EditorWorkspace = (props: any) => {
     setSelectedContextItems([]);
     setPillAnchor(null);
     setIsContextPillVisible(false);
+    setManualEditState(null);
   }, []);
 
   const handleCanvasBlockSelect = React.useCallback((block: ArticleBlock, event: React.MouseEvent<HTMLElement>) => {
     const contextItem = buildContextFromBlock(block);
+    const wasSelected = selectedContextItems.some((item) => item.id === contextItem.id);
+    const rect = event.currentTarget.getBoundingClientRect();
+
     setSelectedContextItems((current) => {
+      if (wasSelected) {
+        const nextItems = current.filter((item) => item.id !== contextItem.id);
+        if (nextItems.length === 0) {
+          setPillAnchor(null);
+          setIsContextPillVisible(false);
+          setManualEditState(null);
+          setCopilotStatusMessage("Chưa chọn ngữ cảnh");
+        } else {
+          setPillAnchor({ top: Math.max(92, rect.top + window.scrollY - 8), left: Math.min(window.innerWidth - 180, rect.right + window.scrollX - 150) });
+          setIsContextPillVisible(nextItems.length <= 3);
+        }
+        return nextItems;
+      }
+
       const withoutCurrent = current.filter((item) => item.id !== contextItem.id && item.type !== "draft");
       return [contextItem, ...withoutCurrent].slice(0, 4);
     });
-    const rect = event.currentTarget.getBoundingClientRect();
-    setPillAnchor({ top: Math.max(92, rect.top + window.scrollY - 8), left: Math.min(window.innerWidth - 180, rect.right + window.scrollX - 150) });
-    setIsContextPillVisible(true);
-    setCopilotStatusMessage(null);
-    if (autoOpenCopilotOnSelect && copilotViewMode !== "fullscreen") setCopilotViewMode("expanded");
-  }, [autoOpenCopilotOnSelect, copilotViewMode]);
+
+    if (!wasSelected) {
+      setPillAnchor({ top: Math.max(92, rect.top + window.scrollY - 8), left: Math.min(window.innerWidth - 180, rect.right + window.scrollX - 150) });
+      setIsContextPillVisible(true);
+      setCopilotStatusMessage(null);
+      if (autoOpenCopilotOnSelect && copilotViewMode !== "fullscreen") setCopilotViewMode("expanded");
+    }
+  }, [autoOpenCopilotOnSelect, copilotViewMode, selectedContextItems]);
 
   const handleCanvasBlockOpen = React.useCallback((block: ArticleBlock, event: React.MouseEvent<HTMLElement>) => {
-    handleCanvasBlockSelect(block, event);
+    const contextItem = buildContextFromBlock(block);
+    if (!selectedContextItems.some((item) => item.id === contextItem.id)) {
+      handleCanvasBlockSelect(block, event);
+    }
     setCopilotViewMode("expanded");
-  }, [handleCanvasBlockSelect]);
+  }, [handleCanvasBlockSelect, selectedContextItems]);
 
   const replaceOutputText = React.useCallback((currentText: string, proposedText: string) => {
     const source = normalizeEditorialBriefContent(output || "");
@@ -624,7 +657,7 @@ export const EditorWorkspace = (props: any) => {
 
   const createProposal = React.useCallback((proposal: Omit<CopilotProposal, "id">) => {
     setPendingProposal({ ...proposal, id: `proposal-${Date.now()}` });
-    setCopilotStatusMessage("Đề xuất đã sẵn sàng. Nội dung gốc chưa thay đổi cho đến khi bạn bấm Apply.");
+    setCopilotStatusMessage("Đề xuất đã sẵn sàng. Nội dung gốc chưa thay đổi cho đến khi bạn bấm Áp dụng.");
   }, []);
 
   const formatExecutionProposal = React.useCallback((result: EditorialExecutionResult): Omit<CopilotProposal, "id"> => {
@@ -740,14 +773,137 @@ export const EditorWorkspace = (props: any) => {
       : [];
   }, [output, selectedContextItems]);
 
+  const copilotKindOptions = React.useMemo(() => Object.entries(EDITORIAL_KIND_CONFIG as Record<string, { label?: string }>).map(([value, config]) => ({
+    value,
+    label: config?.label || value,
+  })), []);
+
+  const runProcessWithLayout = React.useCallback(async (layoutId?: string, layoutVersion?: string) => {
+    setSelectedLayoutId(layoutId);
+    setSelectedLayoutVersion(layoutVersion);
+    setCurrentStep("generating");
+    await handleProcess();
+    setCurrentStep("draft");
+    setIsDraftDirty(true);
+    setLastSavedAt(null);
+  }, [handleProcess]);
+
+  const openCopilotDraftFlow = React.useCallback(() => {
+    if (currentTool?.taskType !== "WRITE_NEW") {
+      handleToolChange?.("draft_new");
+      setTaskType?.("WRITE_NEW");
+    }
+    setIsCopilotDraftFlowOpen(true);
+    setCopilotDraftFlowError(null);
+    setCopilotViewMode("expanded");
+    setWorkspaceMode("edit");
+  }, [currentTool?.taskType, handleToolChange, setTaskType]);
+
+  const copilotDraftFlowState = React.useMemo<CopilotDraftFlowState | null>(() => {
+    if (!isCopilotDraftFlowOpen) return null;
+    return {
+      kind: editorialKind,
+      kindOptions: copilotKindOptions,
+      brief: input,
+      extraNotes: copilotDraftExtraNotes,
+      sourceSummary: selectedSourceDocIds.length > 0
+        ? `Đang dùng ${selectedSourceDocIds.length} nguồn tư liệu đã chọn.`
+        : "Chưa chọn nguồn tư liệu. Bạn vẫn có thể tạo bản thảo từ yêu cầu hiện tại.",
+      error: copilotDraftFlowError,
+    };
+  }, [copilotDraftExtraNotes, copilotDraftFlowError, copilotKindOptions, editorialKind, input, isCopilotDraftFlowOpen, selectedSourceDocIds.length]);
+
+  const updateCopilotDraftFlow = React.useCallback((patch: Partial<CopilotDraftFlowState>) => {
+    if (typeof patch.kind === "string") setEditorialKind(patch.kind as any);
+    if (typeof patch.brief === "string") setInput(patch.brief);
+    if (typeof patch.extraNotes === "string") setCopilotDraftExtraNotes(patch.extraNotes);
+    setCopilotDraftFlowError(null);
+  }, [setEditorialKind, setInput]);
+
+  const submitCopilotDraftFlow = React.useCallback(async () => {
+    const brief = normalizeEditorialBriefInput(input);
+    const extraNotes = normalizeEditorialBriefInput(copilotDraftExtraNotes);
+    if (!brief && !extraNotes && selectedSourceDocIds.length === 0) {
+      setCopilotDraftFlowError("Vui lòng nhập yêu cầu/bối cảnh hoặc chọn ít nhất một nguồn tư liệu trước khi tạo bản thảo.");
+      return;
+    }
+    const mergedBrief = [brief, extraNotes ? `Ý chính / nguồn bổ sung:\n${extraNotes}` : ""].filter(Boolean).join("\n\n");
+    if (mergedBrief !== input) setInput(mergedBrief);
+    setCopilotDraftFlowError(null);
+    setIsCopilotBusy(true);
+    try {
+      await runProcessWithLayout(getDefaultArticleLayout().layoutId, getDefaultArticleLayout().layoutVersion);
+      setIsCopilotDraftFlowOpen(false);
+      setCopilotDraftExtraNotes("");
+      setWorkspaceMode("edit");
+      setCopilotStatusMessage("Đã tạo bản thảo. Hãy kiểm chứng trên Canvas trước khi lưu hoặc xuất.");
+    } finally {
+      setIsCopilotBusy(false);
+    }
+  }, [copilotDraftExtraNotes, input, runProcessWithLayout, selectedSourceDocIds.length, setInput]);
+
+  const startManualEdit = React.useCallback((contextId?: string) => {
+    const targetContext = (contextId ? selectedContextItems.find((item) => item.id === contextId) : selectedBlockContext) || selectedBlockContext;
+    if (!targetContext?.blockId || !targetContext.excerpt?.trim()) {
+      setCopilotStatusMessage("Hãy chọn một block trên A4 Preview trước khi sửa thủ công.");
+      return;
+    }
+    setManualEditState({
+      contextId: targetContext.id,
+      blockId: targetContext.blockId,
+      contextType: targetContext.type,
+      contextTitle: targetContext.title,
+      currentText: targetContext.excerpt,
+      originalText: targetContext.excerpt,
+      value: targetContext.excerpt,
+      error: null,
+    });
+    setPendingProposal(null);
+    setCopilotViewMode("expanded");
+    setCopilotStatusMessage("Chỉnh sửa thủ công chỉ cập nhật bản thảo sau khi bạn bấm Áp dụng sửa thủ công.");
+  }, [selectedBlockContext, selectedContextItems]);
+
+  const applyManualEdit = React.useCallback(() => {
+    if (!manualEditState) return;
+    const replacement = manualEditState.value.trim();
+    if (!replacement) {
+      setManualEditState((current) => current ? { ...current, error: "Nội dung thay thế không được để trống." } : current);
+      return;
+    }
+    const latestBlock = articleDocument.blocks.find((block) => block.id === manualEditState.blockId);
+    const latestText = latestBlock ? getArticleBlockExcerpt(latestBlock) : "";
+    const source = normalizeEditorialBriefContent(output || "");
+    if (!latestBlock || latestText.trim() !== manualEditState.originalText.trim() || !source.includes(manualEditState.originalText)) {
+      setManualEditState((current) => current ? { ...current, error: "Không thể áp dụng vì nội dung gốc đã thay đổi." } : current);
+      return;
+    }
+    if (manualEditState.contextType === "heading" && replacement.split(/\r?\n/).filter((line) => line.trim()).length > 1) {
+      setManualEditState((current) => current ? { ...current, error: "Tiêu đề chỉ được sửa trong phạm vi một dòng." } : current);
+      return;
+    }
+    const nextOutput = `${source.slice(0, source.indexOf(manualEditState.originalText))}${replacement}${source.slice(source.indexOf(manualEditState.originalText) + manualEditState.originalText.length)}`;
+    setOutput(nextOutput);
+    setIsDraftDirty(true);
+    setCurrentStep("draft");
+    setWorkspaceMode("edit");
+    setManualEditState(null);
+    setPendingProposal(null);
+    setCopilotStatusMessage("Đã áp dụng sửa thủ công. Nội dung chưa tự lưu cho đến khi bạn bấm Lưu.");
+    toast.success("Đã áp dụng sửa thủ công vào bản thảo.", { id: "manual-edit-success", duration: 4000 });
+  }, [articleDocument.blocks, manualEditState, output, setOutput, toast]);
+
   const handleRunCopilotCommand = React.useCallback(async (rawCommandId: string) => {
     const commandId = rawCommandId as CopilotCommandId;
     const draftText = normalizeEditorialBriefContent(output || "");
     setActiveCommandId(commandId);
 
     if (commandId === "draft_new") {
-      switchWorkspaceMode("create");
-      setCopilotStatusMessage("Canvas đã chuyển sang luồng soạn văn bản mới.");
+      openCopilotDraftFlow();
+      setCopilotStatusMessage("Luồng soạn văn bản mới đã mở trong Copilot.");
+      return;
+    }
+    if (commandId === "manual_edit") {
+      startManualEdit();
       return;
     }
     if (commandId === "add_source") {
@@ -788,7 +944,7 @@ export const EditorWorkspace = (props: any) => {
     } finally {
       setIsCopilotBusy(false);
     }
-  }, [articleDocument, copilotInput, createProposal, effectiveCopilotContexts, formatExecutionProposal, output, outputFormat, selectedBlock, switchWorkspaceMode, toast, user]);
+  }, [articleDocument, copilotInput, createProposal, effectiveCopilotContexts, formatExecutionProposal, openCopilotDraftFlow, output, outputFormat, selectedBlock, startManualEdit, switchWorkspaceMode, toast, user]);
 
   const handleApplyCopilotProposal = React.useCallback(() => {
     if (!pendingProposal) return;
@@ -869,7 +1025,7 @@ ${pendingProposal.proposedText}`;
     try {
       if (!(await validateArticleBeforeExport())) return;
       if (format === "pdf") {
-        toast("Đang tạo file PDF...", { icon: "ℹ️", duration: 5000 });
+        toast("Đang tạo file PDF...", { id: "export-pdf-loading", icon: "ℹ️", duration: 4000 });
         const { exportPrintablePdfFromArticleExportModel } = await import("../../lib/printablePdfExport");
         await exportPrintablePdfFromArticleExportModel(articleExportModel, {
           title: articleExportModel.title || `Bai_viet_HTMB_${Date.now()}`,
@@ -877,7 +1033,7 @@ ${pendingProposal.proposedText}`;
           onValidationError: (msg) => dedupeToast(`pdf-validation-error-${msg}`, () => toast(`Lỗi: ${msg}`, { icon: "❌", duration: 4000 })),
           onValidationWarning: (msg) => dedupeToast(`pdf-validation-warning-${msg}`, () => toast(`Cảnh báo: ${msg}`, { icon: "⚠️", duration: 3000 })),
         });
-        dedupeToast("export-pdf-success", () => toast.success("Tải PDF thành công!"));
+        dedupeToast("export-pdf-success", () => toast.success("Tải PDF thành công!", { id: "export-pdf-success", duration: 4000 }));
       }
       if (format === "docx") {
         const { exportWordFromArticleExportModel } = await import("../../lib/exportUtils");
@@ -886,12 +1042,12 @@ ${pendingProposal.proposedText}`;
           filename: `Bai_viet_HTMB_${Date.now()}`,
           kind: editorialKind,
         });
-        dedupeToast("export-docx-success", () => toast.success("Tải Word thành công!"));
+        dedupeToast("export-docx-success", () => toast.success("Tải Word thành công!", { id: "export-docx-success", duration: 4000 }));
       }
       if (format === "html") {
         const title = articleExportModel.title || articleDocument.metadata?.title || "Bài viết A4";
         downloadHtmlFile(buildArticleHtml(articleDocument, { title }), buildArticleHtmlFilename());
-        dedupeToast("export-html-success", () => toast.success("Tải HTML A4 thành công!"));
+        dedupeToast("export-html-success", () => toast.success("Tải HTML A4 thành công!", { id: "export-html-success", duration: 4000 }));
       }
       if (currentSessionId) {
         await logActivity({
@@ -907,7 +1063,7 @@ ${pendingProposal.proposedText}`;
       }
     } catch (err: any) {
       const message = err?.message || "Không xuất được file.";
-      dedupeToast(`export-${format}-error`, () => toast.error(message));
+      dedupeToast(`export-${format}-error`, () => toast.error(message, { id: `export-${format}-error`, duration: 8000 }));
       setError(message);
     } finally {
       setExportingFormat(null);
@@ -959,15 +1115,6 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
     setCurrentStep("recommendation");
   }, [buildRecommendationBrief, input, selectedSourceDocIds.length, toast]);
 
-  const runProcessWithLayout = React.useCallback(async (layoutId?: string, layoutVersion?: string) => {
-    setSelectedLayoutId(layoutId);
-    setSelectedLayoutVersion(layoutVersion);
-    setCurrentStep("generating");
-    await handleProcess();
-    setCurrentStep("draft");
-    setIsDraftDirty(true);
-    setLastSavedAt(null);
-  }, [handleProcess]);
 
   const handleSelectRecommendedLayout = React.useCallback((recommendation: LayoutRecommendation) => {
     void runProcessWithLayout(recommendation.layout.layoutId, recommendation.layout.layoutVersion);
@@ -1072,6 +1219,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
     { id: "upload", label: "Tải tệp lên", icon: FileUp },
   ];
 
+
   const groupedTemplates = [
     { title: "Truyền thông", kinds: ["website_article", "news", "press_release"] },
     { title: "Hành chính", kinds: ["official_letter", "announcement", "administrative_report", "plan", "meeting_minutes"] },
@@ -1131,7 +1279,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                 <div className="absolute right-0 z-40 mt-2 w-56 overflow-hidden rounded-xl border border-slate-200 bg-white p-1 shadow-xl">
                   <button type="button" onClick={() => { setIsMoreMenuOpen(false); switchWorkspaceMode("history"); }} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-semibold text-slate-700 hover:bg-slate-50"><History className="h-4 w-4" /> Lịch sử văn bản</button>
                   <button type="button" onClick={() => { setIsMoreMenuOpen(false); switchWorkspaceMode("sources"); }} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-semibold text-slate-700 hover:bg-slate-50"><BookOpen className="h-4 w-4" /> Nguồn tư liệu</button>
-                  <button type="button" onClick={() => { setIsMoreMenuOpen(false); setIsBriefPanelOpen(true); switchWorkspaceMode("create"); }} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-semibold text-slate-700 hover:bg-slate-50"><FileStack className="h-4 w-4" /> Mẫu văn bản</button>
+                  <button type="button" onClick={() => { setIsMoreMenuOpen(false); openCopilotDraftFlow(); }} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-semibold text-slate-700 hover:bg-slate-50"><FileStack className="h-4 w-4" /> Mẫu văn bản</button>
                   <button type="button" onClick={() => { setIsMoreMenuOpen(false); setCopilotStatusMessage("Cài đặt xuất bản chi tiết sẽ được mở ở PR tiếp theo; Preflight và export hiện vẫn giữ nguyên."); setCopilotViewMode("expanded"); }} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-semibold text-slate-700 hover:bg-slate-50"><ShieldCheck className="h-4 w-4" /> Cài đặt xuất bản</button>
                   <button type="button" onClick={() => { setIsMoreMenuOpen(false); clearLocalDraft(true); }} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-semibold text-red-600 hover:bg-red-50"><Trash2 className="h-4 w-4" /> Xóa bản nháp</button>
                 </div>
@@ -1168,7 +1316,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
           <h2 className="text-lg font-bold text-slate-700">Chưa có văn bản phù hợp</h2>
           <p className="text-sm text-slate-500 mt-2 max-w-md">Tạo văn bản mới hoặc điều chỉnh từ khóa tìm kiếm để xem lại bản thảo đã lưu.</p>
           <button
-            onClick={() => switchWorkspaceMode("create")}
+            onClick={openCopilotDraftFlow}
             className="mt-6 inline-flex items-center gap-2 rounded-lg bg-[#002D56] px-4 py-3 text-[13px] font-semibold text-white hover:bg-slate-900 transition-colors"
           >
             <Plus className="w-4 h-4" /> Tạo văn bản mới
@@ -1252,95 +1400,16 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
 
   const renderCreateMode = () => (
     <div className="space-y-5">
-      <section className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 sm:p-6">
-        <div className="flex items-center gap-3 mb-5">
-          <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#002D56] text-white text-sm font-bold">1</span>
-          <div>
-            <h2 className="text-base font-bold text-slate-800">Bước 1: Chọn loại văn bản</h2>
-            <p className="text-[13px] text-slate-500">Mẫu văn bản nằm trong vùng làm việc bên phải để tránh lẫn với menu nghiệp vụ.</p>
-          </div>
+      <section className="rounded-3xl border border-blue-100 bg-white p-6 text-center shadow-sm sm:p-8">
+        <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-blue-50 text-[#002D56]"><MessageCircle className="h-6 w-6" /></span>
+        <h2 className="mt-4 text-xl font-black text-slate-950">Tạo văn bản mới trong Copilot</h2>
+        <p className="mx-auto mt-2 max-w-2xl text-sm leading-7 text-slate-600">Canvas được giữ gọn để đọc và kiểm chứng. Chọn loại văn bản, nhập yêu cầu, ý chính và nguồn ngay trong Copilot; bản thảo chỉ xuất hiện ở Canvas sau khi bạn bấm Tạo bản thảo.</p>
+        <div className="mt-5 flex flex-wrap justify-center gap-2">
+          <button type="button" onClick={openCopilotDraftFlow} className="inline-flex items-center gap-2 rounded-xl bg-[#002D56] px-4 py-2.5 text-sm font-black text-white hover:bg-slate-900"><Sparkles className="h-4 w-4" /> Mở Copilot để tạo bản thảo</button>
+          <button type="button" onClick={() => setWorkspaceMode("edit")} className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-slate-700 hover:bg-slate-50"><X className="h-4 w-4" /> Đóng</button>
         </div>
-        <div className="space-y-5">
-          {groupedTemplates.map((group) => (
-            <div key={group.title}>
-              <h3 className="text-[13px] font-bold uppercase tracking-wider text-slate-500 mb-3">{group.title}</h3>
-              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
-                {group.kinds.map((kind) => {
-                  const config = (EDITORIAL_KIND_CONFIG as any)[kind];
-                  const selected = editorialKind === kind;
-                  return (
-                    <button
-                      key={kind}
-                      onClick={() => setEditorialKind(kind as any)}
-                      className={cn(
-                        "min-h-[112px] text-left rounded-xl border p-4 transition-all bg-white hover:border-[#002D56] hover:shadow-sm",
-                        selected ? "border-[#002D56] bg-blue-50/70 shadow-sm ring-1 ring-[#002D56]/15" : "border-slate-200",
-                      )}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <h4 className="text-[14px] font-bold text-slate-800">{config?.label || kind}</h4>
-                          <p className="text-[12px] leading-relaxed text-slate-500 mt-2">{config?.description || "Mẫu văn bản."}</p>
-                        </div>
-                        {selected && <Check className="w-5 h-5 text-[#002D56] shrink-0" />}
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <section className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 sm:p-6">
-        <div className="flex items-center gap-3 mb-4">
-          <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#002D56] text-white text-sm font-bold">2</span>
-          <div>
-            <h2 className="text-base font-bold text-slate-800">Bước 2: Nhập thông tin đầu vào</h2>
-            <p className="text-[13px] text-slate-500">Mô tả yêu cầu, bối cảnh, số liệu và đối tượng sử dụng văn bản.</p>
-          </div>
-        </div>
-        <EditorialInputForm
-          kind={editorialKind}
-          initialValue={input}
-          onChange={(nextValue: string) => setInput(nextValue)}
-        />
-      </section>
-
-      <section className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 sm:p-6">
-        <div className="flex items-center gap-3 mb-4">
-          <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#002D56] text-white text-sm font-bold">3</span>
-          <div>
-            <h2 className="text-base font-bold text-slate-800">Bước 3: Chọn nguồn tư liệu</h2>
-            <p className="text-[13px] text-slate-500">Có thể bổ sung nguồn ở chế độ “Nguồn tư liệu” rồi quay lại tạo văn bản.</p>
-          </div>
-        </div>
-        <div className="flex flex-wrap gap-2 mb-4">
-          {sourceTabs.map((tab) => (
-            <button
-              key={`create-source-${tab.id}`}
-              onClick={() => {
-                setSourceActiveTab(tab.id as any);
-                setWorkspaceMode("sources");
-              }}
-              className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-[12px] font-semibold text-slate-600 hover:border-[#002D56] hover:text-[#002D56]"
-            >
-              <tab.icon className="w-4 h-4" /> {tab.label}
-            </button>
-          ))}
-        </div>
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-xl bg-slate-50 border border-slate-200 p-4">
-          <p className="text-[13px] text-slate-600"><strong>{selectedSourceDocIds.length}</strong> nguồn tư liệu đang được chọn cho bản thảo này.</p>
-          <button
-            onClick={() => {
-              setCurrentStep("brief");
-              setWorkspaceMode("edit");
-            }}
-            className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-[13px] font-semibold text-slate-700 hover:border-[#002D56] hover:text-[#002D56]"
-          >
-            Tiếp tục sang biên tập và tạo bản thảo
-          </button>
+        <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-left text-xs font-semibold text-slate-600">
+          Loại đang chọn: <strong>{(EDITORIAL_KIND_CONFIG as any)[editorialKind]?.label || editorialKind}</strong> · {selectedSourceDocIds.length} nguồn tư liệu đang chọn.
         </div>
       </section>
     </div>
@@ -1522,7 +1591,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
             <p className="mt-3 text-sm leading-7 text-slate-600">Bấm vào đoạn văn, bảng, hình hoặc nguồn tư liệu để hỏi AI về đúng nội dung đó. Copilot sẽ luôn cho xem Preview trước khi Apply.</p>
           </div>
           <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <button type="button" onClick={() => switchWorkspaceMode("create")} className="rounded-2xl border border-blue-100 bg-white p-4 text-left shadow-sm hover:border-[#002D56] hover:bg-blue-50"><FileText className="mb-3 h-6 w-6 text-[#002D56]" /><span className="block text-sm font-black text-slate-900">Soạn văn bản mới</span></button>
+            <button type="button" onClick={openCopilotDraftFlow} className="rounded-2xl border border-blue-100 bg-white p-4 text-left shadow-sm hover:border-[#002D56] hover:bg-blue-50"><FileText className="mb-3 h-6 w-6 text-[#002D56]" /><span className="block text-sm font-black text-slate-900">Soạn văn bản mới</span></button>
             <button type="button" onClick={() => void handleRunCopilotCommand("review_current_draft")} className="rounded-2xl border border-blue-100 bg-white p-4 text-left shadow-sm hover:border-[#002D56] hover:bg-blue-50"><ClipboardCheck className="mb-3 h-6 w-6 text-[#002D56]" /><span className="block text-sm font-black text-slate-900">Rà soát bản thảo</span></button>
             <button type="button" onClick={() => { setCopilotStatusMessage("Hãy chọn nguồn tư liệu trước khi tóm tắt tài liệu."); setCopilotViewMode("expanded"); switchWorkspaceMode("sources"); }} className="rounded-2xl border border-blue-100 bg-white p-4 text-left shadow-sm hover:border-[#002D56] hover:bg-blue-50"><FileStack className="mb-3 h-6 w-6 text-[#002D56]" /><span className="block text-sm font-black text-slate-900">Tóm tắt tài liệu</span></button>
             <button type="button" onClick={() => switchWorkspaceMode("sources")} className="rounded-2xl border border-blue-100 bg-white p-4 text-left shadow-sm hover:border-[#002D56] hover:bg-blue-50"><BookOpen className="mb-3 h-6 w-6 text-[#002D56]" /><span className="block text-sm font-black text-slate-900">Thêm nguồn tư liệu</span></button>
@@ -2342,7 +2411,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                               if (!(await validateArticleBeforeExport())) return;
                                               toast(
                                                 "Đang tạo file PDF...",
-                                                { icon: "ℹ️", duration: 5000 },
+                                                { id: "export-pdf-loading", icon: "ℹ️", duration: 4000 },
                                               );
                                               const { exportPrintablePdfFromArticleExportModel } =
                                                 await import("../../lib/printablePdfExport");
@@ -2358,7 +2427,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                                   }
                                                 }
                                               );
-                                              dedupeToast("export-pdf-success", () => toast.success("Tải PDF thành công!"));
+                                              dedupeToast("export-pdf-success", () => toast.success("Tải PDF thành công!", { id: "export-pdf-success", duration: 4000 }));
 
                                               if (currentSessionId) {
                                                 await logActivity({
@@ -2380,7 +2449,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                                 });
                                               }
                                             } catch (err: any) {
-                                              dedupeToast("export-pdf-error", () => toast.error(err?.message || "Không tạo được file PDF."));
+                                              dedupeToast("export-pdf-error", () => toast.error(err?.message || "Không tạo được file PDF.", { id: "export-pdf-error", duration: 8000 }));
                                               setError(err.message);
                                             } finally {
                                               setExportingFormat(null);
@@ -2416,7 +2485,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                                 kind: editorialKind,
                                               },
                                             );
-                                            dedupeToast("export-docx-success", () => toast.success("Tải Word thành công!"));
+                                            dedupeToast("export-docx-success", () => toast.success("Tải Word thành công!", { id: "export-docx-success", duration: 4000 }));
 
                                             if (currentSessionId) {
                                               await logActivity({
@@ -2437,7 +2506,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                               });
                                             }
                                           } catch (err: any) {
-                                            dedupeToast("export-docx-error", () => toast.error(err?.message || "Không tạo được file Word."));
+                                            dedupeToast("export-docx-error", () => toast.error(err?.message || "Không tạo được file Word.", { id: "export-docx-error", duration: 8000 }));
                                             setError(err.message);
                                           } finally {
                                             setExportingFormat(null);
@@ -2469,7 +2538,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                               const html = buildArticleHtml(articleDocument, { title });
                                               const filename = buildArticleHtmlFilename();
                                               downloadHtmlFile(html, filename);
-                                              dedupeToast("export-html-success", () => toast.success("Tải HTML A4 thành công!"));
+                                              dedupeToast("export-html-success", () => toast.success("Tải HTML A4 thành công!", { id: "export-html-success", duration: 4000 }));
 
                                               if (currentSessionId) {
                                                 await logActivity({
@@ -2489,7 +2558,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                               }
                                             } catch (err: unknown) {
                                               const message = err instanceof Error ? err.message : "Không tạo được file HTML.";
-                                              dedupeToast("export-html-error", () => toast.error(message));
+                                              dedupeToast("export-html-error", () => toast.error(message, { id: "export-html-error", duration: 8000 }));
                                               setError(message);
                                             } finally {
                                               setExportingFormat(null);
@@ -2598,14 +2667,23 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
         pendingProposal={pendingProposal}
         statusMessage={copilotStatusMessage}
         inputValue={copilotInput}
+        draftFlow={copilotDraftFlowState}
+        manualEdit={manualEditState}
         isBusy={isCopilotBusy}
         autoOpenOnSelect={autoOpenCopilotOnSelect}
         onToggleAutoOpenOnSelect={setAutoOpenCopilotOnSelect}
+        onDraftFlowChange={updateCopilotDraftFlow}
+        onSubmitDraftFlow={() => void submitCopilotDraftFlow()}
+        onStartManualEdit={startManualEdit}
+        onManualEditChange={(value) => setManualEditState((current) => current ? { ...current, value, error: null } : current)}
+        onApplyManualEdit={applyManualEdit}
+        onCancelManualEdit={() => { setManualEditState(null); setCopilotStatusMessage("Đã hủy sửa thủ công. Canvas không thay đổi."); }}
+        onCopyProposal={() => { if (pendingProposal?.proposedText) void navigator.clipboard?.writeText(pendingProposal.proposedText); setCopilotStatusMessage("Đã sao chép nội dung tham khảo."); }}
         onOpen={openCopilotExpanded}
         onClose={() => setCopilotViewMode("collapsed")}
         onFullscreen={() => setCopilotViewMode("fullscreen")}
         onReturnToCanvas={() => setCopilotViewMode("expanded")}
-        onRemoveContext={(id) => setSelectedContextItems((items) => items.filter((item) => item.id !== id))}
+        onRemoveContext={(id) => { setSelectedContextItems((items) => items.filter((item) => item.id !== id)); setManualEditState((current) => current?.contextId === id ? null : current); }}
         onClearContext={clearCopilotContext}
         onRunCommand={(id) => void handleRunCopilotCommand(id)}
         onInputChange={setCopilotInput}
