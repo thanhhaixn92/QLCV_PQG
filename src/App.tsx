@@ -8605,6 +8605,7 @@ Nội dung văn bản:\n` + content,
           !isPickingFromLibrary &&
           !previewDocument &&
           !isPickingTaskForDoc &&
+          activeTab !== "editor" &&
           !isSidebarOpen && (
             <React.Suspense fallback={null}>
               <FloatingChatbox

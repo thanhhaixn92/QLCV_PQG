@@ -120,16 +120,76 @@ function buildAiContext(input: EditorialWorkflowRouterInput): string {
   return contextText || input.draftText.trim();
 }
 
+const TARGET_SCOPED_COMMANDS = ["rewrite_selection", "shorten_selection", "fix_selection", "strengthen_argument"];
+const MARKDOWN_LINE_PREFIX = /^(?:#{1,6}|[-*+]\s+|\d+[.)]\s+|>\s*)+/u;
+const MARKDOWN_EMPHASIS = /(?:\*\*|__|`)/g;
+const SECTION_HEADING_PATTERN = /^(?:tiêu đề|sapo|sa-pô|thân bài|mở bài|kết luận|nội dung|heading|title)\s*[:：]/imu;
+
+function stripMarkdownMarkers(value: string): string {
+  return value
+    .split(/\r?\n/)
+    .map((line) => line.replace(MARKDOWN_LINE_PREFIX, "").replace(MARKDOWN_EMPHASIS, "").trim())
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+}
+
+function normalizeReplacementForTarget(value: string, targetType?: EditorialRouterContextType): string {
+  const cleaned = stripMarkdownMarkers(value);
+  if (targetType === "heading") {
+    return cleaned.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)[0]?.replace(SECTION_HEADING_PATTERN, "").trim() || "";
+  }
+  return cleaned.replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function replacementOutOfScope(value: string, targetType?: EditorialRouterContextType): boolean {
+  const cleaned = value.trim();
+  if (!cleaned) return true;
+  const lines = cleaned.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (SECTION_HEADING_PATTERN.test(cleaned)) return true;
+  if (targetType === "heading") return lines.length > 1 || cleaned.length > 180;
+  if (targetType === "paragraph") return lines.length > 1 && lines.some((line) => SECTION_HEADING_PATTERN.test(line) || MARKDOWN_LINE_PREFIX.test(line));
+  return false;
+}
+
+function advisoryProposal(title: string, message: string): EditorialProposal {
+  return { type: "message", title, message };
+}
+
 function proposalFromAiText(input: EditorialWorkflowRouterInput, aiText: string): EditorialProposal {
   const context = selectedContext(input);
-  if (["rewrite_selection", "shorten_selection", "fix_selection", "strengthen_argument", "more"].includes(input.commandId) && context?.excerpt) {
+  if (TARGET_SCOPED_COMMANDS.includes(input.commandId) && context?.excerpt) {
+    if (!context.blockId) {
+      return advisoryProposal("Không xác định được block để áp dụng", aiText);
+    }
+    if (replacementOutOfScope(aiText, context.type)) {
+      return advisoryProposal("Đề xuất tham khảo ngoài phạm vi block", aiText);
+    }
+    const normalized = normalizeReplacementForTarget(aiText, context.type);
+    if (replacementOutOfScope(normalized, context.type)) {
+      return advisoryProposal("Đề xuất tham khảo ngoài phạm vi block", aiText);
+    }
     return {
       type: "replace_block",
       targetBlockId: context.blockId,
       beforeText: context.excerpt,
-      afterText: aiText,
-      reason: "AI fallback tạo đề xuất thay thế cho ngữ cảnh đã chọn.",
+      afterText: normalized,
+      reason: "AI fallback tạo đề xuất thay thế đúng block đã chọn.",
     };
+  }
+
+  if (input.commandId === "more" && context?.excerpt && context.blockId) {
+    const normalized = normalizeReplacementForTarget(aiText, context.type);
+    if (!replacementOutOfScope(aiText, context.type) && !replacementOutOfScope(normalized, context.type)) {
+      return {
+        type: "replace_block",
+        targetBlockId: context.blockId,
+        beforeText: context.excerpt,
+        afterText: normalized,
+        reason: "AI fallback tạo đề xuất thay thế đúng block đã chọn.",
+      };
+    }
+    return advisoryProposal("Đề xuất tham khảo", aiText);
   }
 
   if (input.commandId === "suggest_title_sapo") {
@@ -179,14 +239,20 @@ async function runAiFallback(input: EditorialWorkflowRouterInput, startedAt: num
     context,
   ].join("\n\n"), token);
 
+  const proposal = proposalFromAiText(input, aiText);
+  const cannotApplyTargetScopedMutation = TARGET_SCOPED_COMMANDS.includes(input.commandId) && proposal.type !== "replace_block";
+
   return {
-    ok: true,
+    ok: !cannotApplyTargetScopedMutation,
     source: "ai",
     commandId: input.commandId,
-    proposal: proposalFromAiText(input, aiText),
+    proposal,
     model: AI_MODEL_LABEL,
-    fallbackReason,
+    fallbackReason: cannotApplyTargetScopedMutation ? "out_of_scope_target" : fallbackReason,
     telemetry: finishTelemetry(startedAt),
+    error: cannotApplyTargetScopedMutation
+      ? { code: "out_of_scope_target", message: "AI trả về nội dung vượt phạm vi block đã chọn nên chỉ hiển thị như đề xuất tham khảo." }
+      : undefined,
   };
 }
 
