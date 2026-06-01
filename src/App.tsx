@@ -4879,19 +4879,19 @@ Nội dung văn bản:\n` + content,
         },
         {
           id: "RESIZE",
-          label: "Rút gọn",
+          label: "Rút gọn nội dung",
           icon: Maximize2,
           desc: "Rút gọn độ dài văn bản",
         },
         {
           id: "EDITORIAL_POLITICAL",
-          label: "Tăng tính chính luận",
+          label: "Nâng cấp lập luận",
           icon: BookOpen,
           desc: "Làm sâu sắc & trang trọng",
         },
         {
           id: "CREATE_TITLES",
-          label: "Tạo Tiêu đề & Sapo",
+          label: "Gợi ý tiêu đề & sapo",
           icon: Type,
           desc: "Đề xuất tiêu đề chuẩn SEO",
         },
@@ -5955,6 +5955,11 @@ Nội dung văn bản:\n` + content,
                       editorialDraftKey={editorialDraftKey}
                       clearEditorialDraft={clearEditorialDraft}
                       createNewSession={createNewSession}
+                      historySearchQuery={historySearchQuery}
+                      setHistorySearchQuery={setHistorySearchQuery}
+                      loadSession={loadSession}
+                      cleanDisplayTitle={cleanDisplayTitle}
+                      setSessions={setSessions}
                     />
                   ) : activeTab === "proposals" ? (
                     selectedProposalId ? (

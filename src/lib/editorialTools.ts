@@ -68,7 +68,7 @@ export const EDITORIAL_TOOLS: EditorialToolConfig[] = [
   {
     id: "edit_shorten",
     group: "edit",
-    label: "Rút gọn",
+    label: "Rút gọn nội dung",
     description: "Cô đọng nội dung nhưng giữ ý chính.",
     taskType: "RESIZE",
     outputFormat: "ARTICLE",
@@ -82,7 +82,7 @@ export const EDITORIAL_TOOLS: EditorialToolConfig[] = [
   {
     id: "edit_political",
     group: "edit",
-    label: "Tăng tính chính luận",
+    label: "Nâng cấp lập luận",
     description: "Làm sâu sắc lập luận, tăng sắc thái trang trọng, thuyết phục.",
     taskType: "EDITORIAL_POLITICAL",
     outputFormat: "ARTICLE",
@@ -96,7 +96,7 @@ export const EDITORIAL_TOOLS: EditorialToolConfig[] = [
   {
     id: "create_titles",
     group: "edit",
-    label: "Tạo tiêu đề & sapo",
+    label: "Gợi ý tiêu đề & sapo",
     description: "Gợi ý tiêu đề, sapo, mô tả ngắn cho bài viết.",
     taskType: "CREATE_TITLES",
     outputFormat: "ARTICLE",
@@ -110,7 +110,7 @@ export const EDITORIAL_TOOLS: EditorialToolConfig[] = [
   {
     id: "review_content",
     group: "review",
-    label: "Rà soát / đánh giá nội dung",
+    label: "Kiểm tra chất lượng văn bản",
     description: "Kiểm tra trùng lặp, thiếu ý, lỗi chính tả, cấu trúc và rủi ro dữ kiện.",
     taskType: "CONTENT_REVIEW",
     outputFormat: "JSON_CONTENT_REVIEW",
