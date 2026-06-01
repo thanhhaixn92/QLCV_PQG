@@ -16,8 +16,8 @@ import type { EditorialWorkspaceMode } from '../../types/editorial';
 
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '../../lib/utils';
-import { getEditorialTool } from '../../lib/editorialTools';
-import { EditorialToolSelector } from './EditorialToolSelector';
+import { EDITORIAL_TOOLS, getEditorialTool } from '../../lib/editorialTools';
+import { deriveEditorialSessionTitle } from '../library/LibraryHelpers';
 import { A4PrintPreview } from './A4PrintPreview';
 import {
   LayoutRecommendationPanel,
@@ -165,9 +165,16 @@ export const EditorWorkspace = (props: any) => {
     setLastSavedAt(null);
   }, [setError, setInput, setIsEditing, setOutput]);
 
+  const hasProtectedWorkspaceData = React.useMemo(() => (
+    isDraftDirty ||
+    Boolean(output?.trim()) ||
+    Boolean(input?.trim()) ||
+    selectedSourceDocIds.length > 0
+  ), [input, isDraftDirty, output, selectedSourceDocIds.length]);
+
   const handleCreateNewArticle = React.useCallback(async () => {
-    if (isDraftDirty) {
-      const confirmed = await requestConfirmAsync("Bản thảo hiện tại có thay đổi chưa lưu. Bạn muốn tạo bài mới và bỏ qua các thay đổi cục bộ?");
+    if (hasProtectedWorkspaceData) {
+      const confirmed = await requestConfirmAsync("Bản thảo hiện tại có dữ liệu hoặc nguồn tư liệu đang chọn. Bạn muốn tạo bài mới và xóa dữ liệu hiện tại?");
       if (!confirmed) return;
     }
     clearLocalDraft(false);
@@ -175,7 +182,7 @@ export const EditorWorkspace = (props: any) => {
       createNewSession();
     }
     resetWorkspaceForNewArticle();
-  }, [clearLocalDraft, createNewSession, isDraftDirty, requestConfirmAsync, resetWorkspaceForNewArticle]);
+  }, [clearLocalDraft, createNewSession, hasProtectedWorkspaceData, requestConfirmAsync, resetWorkspaceForNewArticle]);
 
   const handleSaveDraft = React.useCallback(async () => {
     if (!output?.trim()) return;
@@ -382,19 +389,14 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
     }
   }, [output, workspaceMode]);
 
-  const safeCleanDisplayTitle = React.useCallback((rawTitle?: string) => {
-    const cleaned = typeof cleanDisplayTitle === "function" ? cleanDisplayTitle(rawTitle) : rawTitle;
-    const title = (cleaned || "").trim();
-    const dirtyTitlePatterns = [
-      /^yêu cầu\s*\/\s*bối cảnh/i,
-      /^yêu cầu\s*[:：]/i,
-      /^bối cảnh\s*[:：]/i,
-      /yêu cầu\s*\/\s*bối cảnh/i,
-    ];
-    if (!title || dirtyTitlePatterns.some((pattern) => pattern.test(title))) {
-      return "Bài viết chưa đặt tiêu đề";
-    }
-    return title;
+  const safeCleanDisplayTitle = React.useCallback((rawTitle?: string, session?: any) => {
+    const derived = deriveEditorialSessionTitle({
+      output: session?.currentOutput || session?.versions?.[0]?.content,
+      currentTitle: rawTitle,
+      latestPreview: session?.latestPreview,
+      input: session?.input,
+    });
+    return typeof cleanDisplayTitle === "function" ? cleanDisplayTitle(derived) : derived;
   }, [cleanDisplayTitle]);
 
   const filteredSessions = React.useMemo(() => {
@@ -402,22 +404,22 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
     return (sessions || []).filter((session: any) => {
       if (!query) return true;
       return (
-        safeCleanDisplayTitle(session.title).toLowerCase().includes(query) ||
+        safeCleanDisplayTitle(session.title, session).toLowerCase().includes(query) ||
         session.versions?.[0]?.content?.toLowerCase().includes(query) ||
-        session.currentOutput?.toLowerCase().includes(query)
+        session.currentOutput?.toLowerCase().includes(query) ||
+        session.latestPreview?.toLowerCase().includes(query)
       );
     });
   }, [historySearchQuery, safeCleanDisplayTitle, sessions]);
 
   const switchWorkspaceMode = React.useCallback((mode: EditorialWorkspaceMode) => {
     if (mode === "create") {
-      if (typeof createNewSession === "function") createNewSession();
       handleToolChange?.("draft_new");
       setTaskType?.("WRITE_NEW");
       setOutputFormat?.("ARTICLE");
     }
     setWorkspaceMode(mode);
-  }, [createNewSession, handleToolChange, setOutputFormat, setTaskType]);
+  }, [handleToolChange, setOutputFormat, setTaskType]);
 
   const openSessionInEditor = React.useCallback(async (session: any) => {
     if (typeof loadSession === "function") {
@@ -447,7 +449,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
     },
     create: {
       title: "Tạo văn bản mới",
-      subtitle: "Chọn loại văn bản, nhập yêu cầu và gắn nguồn tư liệu trong cùng một workspace.",
+      subtitle: "Chọn loại văn bản, nhập yêu cầu và gắn nguồn tư liệu trong cùng một không gian biên tập.",
     },
     edit: {
       title: "Biên tập văn bản",
@@ -556,11 +558,11 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                 </span>
               </div>
               <h2 className="text-base font-bold text-slate-800 leading-snug line-clamp-2 group-hover:text-[#002D56] transition-colors">
-                {safeCleanDisplayTitle(session.title)}
+                {safeCleanDisplayTitle(session.title, session)}
               </h2>
               <div className="flex flex-wrap gap-2 mt-5 mb-5">
                 <span className="inline-flex items-center gap-1.5 text-[12px] font-medium text-slate-500 bg-slate-50 px-2.5 py-1.5 rounded-lg border border-slate-100">
-                  <Clock className="w-3.5 h-3.5" /> {(session.versions || []).length} phiên bản
+                  <Clock className="w-3.5 h-3.5" /> {session.versions?.length ? `${session.versions.length} phiên bản` : "Đã lưu phiên bản"}
                 </span>
                 <span className="inline-flex items-center gap-1.5 text-[12px] font-medium text-slate-500 bg-slate-50 px-2.5 py-1.5 rounded-lg border border-slate-100">
                   <Files className="w-3.5 h-3.5" /> {(session.documentIds || []).length} nguồn
@@ -603,6 +605,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                   }}
                   className="px-3 py-2.5 rounded-lg text-slate-400 bg-slate-50 hover:bg-rose-50 hover:text-rose-600 transition-all border border-slate-100"
                   title="Xóa bài viết"
+                  aria-label="Xóa bài viết"
                 >
                   <Trash2 className="w-4 h-4" />
                 </button>
@@ -620,8 +623,8 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
         <div className="flex items-center gap-3 mb-5">
           <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#002D56] text-white text-sm font-bold">1</span>
           <div>
-            <h2 className="text-base font-bold text-slate-800">Chọn loại văn bản</h2>
-            <p className="text-[13px] text-slate-500">Template nằm trong workspace để tránh lẫn với menu nghiệp vụ.</p>
+            <h2 className="text-base font-bold text-slate-800">Bước 1: Chọn loại văn bản</h2>
+            <p className="text-[13px] text-slate-500">Mẫu văn bản nằm trong vùng làm việc bên phải để tránh lẫn với menu nghiệp vụ.</p>
           </div>
         </div>
         <div className="space-y-5">
@@ -661,7 +664,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
         <div className="flex items-center gap-3 mb-4">
           <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#002D56] text-white text-sm font-bold">2</span>
           <div>
-            <h2 className="text-base font-bold text-slate-800">Nhập thông tin đầu vào</h2>
+            <h2 className="text-base font-bold text-slate-800">Bước 2: Nhập thông tin đầu vào</h2>
             <p className="text-[13px] text-slate-500">Mô tả yêu cầu, bối cảnh, số liệu và đối tượng sử dụng văn bản.</p>
           </div>
         </div>
@@ -676,7 +679,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
         <div className="flex items-center gap-3 mb-4">
           <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#002D56] text-white text-sm font-bold">3</span>
           <div>
-            <h2 className="text-base font-bold text-slate-800">Chọn nguồn tư liệu</h2>
+            <h2 className="text-base font-bold text-slate-800">Bước 3: Chọn nguồn tư liệu</h2>
             <p className="text-[13px] text-slate-500">Có thể bổ sung nguồn ở chế độ “Nguồn tư liệu” rồi quay lại tạo văn bản.</p>
           </div>
         </div>
@@ -703,35 +706,69 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
             }}
             className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-[13px] font-semibold text-slate-700 hover:border-[#002D56] hover:text-[#002D56]"
           >
-            Mở workspace biên tập
+            Tiếp tục sang biên tập và tạo bản thảo
           </button>
         </div>
       </section>
     </div>
   );
 
-  const renderPlaceholderMode = (kind: "review" | "summarize") => (
-    <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6 sm:p-8 min-h-[420px] flex flex-col justify-center">
-      <div className="max-w-2xl">
-        <div className="inline-flex items-center gap-2 rounded-full bg-blue-50 text-[#002D56] px-3 py-1.5 text-[12px] font-bold mb-5">
-          {kind === "review" ? <ClipboardCheck className="w-4 h-4" /> : <FileStack className="w-4 h-4" />}
-          {kind === "review" ? "Kiểm tra chất lượng văn bản" : "Tóm tắt – tổng hợp tài liệu"}
-        </div>
-        <h2 className="text-2xl font-bold text-slate-900 mb-3">
-          {kind === "review" ? "Rà soát nội dung" : "Tóm tắt – tổng hợp"}
-        </h2>
-        <p className="text-sm leading-7 text-slate-600">
-          {kind === "review"
-            ? "MVP này chuẩn hóa điểm vào cho chức năng kiểm tra chất lượng văn bản. Luồng AI review hiện có vẫn được giữ trong workspace biên tập để tránh rewrite lớn."
-            : "MVP này chuẩn hóa điểm vào cho chức năng tạo phiếu tóm tắt và tài liệu tổng hợp. Logic xử lý hiện có vẫn được giữ an toàn trong workspace biên tập."}
-        </p>
-        <div className="mt-6 flex flex-wrap gap-3">
-          <button onClick={() => switchWorkspaceMode("history")} className="rounded-lg border border-slate-300 px-4 py-2.5 text-[13px] font-semibold text-slate-700 hover:border-[#002D56] hover:text-[#002D56]">Quay lại lịch sử</button>
-          <button onClick={() => switchWorkspaceMode("edit")} className="rounded-lg bg-[#002D56] px-4 py-2.5 text-[13px] font-semibold text-white hover:bg-slate-900">Chọn văn bản để biên tập</button>
+  const runToolFromWorkspace = React.useCallback((toolId: string, seedFromOutput = false) => {
+    const tool = getEditorialTool(toolId as any);
+    handleToolChange?.(toolId);
+    setTaskType?.(tool.taskType);
+    setOutputFormat?.(tool.outputFormat);
+    if (seedFromOutput && output?.trim()) {
+      setInput(output);
+    }
+    setWorkspaceMode("edit");
+  }, [handleToolChange, output, setInput, setOutputFormat, setTaskType]);
+
+  const renderPlaceholderMode = (kind: "review" | "summarize") => {
+    const isReviewMode = kind === "review";
+    return (
+      <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6 sm:p-8 min-h-[420px]">
+        <div className="max-w-3xl">
+          <div className="inline-flex items-center gap-2 rounded-full bg-blue-50 text-[#002D56] px-3 py-1.5 text-[12px] font-bold mb-5">
+            {isReviewMode ? <ClipboardCheck className="w-4 h-4" /> : <FileStack className="w-4 h-4" />}
+            {isReviewMode ? "Kiểm tra chất lượng văn bản" : "Tóm tắt – tổng hợp tài liệu"}
+          </div>
+          <h2 className="text-2xl font-bold text-slate-900 mb-3">
+            {isReviewMode ? "Rà soát nội dung" : "Tóm tắt – tổng hợp"}
+          </h2>
+          <p className="text-sm leading-7 text-slate-600">
+            {isReviewMode
+              ? "Dùng bản thảo hiện tại để rà soát lỗi, thiếu ý, thuật ngữ và rủi ro dữ kiện; hoặc chuyển sang vùng biên tập để dán văn bản cần kiểm tra."
+              : "Tạo phiếu tóm tắt hoặc tài liệu tổng hợp từ nguồn đang chọn. Nếu chưa có nguồn, hãy chọn nguồn tư liệu trước khi xử lý."}
+          </p>
+          {contentReview && isReviewMode && (
+            <div className="mt-5 rounded-xl border border-emerald-100 bg-emerald-50/60 p-4 text-sm text-emerald-800">
+              Đã có kết quả rà soát nội dung. Mở vùng biên tập để xem chi tiết và tiếp tục chỉnh sửa.
+            </div>
+          )}
+          <div className="mt-6 flex flex-wrap gap-3">
+            {isReviewMode ? (
+              <button
+                onClick={() => runToolFromWorkspace("review_content", Boolean(output?.trim()))}
+                className="rounded-lg bg-[#002D56] px-4 py-2.5 text-[13px] font-semibold text-white hover:bg-slate-900"
+              >
+                {output?.trim() ? "Rà soát bản thảo hiện tại" : "Chọn văn bản để rà soát"}
+              </button>
+            ) : (
+              <>
+                <button onClick={() => runToolFromWorkspace("summary_card")} className="rounded-lg bg-[#002D56] px-4 py-2.5 text-[13px] font-semibold text-white hover:bg-slate-900">Tạo phiếu tóm tắt</button>
+                <button onClick={() => runToolFromWorkspace("summary_doc")} className="rounded-lg border border-[#002D56] px-4 py-2.5 text-[13px] font-semibold text-[#002D56] hover:bg-blue-50">Tạo tài liệu tổng hợp</button>
+                {selectedSourceDocIds.length === 0 && (
+                  <button onClick={() => switchWorkspaceMode("sources")} className="rounded-lg border border-slate-300 px-4 py-2.5 text-[13px] font-semibold text-slate-700 hover:border-[#002D56] hover:text-[#002D56]">Chọn nguồn để tổng hợp</button>
+                )}
+              </>
+            )}
+            <button onClick={() => switchWorkspaceMode("history")} className="rounded-lg border border-slate-300 px-4 py-2.5 text-[13px] font-semibold text-slate-700 hover:border-[#002D56] hover:text-[#002D56]">Quay lại lịch sử</button>
+          </div>
         </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   const renderSourcesMode = () => (
     <div className="space-y-5">
@@ -755,8 +792,85 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
             </button>
           ))}
         </div>
-        <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/70 p-6 text-sm text-slate-600">
-          Chế độ này chuẩn hóa nhãn nguồn tư liệu cho MVP. Các form chọn kho, tra cứu web, dán văn bản, thêm liên kết và tải tệp vẫn được giữ đầy đủ trong workspace biên tập để tránh rewrite module Kho tư liệu trong PR này.
+        <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4 sm:p-5 text-sm text-slate-600 space-y-4">
+          {!sourceActiveTab && (
+            <p>Chọn hoặc bổ sung nguồn ngay trong Trợ lý biên tập. Các nguồn được chọn sẽ đi cùng bản thảo hiện tại.</p>
+          )}
+          {sourceActiveTab === "library" && (
+            <div className="space-y-3">
+              <p className="text-[12px] font-bold uppercase tracking-wider text-slate-500">Kho tư liệu</p>
+              <button onClick={() => { setIsPickingFromLibrary(true); setSourceActiveTab(null); }} className="inline-flex items-center gap-2 rounded-lg bg-white border border-blue-200 px-4 py-2.5 text-[13px] font-bold text-blue-700 hover:bg-blue-50">
+                <Plus className="w-4 h-4" /> Mở/chọn từ Kho tư liệu
+              </button>
+            </div>
+          )}
+          {sourceActiveTab === "web" && (
+            <div className="space-y-3">
+              <p className="text-[12px] font-bold uppercase tracking-wider text-slate-500">Tra cứu web</p>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <input type="text" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} onKeyDown={(event) => event.key === "Enter" && handleWebSearch()} placeholder="Nhập nội dung cần tra cứu..." className="flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-[#002D56]/20" />
+                <button onClick={handleWebSearch} disabled={isLoading} className="inline-flex items-center justify-center gap-2 rounded-lg bg-[#002D56] px-4 py-2.5 text-[13px] font-semibold text-white disabled:opacity-50">
+                  {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />} Tra cứu
+                </button>
+              </div>
+              {searchResults?.length > 0 && (
+                <div className="grid gap-2">
+                  {searchResults.map((result: any, idx: number) => (
+                    <button key={`source-mode-result-${idx}`} onClick={() => addSearchResultAsSource(result.title, result.content || result.snippet || "", result.url)} className="rounded-lg border border-slate-200 bg-white p-3 text-left hover:border-[#002D56]">
+                      <span className="block text-[13px] font-bold text-slate-800">{result.title}</span>
+                      <span className="block text-[11px] text-slate-500 mt-1">{result.url ? getHostname(result.url) : "Nguồn web"}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          {sourceActiveTab === "text" && (
+            <div className="space-y-3">
+              <p className="text-[12px] font-bold uppercase tracking-wider text-slate-500">Dán văn bản</p>
+              <input value={newTextName} onChange={(event) => setNewTextName(event.target.value)} placeholder="Tên nguồn" className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-[13px]" />
+              <textarea value={newTextContent} onChange={(event) => setNewTextContent(event.target.value)} placeholder="Dán nội dung nguồn..." rows={6} className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-[13px]" />
+              <button onClick={handleAddText} className="rounded-lg bg-[#002D56] px-4 py-2.5 text-[13px] font-semibold text-white">Thêm văn bản làm nguồn</button>
+            </div>
+          )}
+          {sourceActiveTab === "link" && (
+            <div className="space-y-3">
+              <p className="text-[12px] font-bold uppercase tracking-wider text-slate-500">Thêm liên kết</p>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <input value={newLinkUrl} onChange={(event) => setNewLinkUrl(event.target.value)} placeholder="https://..." className="flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-[13px]" />
+                <button onClick={handleAddLink} className="rounded-lg bg-[#002D56] px-4 py-2.5 text-[13px] font-semibold text-white">Thêm liên kết</button>
+              </div>
+            </div>
+          )}
+          {sourceActiveTab === "upload" && (
+            <div className="space-y-3">
+              <p className="text-[12px] font-bold uppercase tracking-wider text-slate-500">Tải tệp lên</p>
+              <button onClick={() => fileInputRef.current?.click()} className="inline-flex items-center gap-2 rounded-lg border-2 border-dashed border-slate-300 bg-white px-4 py-4 text-[13px] font-bold text-slate-700 hover:border-[#002D56] hover:text-[#002D56]">
+                <FileUp className="w-5 h-5" /> Chọn tệp để tải lên
+              </button>
+            </div>
+          )}
+          <div className="border-t border-slate-200 pt-4">
+            <p className="text-[12px] font-bold text-slate-700 mb-3">Nguồn đang chọn ({selectedSourceDocIds.length})</p>
+            {selectedSourceDocIds.length === 0 ? (
+              <p className="rounded-lg border border-dashed border-slate-200 bg-white p-4 text-[13px] text-slate-500">Chưa chọn nguồn tư liệu.</p>
+            ) : (
+              <div className="grid gap-2">
+                {documents.filter((doc: any) => selectedSourceDocIds.includes(doc.id)).map((doc: any, idx: number) => (
+                  <div key={getRenderKey("source-mode-selected", doc, idx)} className="flex items-center gap-3 rounded-lg border border-blue-100 bg-white p-3">
+                    <FileText className="w-4 h-4 text-blue-600" />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-[13px] font-semibold text-slate-800">{doc.name}</p>
+                      <p className="text-[11px] text-slate-500">{getDocTypeLabel(doc.type)} • {getSourceTypeLabel(doc.sourceType)}</p>
+                    </div>
+                    <button onClick={() => toggleDocSelection(doc.id)} title="Bỏ chọn nguồn" aria-label="Bỏ chọn nguồn" className="rounded-md p-2 text-slate-400 hover:bg-rose-50 hover:text-rose-600">
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </section>
       <button onClick={() => switchWorkspaceMode("edit")} className="inline-flex items-center gap-2 rounded-lg bg-[#002D56] px-4 py-2.5 text-[13px] font-semibold text-white hover:bg-slate-900">
@@ -766,15 +880,33 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
   );
 
   const renderEditMode = () => (
-    <div className="grid grid-cols-1 xl:grid-cols-[300px_minmax(0,1fr)] gap-5 h-full">
-                        {/* Sidebar: Controls & Sources */}
+    <div className="grid grid-cols-1 gap-5 h-full">
+                        {/* Workspace controls and sources */}
                         <aside className="space-y-4 sm:space-y-6 lg:sticky lg:top-0 lg:max-h-[calc(100vh-120px)] lg:overflow-y-auto overscroll-contain custom-scrollbar pr-1">
-                          {/* Task Types */}
                           <section className="bg-white rounded-lg p-5 shadow-sm border border-slate-200">
-                            <EditorialToolSelector
-                              value={selectedEditorialToolId}
-                              onChange={handleToolChange}
-                            />
+                            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                              <div>
+                                <h2 className="text-[14px] font-semibold text-slate-800">Chỉnh sửa bằng AI</h2>
+                                <p className="text-[12px] text-slate-500 mt-1">Chọn nhanh công cụ biên tập mà không mở thêm cột phụ.</p>
+                              </div>
+                              <div className="flex flex-wrap gap-2">
+                                {EDITORIAL_TOOLS.filter((tool) => tool.taskType !== "WRITE_NEW").map((tool) => (
+                                  <button
+                                    key={`editor-quick-tool-${tool.id}`}
+                                    type="button"
+                                    onClick={() => handleToolChange?.(tool.id)}
+                                    className={cn(
+                                      "rounded-full border px-3 py-1.5 text-[12px] font-semibold transition-colors",
+                                      selectedEditorialToolId === tool.id
+                                        ? "border-[#002D56] bg-blue-50 text-[#002D56]"
+                                        : "border-slate-200 bg-white text-slate-600 hover:border-[#002D56] hover:text-[#002D56]",
+                                    )}
+                                  >
+                                    {tool.label}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
                           </section>
 
                           {/* Project Specific Sources */}
@@ -1167,6 +1299,8 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                             toggleDocSelection(doc.id);
                                           }}
                                           className="p-1 text-slate-300 hover:text-red-500 rounded-md transition-colors"
+                                          title="Bỏ chọn nguồn"
+                                          aria-label="Bỏ chọn nguồn"
                                         >
                                           <X className="w-3.5 h-3.5" />
                                         </button>
@@ -1205,13 +1339,14 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                 {isParsing && (
                                   <span className="text-[9px] font-semibold text-amber-600 animate-pulse flex items-center gap-1.5 bg-amber-50 px-3 py-1.5 rounded-md border border-amber-200 tracking-normal">
                                     <Loader2 className="w-3 h-3 animate-spin" />
-                                    Parsing...
+                                    Đang đọc tệp...
                                   </span>
                                 )}
                                 <button
                                   onClick={handleCreateNewArticle}
                                   className="text-slate-300 hover:text-red-500 p-2 sm:p-2.5 rounded-md transition-all hover:bg-red-50"
-                                  title="Làm mới vùng biên tập"
+                                  title="Xóa dữ liệu bản thảo hiện tại"
+                                  aria-label="Xóa dữ liệu bản thảo hiện tại"
                                 >
                                   <Trash2 className="w-4 h-4 sm:w-5 sm:h-5" />
                                 </button>
@@ -1453,7 +1588,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                                       s.id === currentSessionId,
                                                   )?.versions?.length || 0
                                                 }{" "}
-                                                hồ sơ
+                                                phiên bản
                                               </div>
                                             )}
                                         </div>
@@ -1484,6 +1619,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                           }}
                                           className="p-2.5 rounded-md bg-emerald-600 text-white shadow-sm shadow-emerald-200 active:scale-90 border border-emerald-500"
                                           title="Lưu phiên bản"
+                                          aria-label="Lưu phiên bản"
                                         >
                                           <Save className="w-4 h-4" />
                                         </button>
@@ -1770,7 +1906,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
       <aside className="bg-white border border-slate-200 rounded-xl shadow-sm p-4 lg:p-5 h-fit lg:sticky lg:top-0 lg:max-h-[calc(100vh-112px)] overflow-y-auto custom-scrollbar">
         <div className="mb-4 px-1">
           <p className="text-[12px] font-bold uppercase tracking-[0.18em] text-[#002D56]">Trợ lý biên tập</p>
-          <h2 className="mt-1 text-[15px] font-bold text-slate-900">Unified Workspace</h2>
+          <h2 className="mt-1 text-[15px] font-bold text-slate-900">Không gian biên tập</h2>
         </div>
         <nav className="space-y-2" aria-label="Menu Trợ lý biên tập">
           {moduleMenuItems.map((item) => {

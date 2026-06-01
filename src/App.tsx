@@ -376,7 +376,8 @@ import {
   getSourceTypeLabel, 
   getDocumentPreviewUrl, 
   getDocumentOpenUrl, 
-  cleanDisplayTitle 
+  cleanDisplayTitle,
+  deriveEditorialSessionTitle 
 } from "./components/library/LibraryHelpers";
 
 export type BackgroundTask = {
@@ -3168,9 +3169,16 @@ function App() {
       note: isEditing ? "Chỉnh sửa bởi người dùng" : "Tạo mới bởi AI",
     };
 
+    const existingSession = sessions.find((s) => s.id === currentSessionId);
+    const cleanSessionTitle = deriveEditorialSessionTitle({
+      output: finalOutput,
+      currentTitle: existingSession?.title,
+      latestPreview: existingSession?.latestPreview,
+      input,
+    });
+
     const sessionData: Omit<ProjectSession, "id"> = {
-      title:
-        input.substring(0, 50) || `Bài viết ${new Date().toLocaleDateString()}`,
+      title: cleanSessionTitle,
       taskType,
       style,
       format: outputFormat,
@@ -3178,7 +3186,7 @@ function App() {
       latestVersionId: newVersion.id,
       latestPreview: finalOutput.substring(0, 200),
       createdAt:
-        sessions.find((s) => s.id === currentSessionId)?.createdAt ||
+        existingSession?.createdAt ||
         Date.now(),
       updatedAt: Date.now(),
     };
@@ -3947,7 +3955,6 @@ function App() {
             `Đã nạp ${newDoc?.temporary ? "tạm" : ""} tệp "${file.name}"`,
           );
           setSourceActiveTab(null);
-          setActiveTab("activity");
           setTimeout(() => {
             setBackgroundTasks((prev) => prev.filter((t) => t.id !== taskId));
           }, 3000);
@@ -4118,7 +4125,6 @@ function App() {
         setBackgroundTasks((prev) =>
           prev.map((t) => (t.id === taskId ? { ...t, status: "success" } : t)),
         );
-        setActiveTab("activity");
         setTimeout(() => {
           setBackgroundTasks((prev) => prev.filter((t) => t.id !== taskId));
         }, 3000);

@@ -187,3 +187,52 @@ export function cleanDisplayTitle(value?: string): string {
       .slice(0, 160) || "Bài viết không tiêu đề"
   );
 }
+
+export const DIRTY_EDITORIAL_TITLE_PATTERNS = [
+  /^yêu cầu\s*\/\s*bối cảnh/i,
+  /^thông tin cần đưa vào văn bản/i,
+  /^nội dung chính cần có/i,
+  /^thời gian\s*&\s*địa điểm/i,
+  /^thành phần\s*\/\s*nhân vật/i,
+  /^đối tượng tiếp nhận/i,
+  /^nguồn tư liệu/i,
+  /^yêu cầu\s*[:：]/i,
+  /^bối cảnh\s*[:：]/i,
+];
+
+export function isDirtyEditorialTitle(value?: string): boolean {
+  const title = cleanDisplayTitle(value).trim();
+  return !title || title === "Bài viết không tiêu đề" || DIRTY_EDITORIAL_TITLE_PATTERNS.some((pattern) => pattern.test(title));
+}
+
+function firstMeaningfulEditorialLine(value?: string): string {
+  if (!value) return "";
+  const lines = value
+    .replace(/```[\s\S]*?```/g, " ")
+    .split(/\r?\n/)
+    .map((line) => cleanDisplayTitle(line.replace(/^[-*•\d.)\s]+/, "")))
+    .map((line) => line.replace(/[:：]\s*$/, "").trim())
+    .filter((line) => line && !isDirtyEditorialTitle(line) && line.length > 2);
+  return lines[0] || "";
+}
+
+export function deriveEditorialSessionTitle(options: {
+  output?: string;
+  currentTitle?: string;
+  latestPreview?: string;
+  input?: string;
+}): string {
+  const outputTitle = firstMeaningfulEditorialLine(options.output);
+  if (outputTitle) return outputTitle;
+
+  const currentTitle = cleanDisplayTitle(options.currentTitle);
+  if (!isDirtyEditorialTitle(currentTitle)) return currentTitle;
+
+  const previewTitle = firstMeaningfulEditorialLine(options.latestPreview);
+  if (previewTitle) return previewTitle;
+
+  const inputTitle = firstMeaningfulEditorialLine(options.input);
+  if (inputTitle) return inputTitle;
+
+  return "Bài viết chưa đặt tiêu đề";
+}
