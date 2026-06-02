@@ -55,6 +55,11 @@ type CopilotCommandId =
   | "fix_selection"
   | "strengthen_argument"
   | "review_current_draft"
+  | "normalize_caption_title"
+  | "check_missing_source_or_caption"
+  | "remove_bad_technical_markers"
+  | "check_long_paragraph"
+  | "normalize_basic_heading"
   | "suggest_title_sapo"
   | "add_source"
   | "summarize_selected_source"
@@ -80,6 +85,71 @@ type CopilotCommandId =
   | "choose_template"
   | "more";
 
+interface CanvasBlockEditState {
+  blockId: string;
+  blockType: ArticleBlock["type"];
+  blockIndex: number;
+  originalText: string;
+  value: string;
+  title: string;
+  error?: string | null;
+}
+
+interface CanvasBlockOverride {
+  block: ArticleBlock;
+  empty: boolean;
+  index: number;
+}
+
+const CANVAS_EDITABLE_BLOCK_TYPES = new Set<ArticleBlock["type"]>([
+  "title",
+  "sapo",
+  "section-heading",
+  "paragraph",
+  "conclusion",
+  "quote",
+  "bullet-list",
+  "ordered-list",
+]);
+
+
+function markdownHeading(value: string, level: 1 | 2 | 3): string {
+  const text = clearCanvasEditFormatting(value).split(/\r?\n/u).map((line) => line.trim()).filter(Boolean).join(" ");
+  return `${"#".repeat(level)} ${text}`.trim();
+}
+
+function clearCanvasEditFormatting(value: string): string {
+  return String(value || "")
+    .split(/\r?\n/u)
+    .map((line) => line
+      .replace(/^#{1,6}\s+/u, "")
+      .replace(/^[-*+]\s+/u, "")
+      .replace(/^\d+[.)]\s+/u, "")
+      .replace(/(?:\*\*|__|`)/gu, "")
+      .replace(/(^|[^_])_([^_]+)_/gu, "$1$2")
+      .trim())
+    .join("\n")
+    .replace(/\n{3,}/gu, "\n\n");
+}
+
+function bulletCanvasEditText(value: string): string {
+  const lines = clearCanvasEditFormatting(value).split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
+  return lines.length > 0 ? lines.map((line) => `- ${line}`).join("\n") : "- ";
+}
+
+function wrapCanvasEditText(value: string, marker: "**" | "_"): string {
+  const text = String(value || "").trim();
+  return text ? `${marker}${text}${marker}` : "";
+}
+
+function blockWithTextOverride(block: ArticleBlock, value: string): ArticleBlock {
+  if (block.type === "bullet-list" || block.type === "ordered-list") {
+    const items = value.split(/\r?\n/u).map((line) => line.replace(/^[-*+]\s+/u, "").replace(/^\d+[.)]\s+/u, "").trim()).filter(Boolean);
+    return { ...block, slots: { ...block.slots, items } };
+  }
+
+  return { ...block, slots: { ...block.slots, text: value } };
+}
 
 const COPILOT_DRAFT_KIND_ORDER = [
   "website_article",
@@ -95,20 +165,25 @@ const COPILOT_DRAFT_KIND_ORDER = [
 ] as const;
 
 const COMMAND_LABELS: Record<CopilotCommandId, string> = {
-  draft_new: "Soạn văn bản mới",
-  manual_edit: "Sửa thủ công",
+  draft_new: "Soạn mới",
+  manual_edit: "Sửa trên Canvas",
   rewrite_selection: "Viết lại",
   shorten_selection: "Rút gọn",
   fix_selection: "Sửa lỗi",
   strengthen_argument: "Tăng lập luận",
-  review_current_draft: "Rà soát bản thảo",
-  suggest_title_sapo: "Gợi ý tiêu đề & sapo",
-  add_source: "Thêm nguồn",
+  review_current_draft: "Rà soát",
+  normalize_caption_title: "Chuẩn hóa",
+  check_missing_source_or_caption: "Kiểm tra lỗi",
+  remove_bad_technical_markers: "Xóa marker",
+  check_long_paragraph: "Đoạn dài",
+  normalize_basic_heading: "Chuẩn hóa",
+  suggest_title_sapo: "Tiêu đề",
+  add_source: "Nguồn",
   summarize_selected_source: "Tóm tắt nguồn",
-  create_caption: "Tạo caption",
+  create_caption: "Tạo tên bảng",
   normalize_table: "Chuẩn hóa bảng",
   check_table_numbers: "Kiểm tra số liệu",
-  figure_caption: "Tạo caption",
+  figure_caption: "Viết caption",
   table_to_analysis: "Chuyển thành đoạn phân tích",
   suggest_figure: "Gợi ý hình cần chèn",
   describe_figure: "Mô tả hình",
@@ -123,8 +198,8 @@ const COMMAND_LABELS: Record<CopilotCommandId, string> = {
   export_docx: "Xuất Word",
   export_pdf: "Xuất PDF",
   export_html_a4: "Xuất HTML A4",
-  open_history: "Mở lịch sử văn bản",
-  choose_template: "Chọn mẫu văn bản",
+  open_history: "Lịch sử",
+  choose_template: "Chọn mẫu",
   more: "Khác",
 };
 
@@ -132,8 +207,13 @@ function makeCommand(id: CopilotCommandId, description?: string, disabled?: bool
   return { id, label: COMMAND_LABELS[id], description, disabled };
 }
 
-function makePromptCommand(label: string, prompt: string, description?: string, disabled?: boolean): CopilotCommand {
-  return { id: "more", label, prompt, description, disabled };
+function makePlaceholderCommand(label: string, missingCommandKey: string): CopilotCommand {
+  return {
+    id: `placeholder:${missingCommandKey}`,
+    label,
+    description: "Chức năng này sẽ hoàn thiện ở bước sau.",
+    disabled: true,
+  };
 }
 
 function contextTypeFromBlock(block: ArticleBlock): CopilotContextItem["type"] {
@@ -275,9 +355,10 @@ export const EditorWorkspace = (props: any) => {
   const [copilotDraftExtraNotes, setCopilotDraftExtraNotes] = React.useState("");
   const [copilotDraftFlowError, setCopilotDraftFlowError] = React.useState<string | null>(null);
   const [manualEditState, setManualEditState] = React.useState<(CopilotManualEditState & { contextId: string; blockId: string; originalText: string; contextType: CopilotContextItem["type"] }) | null>(null);
+  const [canvasBlockEditState, setCanvasBlockEditState] = React.useState<CanvasBlockEditState | null>(null);
+  const [canvasBlockOverrides, setCanvasBlockOverrides] = React.useState<Record<string, CanvasBlockOverride>>({});
   const [pillAnchor, setPillAnchor] = React.useState<{ top: number; left: number } | null>(null);
   const [isContextPillVisible, setIsContextPillVisible] = React.useState(false);
-  const [autoOpenCopilotOnSelect, setAutoOpenCopilotOnSelect] = React.useState(false);
   const [onboardingSeen, setOnboardingSeen] = React.useState(() => {
     if (typeof window === "undefined") return true;
     return window.localStorage.getItem(COPILOT_ONBOARDING_KEY) === "true";
@@ -406,6 +487,8 @@ export const EditorWorkspace = (props: any) => {
     setCopilotDraftExtraNotes("");
     setCopilotDraftFlowError(null);
     setManualEditState(null);
+    setCanvasBlockEditState(null);
+    setCanvasBlockOverrides({});
   }, [setError, setInput, setIsEditing, setOutput]);
 
   const hasProtectedWorkspaceData = React.useMemo(() => (
@@ -463,16 +546,33 @@ export const EditorWorkspace = (props: any) => {
 
   const articleDocument = React.useMemo(() => {
     const previewContent = normalizeEditorialBriefContent(output || "");
-
-    return createArticleDocumentFromCurrentContent(previewContent, {
+    const baseDocument = createArticleDocumentFromCurrentContent(previewContent, {
       status: "draft",
       authorName: user?.displayName || user?.email || undefined,
       layoutId: selectedLayout?.layoutId,
       layoutVersion: selectedLayout?.layoutVersion,
       estimatedPages: selectedLayout?.estimatedPages,
     });
-  }, [output, selectedLayout, user?.displayName, user?.email]);
 
+    const overrides = Object.values(canvasBlockOverrides);
+    if (overrides.length === 0) return baseDocument;
+
+    const blocks = [...baseDocument.blocks];
+    overrides
+      .sort((a, b) => a.index - b.index)
+      .forEach((override) => {
+        const existingIndex = blocks.findIndex((block) => block.id === override.block.id);
+        if (existingIndex >= 0) {
+          blocks[existingIndex] = override.block;
+          return;
+        }
+        blocks.splice(Math.min(override.index, blocks.length), 0, override.block);
+      });
+
+    return { ...baseDocument, blocks };
+  }, [canvasBlockOverrides, output, selectedLayout, user?.displayName, user?.email]);
+
+  const emptyCanvasBlockIds = React.useMemo(() => Object.values(canvasBlockOverrides).filter((override) => override.empty).map((override) => override.block.id), [canvasBlockOverrides]);
   const articleExportModel = React.useMemo(() => normalizeArticleDocumentForExport(articleDocument), [articleDocument]);
   const articleValidation = React.useMemo(() => validateArticleDocument(articleDocument), [articleDocument]);
   const preflightIssues = React.useMemo(() => articleValidation.preflightIssues, [articleValidation]);
@@ -515,46 +615,81 @@ export const EditorWorkspace = (props: any) => {
   const copilotCommands = React.useMemo<CopilotCommand[]>(() => {
     const firstContext = selectedContextItems[0];
     const noDraft = !normalizeEditorialBriefContent(output || "").trim();
-    if (!firstContext) {
-      if (noDraft) {
-        return [
-          makeCommand("draft_new", "Mở luồng soạn thảo mới"),
-          makeCommand("add_source", "Thêm nguồn tư liệu"),
-          makeCommand("review_current_draft", "Kiểm tra nội dung hiện có", true),
-          makeCommand("more"),
-        ];
-      }
+
+    if (firstContext?.type === "paragraph" || firstContext?.type === "heading" || firstContext?.type === "selection") {
       return [
-        makeCommand("review_current_draft", "Kiểm tra lỗi & đề xuất sửa"),
-        makeCommand("suggest_title_sapo", "Gợi ý tiêu đề & sapo"),
-        makePromptCommand("Rút gọn nội dung", "Rút gọn nội dung bản thảo hiện tại nhưng vẫn giữ cấu trúc xuất bản và các ý chính.", "Tạo đề xuất trong Copilot"),
-        makePromptCommand("Nâng cấp lập luận", "Nâng cấp lập luận của bản thảo hiện tại; không bịa số liệu hoặc nguồn mới.", "Tạo đề xuất trong Copilot"),
-        makePromptCommand("Chuẩn hóa văn phong website", "Chuẩn hóa văn phong website cho bản thảo hiện tại, rõ ràng và mạch lạc.", "Tạo đề xuất trong Copilot"),
-        makePromptCommand("Làm rõ số liệu/nguồn", "Rà soát các số liệu và nguồn kiểm chứng trong bản thảo, nêu điểm cần làm rõ.", "Tạo đề xuất trong Copilot"),
-        makeCommand("add_source", "Thêm nguồn tư liệu"),
+        makeCommand("rewrite_selection"),
+        makeCommand("shorten_selection"),
+        makeCommand("fix_selection"),
+        makeCommand("strengthen_argument"),
+        makeCommand("manual_edit"),
         makeCommand("more"),
       ];
     }
-    if (firstContext.type === "paragraph" || firstContext.type === "heading" || firstContext.type === "selection") {
-      return [makeCommand("manual_edit", "Chỉnh trực tiếp block đã chọn"), makeCommand("rewrite_selection"), makeCommand("shorten_selection"), makeCommand("fix_selection"), makeCommand("more")];
+
+    if (firstContext?.type === "table") {
+      return [
+        makeCommand("create_caption"),
+        makeCommand("normalize_caption_title", "Chuẩn hóa tên/caption bảng bằng rule hiện có"),
+        makeCommand("check_table_numbers"),
+        makePlaceholderCommand("Ghi chú bảng", "table_note"),
+        makeCommand("more"),
+      ];
     }
-    if (firstContext.type === "table") {
-      return [makeCommand("create_caption"), makeCommand("normalize_table"), makeCommand("check_table_numbers"), makeCommand("more")];
+
+    if (firstContext?.type === "figure") {
+      return [
+        makeCommand("figure_caption", "Tạo tên/caption hình bằng rule hiện có"),
+        makeCommand("normalize_caption_title", "Chuẩn hóa caption hình bằng rule hiện có"),
+        makeCommand("check_missing_source_or_caption", "Kiểm tra nguồn/caption hình"),
+        makePlaceholderCommand("Thêm nguồn hình", "add_figure_source"),
+        makeCommand("more"),
+      ];
     }
-    if (firstContext.type === "figure") {
-      return [makeCommand("figure_caption"), makeCommand("suggest_figure"), makeCommand("describe_figure"), makeCommand("more")];
+
+    if (firstContext?.type === "source") {
+      return [
+        makeCommand("summarize_selected_source"),
+        makeCommand("use_source_to_update_draft"),
+        makeCommand("compare_source_with_draft"),
+        makeCommand("add_source"),
+        makeCommand("more"),
+      ];
     }
-    if (firstContext.type === "source") {
-      return [makeCommand("summarize_selected_source"), makeCommand("use_source_to_update_draft"), makeCommand("attach_source_to_draft"), makeCommand("compare_source_with_draft"), makeCommand("more")];
+
+    if (firstContext?.type === "preflight_issue") {
+      return [
+        makeCommand("fix_preflight_issue"),
+        makeCommand("remove_bad_technical_markers"),
+        makeCommand("check_long_paragraph"),
+        makeCommand("review_current_draft"),
+        makeCommand("more"),
+      ];
     }
-    if (firstContext.type === "preflight_issue") {
-      return [makeCommand("fix_preflight_issue"), makeCommand("explain_preflight_issue"), makeCommand("find_similar_issue"), makeCommand("ignore_preflight_issue"), makeCommand("more")];
+
+    if (!noDraft) {
+      return [
+        makeCommand("review_current_draft"),
+        makeCommand("remove_bad_technical_markers", "Chuẩn hóa marker kỹ thuật bằng rule hiện có"),
+        makeCommand("check_missing_source_or_caption"),
+        makeCommand("add_source"),
+        makeCommand("more"),
+      ];
     }
-    return [makeCommand("review_current_draft"), makeCommand("suggest_title_sapo"), makeCommand("add_source"), makeCommand("more")];
+
+    return [
+      makeCommand("draft_new"),
+      makeCommand("choose_template"),
+      makeCommand("open_history"),
+      makeCommand("add_source"),
+      makeCommand("more"),
+    ];
   }, [output, selectedContextItems]);
+
 
   const openCopilotExpanded = React.useCallback(() => {
     setCopilotViewMode("expanded");
+    setIsContextPillVisible(false);
   }, []);
 
   const clearCopilotContext = React.useCallback(() => {
@@ -562,6 +697,8 @@ export const EditorWorkspace = (props: any) => {
     setPillAnchor(null);
     setIsContextPillVisible(false);
     setManualEditState(null);
+    setCanvasBlockEditState(null);
+    setCopilotStatusMessage("Đã xóa context. Draft, nguồn và phiên làm việc vẫn được giữ nguyên.");
   }, []);
 
   const handleCanvasBlockSelect = React.useCallback((block: ArticleBlock, event: React.MouseEvent<HTMLElement>) => {
@@ -595,14 +732,6 @@ export const EditorWorkspace = (props: any) => {
     }
   }, [selectedContextItems]);
 
-  const handleCanvasBlockOpen = React.useCallback((block: ArticleBlock, event: React.MouseEvent<HTMLElement>) => {
-    const contextItem = buildContextFromBlock(block);
-    if (!selectedContextItems.some((item) => item.id === contextItem.id)) {
-      handleCanvasBlockSelect(block, event);
-    }
-    setCopilotViewMode("expanded");
-  }, [handleCanvasBlockSelect, selectedContextItems]);
-
   const replaceOutputText = React.useCallback((currentText: string, proposedText: string) => {
     const source = normalizeEditorialBriefContent(output || "");
     if (!currentText.trim()) return null;
@@ -616,6 +745,141 @@ export const EditorWorkspace = (props: any) => {
     }
     return null;
   }, [output]);
+
+  const focusCanvasBlock = React.useCallback((blockId: string) => {
+    const target = document.querySelector<HTMLElement>(`[data-canvas-block-id="${blockId}"]`);
+    target?.scrollIntoView({ block: "center", behavior: "smooth" });
+    target?.focus({ preventScroll: true });
+  }, []);
+
+  const startCanvasBlockEdit = React.useCallback((block: ArticleBlock | undefined) => {
+    if (!block?.id || !CANVAS_EDITABLE_BLOCK_TYPES.has(block.type)) {
+      setCopilotStatusMessage("Sửa trên Canvas hiện chỉ hỗ trợ tiêu đề, đoạn văn và danh sách văn bản đơn giản.");
+      return;
+    }
+
+    const fullText = getArticleBlockFullText(block);
+    const blockIndex = articleDocument.blocks.findIndex((item) => item.id === block.id);
+    setCanvasBlockEditState({
+      blockId: block.id,
+      blockType: block.type,
+      blockIndex: blockIndex >= 0 ? blockIndex : articleDocument.blocks.length,
+      originalText: fullText,
+      value: fullText,
+      title: block.type === "title" || block.type === "section-heading" ? "Sửa tiêu đề trên Canvas" : block.type === "bullet-list" || block.type === "ordered-list" ? "Sửa danh sách trên Canvas" : "Sửa đoạn văn trên Canvas",
+      error: null,
+    });
+    setManualEditState(null);
+    setPendingProposal(null);
+    setCopilotStatusMessage("Đang sửa trực tiếp trên Canvas. Bấm Xong để cập nhật bản thảo, hoặc Hủy để khôi phục.");
+    window.setTimeout(() => focusCanvasBlock(block.id), 0);
+  }, [articleDocument.blocks, focusCanvasBlock]);
+
+  const applyCanvasBlockEdit = React.useCallback(() => {
+    if (!canvasBlockEditState) return;
+    const latestBlock = articleDocument.blocks.find((block) => block.id === canvasBlockEditState.blockId);
+    if (!latestBlock) {
+      setCanvasBlockEditState((current) => current ? { ...current, error: "Không xác định được block cần cập nhật." } : current);
+      return;
+    }
+
+    const latestText = getArticleBlockFullText(latestBlock);
+    if (latestText.trim() !== canvasBlockEditState.originalText.trim()) {
+      setCanvasBlockEditState((current) => current ? { ...current, error: "Nội dung gốc đã thay đổi. Hãy chọn lại block trước khi sửa." } : current);
+      return;
+    }
+
+    const replacement = canvasBlockEditState.blockType === "title" || canvasBlockEditState.blockType === "section-heading"
+      ? canvasBlockEditState.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)[0] || ""
+      : canvasBlockEditState.value.replace(/\r?\n[ \t]*$/u, "");
+    const isEmpty = replacement.trim().length === 0;
+    const nextOutput = canvasBlockEditState.originalText.trim() ? replaceOutputText(canvasBlockEditState.originalText, replacement) : null;
+
+    if (nextOutput === null && canvasBlockEditState.originalText.trim()) {
+      setCanvasBlockEditState((current) => current ? { ...current, error: "Không tìm thấy nội dung gốc trong bản thảo để cập nhật an toàn." } : current);
+      return;
+    }
+
+    const overrideBlock = blockWithTextOverride(latestBlock, replacement);
+    setCanvasBlockOverrides((current) => {
+      const next = { ...current };
+      if (isEmpty || !nextOutput) {
+        next[canvasBlockEditState.blockId] = { block: overrideBlock, empty: isEmpty, index: canvasBlockEditState.blockIndex };
+      } else {
+        delete next[canvasBlockEditState.blockId];
+      }
+      return next;
+    });
+
+    if (nextOutput !== null) setOutput(nextOutput);
+    setIsDraftDirty(true);
+    setCurrentStep("draft");
+    setWorkspaceMode("edit");
+    setCanvasBlockEditState(null);
+    setCopilotStatusMessage(isEmpty ? "Đã để trống block trong phiên Canvas. Placeholder không được ghi vào output/export." : "Đã cập nhật block trên Canvas. Nội dung chưa tự lưu cho đến khi bạn bấm Lưu.");
+  }, [articleDocument.blocks, canvasBlockEditState, replaceOutputText, setOutput]);
+
+  const cancelCanvasBlockEdit = React.useCallback(() => {
+    setCanvasBlockEditState(null);
+    setCopilotStatusMessage("Đã hủy sửa trên Canvas. Nội dung gốc không thay đổi.");
+  }, []);
+
+  const deleteCanvasBlock = React.useCallback(async () => {
+    if (!canvasBlockEditState) return;
+    const hasContent = canvasBlockEditState.originalText.trim().length > 0 || canvasBlockEditState.value.trim().length > 0;
+    if (hasContent) {
+      const confirmed = await requestConfirmAsync("Xóa block này khỏi bản thảo? Hành động này chưa tự lưu cho đến khi bạn bấm Lưu.");
+      if (!confirmed) return;
+    }
+
+    const nextOutput = replaceOutputText(canvasBlockEditState.originalText, "");
+    if (nextOutput === null) {
+      setCanvasBlockEditState((current) => current ? { ...current, error: "Không tìm thấy block trong bản thảo để xóa an toàn." } : current);
+      return;
+    }
+
+    setOutput(nextOutput);
+    setIsDraftDirty(true);
+    setCurrentStep("draft");
+    setWorkspaceMode("edit");
+    setCanvasBlockEditState(null);
+    setCanvasBlockOverrides((current) => {
+      const next = { ...current };
+      delete next[canvasBlockEditState.blockId];
+      return next;
+    });
+    setSelectedContextItems((items) => items.filter((item) => item.blockId !== canvasBlockEditState.blockId));
+    setCopilotStatusMessage("Đã xóa block khỏi bản thảo. Nội dung chưa tự lưu cho đến khi bạn bấm Lưu.");
+  }, [canvasBlockEditState, replaceOutputText, requestConfirmAsync, setOutput]);
+
+  const updateCanvasEditValue = React.useCallback((updater: (value: string) => string) => {
+    setCanvasBlockEditState((current) => current ? { ...current, value: updater(current.value), error: null } : current);
+  }, []);
+
+  const applyCanvasHeadingFormat = React.useCallback((level: 1 | 2 | 3) => {
+    updateCanvasEditValue((value) => markdownHeading(value, level));
+  }, [updateCanvasEditValue]);
+
+  const applyCanvasInlineFormat = React.useCallback((marker: "**" | "_") => {
+    updateCanvasEditValue((value) => wrapCanvasEditText(value, marker));
+  }, [updateCanvasEditValue]);
+
+  const applyCanvasBulletFormat = React.useCallback(() => {
+    updateCanvasEditValue(bulletCanvasEditText);
+  }, [updateCanvasEditValue]);
+
+  const clearCanvasEditFormat = React.useCallback(() => {
+    updateCanvasEditValue(clearCanvasEditFormatting);
+  }, [updateCanvasEditValue]);
+
+  const handleCanvasBlockOpen = React.useCallback((block: ArticleBlock, event: React.MouseEvent<HTMLElement>) => {
+    const contextItem = buildContextFromBlock(block);
+    if (!selectedContextItems.some((item) => item.id === contextItem.id)) {
+      handleCanvasBlockSelect(block, event);
+    }
+    startCanvasBlockEdit(block);
+    setCopilotViewMode("expanded");
+  }, [handleCanvasBlockSelect, selectedContextItems, startCanvasBlockEdit]);
 
   const applyCaptionProposalToOutput = React.useCallback((proposal: Extract<EditorialProposal, { type: "add_caption" }>) => {
     const source = normalizeEditorialBriefContent(output || "");
@@ -973,7 +1237,11 @@ export const EditorWorkspace = (props: any) => {
       return;
     }
     if (commandId === "manual_edit") {
-      startManualEdit();
+      if (selectedContextItems.length !== 1 || !selectedBlock) {
+        setCopilotStatusMessage("Hãy chọn một block văn bản trên Canvas trước khi sửa.");
+        return;
+      }
+      startCanvasBlockEdit(selectedBlock);
       return;
     }
     if (commandId === "add_source") {
@@ -990,15 +1258,58 @@ export const EditorWorkspace = (props: any) => {
       setCopilotStatusMessage("Chọn loại văn bản trong Copilot để bắt đầu từ mẫu phù hợp.");
       return;
     }
+    if (commandId.startsWith("placeholder:")) {
+      setCopilotStatusMessage("Chức năng này sẽ hoàn thiện ở bước sau.");
+      return;
+    }
+
+    const draftRequiredCommands: CopilotCommandId[] = [
+      "review_current_draft",
+      "suggest_title_sapo",
+      "check_missing_source_or_caption",
+      "remove_bad_technical_markers",
+      "check_long_paragraph",
+      "normalize_basic_heading",
+    ];
+    const contextRequiredCommands: CopilotCommandId[] = [
+      "rewrite_selection",
+      "shorten_selection",
+      "fix_selection",
+      "strengthen_argument",
+      "create_caption",
+      "normalize_caption_title",
+      "normalize_table",
+      "check_table_numbers",
+      "figure_caption",
+      "table_to_analysis",
+      "suggest_figure",
+      "describe_figure",
+      "check_figure_position",
+      "explain_preflight_issue",
+      "fix_preflight_issue",
+      "find_similar_issue",
+      "ignore_preflight_issue",
+    ];
+    const sourceRequiredCommands: CopilotCommandId[] = [
+      "summarize_selected_source",
+      "use_source_to_update_draft",
+      "attach_source_to_draft",
+      "compare_source_with_draft",
+    ];
+
     if (commandId === "more" && !commandPrompt) {
-      setCopilotStatusMessage("Nhập yêu cầu cụ thể cho Copilot trước khi dùng lệnh Khác.");
+      setCopilotStatusMessage("Nhập yêu cầu cụ thể trước khi dùng lệnh Khác.");
       return;
     }
-    if (["rewrite_selection", "shorten_selection", "fix_selection", "strengthen_argument", "create_caption", "normalize_table", "check_table_numbers", "figure_caption", "table_to_analysis", "suggest_figure", "describe_figure", "check_figure_position", "explain_preflight_issue", "fix_preflight_issue", "find_similar_issue", "ignore_preflight_issue"].includes(commandId) && selectedContextItems.length === 0) {
-      setCopilotStatusMessage("Hãy chọn một đoạn, tiêu đề, bảng hoặc hình trên Canvas trước.");
+    if (draftRequiredCommands.includes(commandId) && !draftText.trim()) {
+      setCopilotStatusMessage("Chưa có bản thảo để rà soát.");
       return;
     }
-    if (["summarize_selected_source", "use_source_to_update_draft", "attach_source_to_draft", "compare_source_with_draft"].includes(commandId) && !selectedContextItems.some((item) => item.type === "source")) {
+    if (contextRequiredCommands.includes(commandId) && selectedContextItems.length === 0) {
+      setCopilotStatusMessage("Hãy chọn nội dung trên Canvas trước.");
+      return;
+    }
+    if (sourceRequiredCommands.includes(commandId) && !selectedContextItems.some((item) => item.type === "source")) {
       setCopilotStatusMessage("Hãy chọn ít nhất một nguồn tư liệu trước khi dùng lệnh này.");
       openCopilotSourceFlow();
       return;
@@ -1036,7 +1347,7 @@ export const EditorWorkspace = (props: any) => {
     } finally {
       setIsCopilotBusy(false);
     }
-  }, [articleDocument, copilotInput, createProposal, effectiveCopilotContexts, formatExecutionProposal, openCopilotDraftFlow, openCopilotSourceFlow, output, outputFormat, selectedBlock, selectedContextItems, startManualEdit, switchWorkspaceMode, toast, user]);
+  }, [articleDocument, copilotInput, createProposal, effectiveCopilotContexts, formatExecutionProposal, openCopilotDraftFlow, openCopilotSourceFlow, output, outputFormat, selectedBlock, selectedContextItems, startCanvasBlockEdit, switchWorkspaceMode, toast, user]);
 
   const handleApplyCopilotProposal = React.useCallback(() => {
     if (!pendingProposal) return;
@@ -2635,15 +2946,53 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                       />
                                     </div>
                                   ) : (
-                                    <A4PrintPreview
-                                      document={articleDocument}
-                                      rootId="printable-article"
-                                      showValidationSummary={false}
-                                      selectableBlocks
-                                      selectedBlockIds={selectedBlockIds}
-                                      onBlockSelect={handleCanvasBlockSelect}
-                                      onBlockOpen={handleCanvasBlockOpen}
-                                    />
+                                    <>
+                                      {canvasBlockEditState && (
+                                        <div data-export-exclude="true" className="mb-3 rounded-2xl border border-amber-200 bg-amber-50/95 p-3 shadow-sm">
+                                          <div className="flex flex-wrap items-center justify-between gap-2">
+                                            <div className="min-w-0">
+                                              <p className="text-xs font-black uppercase tracking-[0.14em] text-amber-800">Sửa trên Canvas</p>
+                                              <p className="truncate text-sm font-bold text-slate-800">{canvasBlockEditState.title}</p>
+                                            </div>
+                                            <div className="flex flex-wrap items-center gap-2">
+                                              <button type="button" onClick={() => applyCanvasHeadingFormat(1)} className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-bold text-slate-700 hover:bg-slate-50">H1</button>
+                                              <button type="button" onClick={() => applyCanvasHeadingFormat(2)} className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-bold text-slate-700 hover:bg-slate-50">H2</button>
+                                              <button type="button" onClick={() => applyCanvasHeadingFormat(3)} className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-bold text-slate-700 hover:bg-slate-50">H3</button>
+                                              <button type="button" onClick={() => applyCanvasInlineFormat("**")} className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-bold text-slate-700 hover:bg-slate-50">Bold</button>
+                                              <button type="button" onClick={() => applyCanvasInlineFormat("_")} className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-bold text-slate-700 hover:bg-slate-50">Italic</button>
+                                              <button type="button" onClick={applyCanvasBulletFormat} className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-bold text-slate-700 hover:bg-slate-50">Bullet</button>
+                                              {['Align left', 'Align center'].map((label) => (
+                                                <button key={label} type="button" disabled title="Công cụ này sẽ hoàn thiện ở bước sau" className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-bold text-slate-400 disabled:cursor-not-allowed">
+                                                  {label}
+                                                </button>
+                                              ))}
+                                              <button type="button" onClick={clearCanvasEditFormat} className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-bold text-slate-700 hover:bg-slate-50">
+                                                Xóa định dạng
+                                              </button>
+                                            </div>
+                                          </div>
+                                          {canvasBlockEditState.error && <p className="mt-2 text-xs font-bold text-red-600">{canvasBlockEditState.error}</p>}
+                                          <div className="mt-3 flex flex-wrap gap-2">
+                                            <button type="button" onClick={applyCanvasBlockEdit} className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-black text-white hover:bg-emerald-700">Xong</button>
+                                            <button type="button" onClick={cancelCanvasBlockEdit} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50">Hủy</button>
+                                            <button type="button" onClick={() => void deleteCanvasBlock()} className="rounded-lg border border-red-200 bg-white px-3 py-2 text-xs font-bold text-red-600 hover:bg-red-50">Xóa block</button>
+                                          </div>
+                                        </div>
+                                      )}
+                                      <A4PrintPreview
+                                        document={articleDocument}
+                                        rootId="printable-article"
+                                        showValidationSummary={false}
+                                        selectableBlocks
+                                        selectedBlockIds={selectedBlockIds}
+                                        onBlockSelect={handleCanvasBlockSelect}
+                                        onBlockOpen={handleCanvasBlockOpen}
+                                        editingBlockId={canvasBlockEditState?.blockId || null}
+                                        editingValue={canvasBlockEditState?.value || ""}
+                                        onEditingValueChange={(value) => setCanvasBlockEditState((current) => current ? { ...current, value, error: null } : current)}
+                                        emptyBlockIds={emptyCanvasBlockIds}
+                                      />
+                                    </>
                                   )}
                                 </div>
 
@@ -2711,8 +3060,6 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
         sourceFlow={copilotSourceFlowState}
         manualEdit={manualEditState}
         isBusy={isCopilotBusy}
-        autoOpenOnSelect={autoOpenCopilotOnSelect}
-        onToggleAutoOpenOnSelect={setAutoOpenCopilotOnSelect}
         onDraftFlowChange={updateCopilotDraftFlow}
         onSubmitDraftFlow={() => void submitCopilotDraftFlow()}
         onCancelDraftFlow={() => { setIsCopilotDraftFlowOpen(false); setCopilotDraftFlowError(null); setCopilotStatusMessage("Đã hủy tạo bản thảo. Canvas không thay đổi."); }}
@@ -2731,7 +3078,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
         onReturnToCanvas={() => setCopilotViewMode("expanded")}
         onRemoveContext={(id) => { setSelectedContextItems((items) => items.filter((item) => item.id !== id)); setManualEditState((current) => current?.contextId === id ? null : current); }}
         onClearContext={clearCopilotContext}
-        onRunCommand={(id) => void handleRunCopilotCommand(id)}
+        onRunCommand={(id, prompt) => void handleRunCopilotCommand(id, prompt)}
         onInputChange={setCopilotInput}
         onSubmitPrompt={() => void handleSubmitCopilotPrompt()}
         onApplyProposal={handleApplyCopilotProposal}

@@ -3,7 +3,6 @@ import {
   Bot,
   Check,
   Copy,
-  Edit3,
   FileText,
   FileUp,
   Loader2,
@@ -15,7 +14,6 @@ import {
   RotateCcw,
   Send,
   Sparkles,
-  Trash2,
   Type,
   X,
 } from "lucide-react";
@@ -98,8 +96,6 @@ interface FloatingCopilotProps {
   draftFlow?: CopilotDraftFlowState | null;
   sourceFlow?: CopilotSourceFlowState | null;
   manualEdit?: CopilotManualEditState | null;
-  autoOpenOnSelect: boolean;
-  onToggleAutoOpenOnSelect: (value: boolean) => void;
   onDraftFlowChange?: (patch: Partial<CopilotDraftFlowState>) => void;
   onSubmitDraftFlow?: () => void;
   onCancelDraftFlow?: () => void;
@@ -138,13 +134,29 @@ const CONTEXT_LABELS: Record<CopilotContextType, string> = {
 };
 
 function summarizeContext(items: CopilotContextItem[]): string {
-  if (items.length === 0) return "Chưa chọn ngữ cảnh";
-  const counts = items.reduce<Record<string, number>>((acc, item) => {
-    const label = CONTEXT_LABELS[item.type] || "nội dung";
-    acc[label] = (acc[label] || 0) + 1;
-    return acc;
-  }, {});
-  return `Đã chọn: ${Object.entries(counts).map(([label, count]) => `${count} ${label}`).join(", ")}`;
+  if (items.length === 0) return "Chưa chọn context";
+  if (items.length > 1) return `Đã chọn: ${items.length} block`;
+
+  const [item] = items;
+  const label = CONTEXT_LABELS[item.type] || "nội dung";
+  const text = item.fullText || item.excerpt || "";
+  const wordCount = text.trim() ? text.trim().split(/\s+/u).length : 0;
+  return `Đã chọn: ${label.charAt(0).toLocaleUpperCase("vi-VN")}${label.slice(1)}${wordCount ? ` • ${wordCount} từ` : ""}`;
+}
+
+function splitDockCommands(commands: CopilotCommand[]): { primaryCommands: CopilotCommand[]; overflowCommands: CopilotCommand[] } {
+  const fallbackCommand = commands.find((command) => command.id === "more");
+  const nonFallbackCommands = commands.filter((command) => command.id !== "more");
+  const primaryCommands = nonFallbackCommands.slice(0, 4);
+  const overflowCommands = nonFallbackCommands.slice(4);
+
+  if (fallbackCommand) overflowCommands.push(fallbackCommand);
+  return { primaryCommands, overflowCommands };
+}
+
+function commandDisabledTitle(command: CopilotCommand): string | undefined {
+  if (!command.disabled) return undefined;
+  return command.description || "Chức năng này sẽ hoàn thiện ở bước sau.";
 }
 
 export function FloatingCopilot({
@@ -159,18 +171,11 @@ export function FloatingCopilot({
   draftFlow,
   sourceFlow,
   manualEdit,
-  autoOpenOnSelect,
-  onToggleAutoOpenOnSelect,
   onDraftFlowChange,
   onSubmitDraftFlow,
   onCancelDraftFlow,
   onOpenSourceWorkspace,
   onCancelSourceFlow,
-  onOpenHistory,
-  onChooseTemplate,
-  onStartManualEdit,
-  onManualEditChange,
-  onApplyManualEdit,
   onCancelManualEdit,
   onCopyProposal,
   onOpen,
@@ -187,6 +192,32 @@ export function FloatingCopilot({
 }: FloatingCopilotProps) {
   const contextSummary = summarizeContext(selectedContextItems);
   const isDraftBriefMissing = Boolean(draftFlow) && !draftFlow?.brief.trim();
+  const { primaryCommands, overflowCommands } = splitDockCommands(commands);
+  const [isOverflowOpen, setIsOverflowOpen] = React.useState(false);
+  const overflowRef = React.useRef<HTMLDivElement | null>(null);
+
+  React.useEffect(() => {
+    setIsOverflowOpen(false);
+  }, [commands, viewMode]);
+
+  React.useEffect(() => {
+    if (!isOverflowOpen) return undefined;
+
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      if (!overflowRef.current?.contains(event.target as Node)) {
+        setIsOverflowOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", closeOnOutsideClick);
+    return () => document.removeEventListener("mousedown", closeOnOutsideClick);
+  }, [isOverflowOpen]);
+
+  const runDockCommand = React.useCallback((command: CopilotCommand) => {
+    if (command.disabled) return;
+    setIsOverflowOpen(false);
+    onRunCommand(command.id, command.prompt);
+  }, [onRunCommand]);
 
   if (viewMode === "collapsed") {
     return (
@@ -218,22 +249,22 @@ export function FloatingCopilot({
       )}
       aria-label="Trợ lý Canvas thông minh"
     >
-      <header className="flex items-start justify-between gap-3 border-b border-slate-100 px-4 py-3">
+      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-slate-100 px-4 py-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue-50 text-[#002D56]">
-              <Bot className="h-5 w-5" />
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-[#002D56]">
+              <Bot className="h-4 w-4" />
             </span>
-            <div>
-              <p className="text-[13px] font-black uppercase tracking-[0.16em] text-[#002D56]">Trợ lý biên tập</p>
-              <p className="text-xs font-medium text-slate-500">Trợ lý Canvas thông minh</p>
+            <div className="min-w-0">
+              <p className="truncate text-[12px] font-black uppercase tracking-[0.14em] text-[#002D56]">Trợ lý biên tập</p>
+              <p className="truncate text-xs font-medium text-slate-500">Copilot điều phối theo context Canvas</p>
             </div>
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1">
           {isFullscreen ? (
-            <button type="button" onClick={onReturnToCanvas} className="rounded-lg px-3 py-2 text-xs font-bold text-[#002D56] hover:bg-blue-50">
-              <Minimize2 className="mr-1 inline h-4 w-4" /> Quay về Canvas
+            <button type="button" onClick={onReturnToCanvas} className="rounded-lg px-2.5 py-2 text-xs font-bold text-[#002D56] hover:bg-blue-50">
+              <Minimize2 className="mr-1 inline h-4 w-4" /> Thu gọn
             </button>
           ) : (
             <button type="button" onClick={onFullscreen} className="rounded-lg p-2 text-slate-500 hover:bg-slate-100" aria-label="Mở toàn màn hình">
@@ -246,70 +277,68 @@ export function FloatingCopilot({
         </div>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 custom-scrollbar">
-        <div className="rounded-2xl border border-blue-100 bg-blue-50/70 p-3">
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-sm font-bold text-[#002D56]"><Paperclip className="mr-1 inline h-4 w-4" />{contextSummary}</p>
-            {selectedContextItems.length > 0 && (
-              <button type="button" onClick={onClearContext} className="text-[11px] font-bold text-slate-500 hover:text-red-600">Bỏ chọn</button>
-            )}
-          </div>
-          {selectedContextItems.length > 0 && (
-            <div className="mt-3 space-y-2">
-              {selectedContextItems.map((item) => (
-                <div key={item.id} className="rounded-xl bg-white p-3 shadow-sm ring-1 ring-blue-100">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="text-[11px] font-black uppercase tracking-[0.14em] text-blue-700">{CONTEXT_LABELS[item.type]}</p>
-                      <p className="mt-0.5 truncate text-sm font-bold text-slate-900">{item.title}</p>
-                    </div>
-                    <button type="button" onClick={() => onRemoveContext(item.id)} className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600" aria-label="Bỏ context">
-                      <X className="h-4 w-4" />
-                    </button>
-                  </div>
-                  {item.excerpt && <p className="mt-2 line-clamp-3 text-xs leading-relaxed text-slate-600">{item.excerpt}</p>}
-                  {selectedContextItems.length === 1 && item.blockId && onStartManualEdit && ["paragraph", "heading", "selection"].includes(item.type) && (
-                    <button
-                      type="button"
-                      onClick={() => onStartManualEdit(item.id)}
-                      className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-blue-100 bg-blue-50 px-2.5 py-1.5 text-[11px] font-black text-[#002D56] hover:bg-blue-100"
-                    >
-                      <Edit3 className="h-3.5 w-3.5" /> Sửa thủ công
-                    </button>
+      <nav className="relative shrink-0 border-b border-slate-100 bg-white px-3 py-2" aria-label="Command Dock" ref={overflowRef}>
+        <div className="flex max-h-20 flex-wrap items-center gap-2 overflow-hidden">
+          {primaryCommands.map((command) => (
+            <button
+              type="button"
+              key={`${command.id}:${command.label}`}
+              disabled={command.disabled || isBusy}
+              title={commandDisabledTitle(command)}
+              onClick={() => runDockCommand(command)}
+              className={cn(
+                "inline-flex min-h-8 max-w-[150px] items-center rounded-full border px-3 py-1.5 text-xs font-black transition",
+                activeCommandId === command.id ? "border-[#002D56] bg-blue-50 text-[#002D56]" : "border-slate-200 bg-slate-50 text-slate-700 hover:border-blue-200 hover:bg-blue-50",
+                command.disabled && "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400 opacity-70 hover:bg-slate-100",
+              )}
+            >
+              <span className="truncate">{command.label}</span>
+            </button>
+          ))}
+          {overflowCommands.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setIsOverflowOpen((current) => !current)}
+              className={cn(
+                "inline-flex min-h-8 max-w-[96px] items-center rounded-full border px-3 py-1.5 text-xs font-black transition",
+                isOverflowOpen ? "border-[#002D56] bg-blue-50 text-[#002D56]" : "border-slate-200 bg-slate-50 text-slate-700 hover:border-blue-200 hover:bg-blue-50",
+              )}
+              aria-expanded={isOverflowOpen}
+              aria-haspopup="menu"
+            >
+              Khác
+            </button>
+          )}
+        </div>
+        {isOverflowOpen && overflowCommands.length > 0 && (
+          <div className="absolute left-3 right-3 top-[calc(100%-0.25rem)] z-50 max-h-56 overflow-y-auto rounded-2xl border border-slate-200 bg-white p-2 shadow-xl shadow-slate-900/15 custom-scrollbar" role="menu" aria-label="Lệnh khác">
+            <div className="space-y-1">
+              {overflowCommands.map((command) => (
+                <button
+                  type="button"
+                  key={`overflow:${command.id}:${command.label}`}
+                  disabled={command.disabled || isBusy}
+                  title={commandDisabledTitle(command)}
+                  onClick={() => runDockCommand(command)}
+                  className={cn(
+                    "flex w-full min-w-0 items-start justify-between gap-3 rounded-xl px-3 py-2 text-left text-xs transition",
+                    activeCommandId === command.id ? "bg-blue-50 text-[#002D56]" : "text-slate-700 hover:bg-slate-50",
+                    command.disabled && "cursor-not-allowed bg-slate-50 text-slate-400 opacity-80 hover:bg-slate-50",
                   )}
-                </div>
+                  role="menuitem"
+                >
+                  <span className="min-w-0">
+                    <span className="block truncate font-black">{command.id === "more" ? "Yêu cầu khác" : command.label}</span>
+                    {command.description && <span className="mt-0.5 line-clamp-2 block font-semibold text-slate-500">{command.description}</span>}
+                  </span>
+                  {command.disabled && <span className="shrink-0 rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-black text-slate-500">Sắp có</span>}
+                </button>
               ))}
             </div>
-          )}
-        </div>
-
-        <div className="mt-4">
-          <p className="mb-2 flex items-center gap-2 text-xs font-black uppercase tracking-[0.14em] text-slate-500"><Sparkles className="h-4 w-4" /> Lệnh nhanh</p>
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            {commands.map((command) => (
-              <button
-                type="button"
-                key={`${command.id}:${command.label}`}
-                disabled={command.disabled || isBusy}
-                onClick={() => onRunCommand(command.id, command.prompt)}
-                className={cn(
-                  "rounded-xl border p-3 text-left transition disabled:cursor-not-allowed disabled:opacity-50",
-                  activeCommandId === command.id ? "border-[#002D56] bg-blue-50 text-[#002D56]" : "border-slate-200 bg-white hover:border-blue-200 hover:bg-slate-50",
-                )}
-              >
-                <span className="block text-sm font-bold">{command.label}</span>
-                {command.description && <span className="mt-1 block text-[11px] text-slate-500">{command.description}</span>}
-              </button>
-            ))}
           </div>
-          {selectedContextItems.length === 0 && (onOpenHistory || onChooseTemplate) && (
-            <div className="mt-3 flex flex-wrap gap-x-3 gap-y-2 text-[11px] font-bold">
-              {onOpenHistory && <button type="button" onClick={onOpenHistory} className="text-[#002D56] underline-offset-4 hover:underline">Mở lịch sử văn bản</button>}
-              {onChooseTemplate && <button type="button" onClick={onChooseTemplate} className="text-[#002D56] underline-offset-4 hover:underline">Chọn mẫu văn bản</button>}
-            </div>
-          )}
-        </div>
-
+        )}
+      </nav>
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 custom-scrollbar">
         {draftFlow && (
           <div className="mt-4 rounded-2xl border border-blue-200 bg-white p-3 shadow-sm">
             <div className="flex items-start gap-2">
@@ -423,23 +452,10 @@ export function FloatingCopilot({
 
         {manualEdit && (
           <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50/70 p-3">
-            <p className="text-sm font-black text-amber-900">Sửa thủ công</p>
-            <p className="mt-1 text-xs font-medium text-amber-800">{manualEdit.contextTitle}</p>
-            <div className="mt-3 rounded-xl bg-white p-3 ring-1 ring-amber-100">
-              <p className="text-[11px] font-black uppercase tracking-[0.14em] text-slate-400">Nội dung hiện tại (toàn bộ block)</p>
-              <div className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap pr-1 text-sm leading-relaxed text-slate-700 custom-scrollbar">{manualEdit.currentText}</div>
-            </div>
-            <textarea
-              value={manualEdit.value}
-              onChange={(event) => onManualEditChange?.(event.target.value)}
-              rows={8}
-              className="mt-3 max-h-[min(42dvh,360px)] min-h-[200px] w-full resize-y overflow-y-auto rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm leading-relaxed text-slate-800 outline-none focus:border-amber-500"
-            />
-            {manualEdit.error && <p className="mt-2 text-xs font-bold text-red-600">{manualEdit.error}</p>}
+            <p className="text-sm font-black text-amber-900">Sửa trên Canvas</p>
+            <p className="mt-1 line-clamp-2 text-xs font-medium text-amber-800">{manualEdit.contextTitle}</p>
+            <p className="mt-3 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-slate-600 ring-1 ring-amber-100">Chế độ sửa trực tiếp trên Canvas sẽ được hoàn thiện ở bước sau. Nội dung gốc chưa thay đổi.</p>
             <div className="mt-3 flex flex-wrap gap-2">
-              <button type="button" onClick={onApplyManualEdit} disabled={isBusy || manualEdit.value.trim() === manualEdit.currentText.trim()} className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-600">
-                <Check className="h-4 w-4" /> Áp dụng sửa thủ công
-              </button>
               <button type="button" onClick={onCancelManualEdit} className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50">
                 <RotateCcw className="h-4 w-4" /> Hủy
               </button>
@@ -509,20 +525,41 @@ export function FloatingCopilot({
         )}
       </div>
 
-      <footer className="border-t border-slate-100 p-3">
-        <div className="flex items-end gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-2 focus-within:border-[#002D56] focus-within:bg-white">
+      <footer className="shrink-0 border-t border-slate-100 bg-white p-3">
+        <div className="mb-2 max-h-16 overflow-hidden rounded-xl border border-blue-100 bg-blue-50/70 px-3 py-1.5">
+          <div className="flex items-center justify-between gap-2">
+            <p className="min-w-0 truncate text-xs font-black text-[#002D56]"><Paperclip className="mr-1 inline h-3.5 w-3.5" />{contextSummary}</p>
+            {selectedContextItems.length > 0 && (
+              <button type="button" onClick={onClearContext} className="shrink-0 text-[11px] font-bold text-slate-500 hover:text-red-600">Xóa tất cả</button>
+            )}
+          </div>
+          {selectedContextItems.length > 0 && (
+            <div className="mt-1 flex max-h-7 items-center gap-1.5 overflow-hidden">
+              {selectedContextItems.slice(0, 2).map((item) => (
+                <span key={item.id} className="inline-flex min-w-0 max-w-[170px] items-center gap-1 rounded-full bg-white px-2 py-1 text-[11px] font-bold text-slate-700 ring-1 ring-blue-100">
+                  <span className="truncate">{item.title || CONTEXT_LABELS[item.type]}</span>
+                  <button type="button" onClick={() => onRemoveContext(item.id)} className="shrink-0 rounded-full text-slate-400 hover:text-red-600" aria-label="Bỏ context">
+                    <X className="h-3 w-3" />
+                  </button>
+                </span>
+              ))}
+              {selectedContextItems.length > 2 && <span className="shrink-0 rounded-full bg-white px-2 py-1 text-[11px] font-black text-slate-600 ring-1 ring-blue-100">+{selectedContextItems.length - 2}</span>}
+            </div>
+          )}
+        </div>
+        <div className="flex min-w-0 items-end gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-2 focus-within:border-[#002D56] focus-within:bg-white">
           <textarea
             value={inputValue}
             onChange={(event) => onInputChange(event.target.value)}
-            placeholder="Nhập yêu cầu cho Copilot…"
+            placeholder="Nhập yêu cầu cho Trợ lý biên tập…"
             rows={2}
-            className="min-h-[44px] flex-1 resize-none bg-transparent px-2 py-2 text-sm text-slate-800 outline-none"
+            className="min-h-[44px] min-w-0 flex-1 resize-none bg-transparent px-2 py-2 text-sm text-slate-800 outline-none"
           />
-          <button type="button" disabled={isBusy || !inputValue.trim()} onClick={onSubmitPrompt} className="mb-1 flex h-10 w-10 items-center justify-center rounded-xl bg-[#002D56] text-white hover:bg-slate-900 disabled:opacity-50" aria-label="Gửi yêu cầu">
+          <button type="button" disabled={isBusy || !inputValue.trim()} onClick={onSubmitPrompt} className="mb-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#002D56] text-white hover:bg-slate-900 disabled:opacity-50" aria-label="Gửi yêu cầu">
             {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
           </button>
         </div>
-        <p className="mt-2 flex items-center gap-1 text-[11px] text-slate-500"><Trash2 className="h-3.5 w-3.5" /> Copilot chỉ áp dụng sửa nội dung sau khi bạn bấm Áp dụng.</p>
+        <p className="mt-2 text-[11px] text-slate-500">Copilot chỉ áp dụng sửa nội dung sau khi bạn bấm Áp dụng.</p>
       </footer>
     </section>
   );
