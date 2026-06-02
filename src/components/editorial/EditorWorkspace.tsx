@@ -132,6 +132,10 @@ function makeCommand(id: CopilotCommandId, description?: string, disabled?: bool
   return { id, label: COMMAND_LABELS[id], description, disabled };
 }
 
+function makePromptCommand(label: string, prompt: string, description?: string, disabled?: boolean): CopilotCommand {
+  return { id: "more", label, prompt, description, disabled };
+}
+
 function contextTypeFromBlock(block: ArticleBlock): CopilotContextItem["type"] {
   if (block.type === "section-heading" || block.type === "title" || block.type === "sapo") return "heading";
   if (block.type === "table") return "table";
@@ -139,14 +143,56 @@ function contextTypeFromBlock(block: ArticleBlock): CopilotContextItem["type"] {
   return "paragraph";
 }
 
+function normalizeBlockSlotText(value: unknown): string {
+  if (typeof value !== "string" && typeof value !== "number") return "";
+  return String(value).replace(/\s+$/gm, "").trim();
+}
+
+function getArticleBlockFullText(block: ArticleBlock): string {
+  const text = normalizeBlockSlotText(block.slots?.text);
+  if (text) return text;
+
+  const caption = normalizeBlockSlotText(block.slots?.caption);
+  if (caption) return caption;
+
+  const title = normalizeBlockSlotText(block.slots?.title);
+  if (title) return title;
+
+  if (Array.isArray(block.slots?.items)) {
+    const items = block.slots.items
+      .map((item, index) => {
+        const prefix = block.type === "bullet-list" ? "- " : block.type === "ordered-list" || block.type === "lead-in-list" ? `${index + 1}. ` : "";
+        if (typeof item === "string" || typeof item === "number") return `${prefix}${normalizeBlockSlotText(item)}`.trim();
+        if (item && typeof item === "object") {
+          const label = normalizeBlockSlotText((item as { label?: unknown }).label);
+          const body = normalizeBlockSlotText((item as { body?: unknown }).body);
+          return `${prefix}${[label, body].filter(Boolean).join(": ")}`.trim();
+        }
+        return "";
+      })
+      .filter(Boolean);
+    if (items.length > 0) return items.join("\n");
+  }
+
+  return getArticleBlockExcerpt(block);
+}
+
+function manualEditTitleForContext(context: CopilotContextItem): string {
+  if (context.type === "heading") return "Sửa thủ công tiêu đề";
+  if (context.type === "selection") return "Sửa thủ công vùng chọn";
+  return "Sửa thủ công đoạn văn";
+}
+
 function buildContextFromBlock(block: ArticleBlock): CopilotContextItem {
   const excerpt = getArticleBlockExcerpt(block);
+  const fullText = getArticleBlockFullText(block);
   return {
     id: `block:${block.id}`,
     blockId: block.id,
     type: contextTypeFromBlock(block),
     title: block.type === "table" ? "Bảng trong bản thảo" : block.type === "figure-placeholder" ? "Hình/placeholder trong bản thảo" : excerpt.slice(0, 72) || "Nội dung đã chọn",
     excerpt,
+    fullText,
   };
 }
 
@@ -217,9 +263,6 @@ export const EditorWorkspace = (props: any) => {
   const [isDraftDirty, setIsDraftDirty] = React.useState(false);
   const [lastSavedAt, setLastSavedAt] = React.useState<number | null>(null);
   const [isSavingDraft, setIsSavingDraft] = React.useState(false);
-  const [aiEditPrompt, setAiEditPrompt] = React.useState("");
-  const [isAiEditingDraft, setIsAiEditingDraft] = React.useState(false);
-  const [aiEditError, setAiEditError] = React.useState<string | null>(null);
   const [copilotViewMode, setCopilotViewMode] = React.useState<CopilotViewMode>("collapsed");
   const [selectedContextItems, setSelectedContextItems] = React.useState<CopilotContextItem[]>([]);
   const [activeCommandId, setActiveCommandId] = React.useState<string | null>(null);
@@ -356,8 +399,6 @@ export const EditorWorkspace = (props: any) => {
     setSelectedLayoutId(undefined);
     setSelectedLayoutVersion(undefined);
     setLayoutRecommendationError(undefined);
-    setAiEditPrompt("");
-    setAiEditError(null);
     setIsDraftDirty(false);
     setLastSavedAt(null);
     setIsCopilotDraftFlowOpen(false);
@@ -414,61 +455,6 @@ export const EditorWorkspace = (props: any) => {
         : hasGeneratedDraft
           ? "Chưa lưu"
           : "Chưa có bản thảo";
-
-  const aiQuickPrompts = React.useMemo(() => [
-    "Gợi ý tiêu đề & sapo",
-    "Rút gọn nội dung",
-    "Nâng cấp lập luận",
-    "Chuẩn hóa văn phong website",
-    "Kiểm tra lỗi & đề xuất sửa",
-    "Làm rõ số liệu/nguồn kiểm chứng",
-  ], []);
-
-  const applyAiEdit = React.useCallback(async (promptOverride?: string) => {
-    const prompt = normalizeEditorialBriefInput(promptOverride || aiEditPrompt);
-    if (!prompt) {
-      toast.error("Vui lòng nhập yêu cầu chỉnh sửa bản thảo.");
-      return;
-    }
-    if (!output?.trim()) return;
-
-    setIsAiEditingDraft(true);
-    setAiEditError(null);
-    try {
-      const token = user ? await user.getIdToken() : undefined;
-      const response = await processTask(
-        "EDITORIAL_POLITICAL",
-        [
-          "Hãy chỉnh sửa bản thảo hiện tại theo yêu cầu của người dùng.",
-          "Chỉ trả về toàn bộ bản thảo sau khi chỉnh sửa, không giải thích thêm.",
-          "Bắt buộc bảo toàn cấu trúc xuất bản hiện có: tiêu đề, sapo, heading, bullet list, ordered list, bảng markdown, caption bảng, placeholder ảnh và caption ảnh.",
-          "Không xóa placeholder ảnh có chủ đích; không biến bảng/list/caption thành đoạn văn thường; không thêm nhãn prompt kỹ thuật như Yêu cầu / Bối cảnh vào nội dung.",
-          `Yêu cầu chỉnh sửa: ${prompt}`,
-          "Bản thảo hiện tại:",
-          normalizeEditorialBriefContent(output),
-        ].join("\n\n"),
-        "EDITORIAL",
-        outputFormat,
-        [],
-        token,
-      );
-      const nextOutput = normalizeEditorialBriefContent(typeof response === "string" ? response : response?.text || "");
-      if (!nextOutput.trim()) throw new Error("AI không trả về nội dung chỉnh sửa.");
-      setOutput(nextOutput);
-      setAiEditPrompt("");
-      setIsEditing(false);
-      setIsDraftDirty(true);
-      setCurrentStep("draft");
-      toast.success("Đã áp dụng chỉnh sửa bằng AI.");
-    } catch (err: any) {
-      const message = err?.message || "Không áp dụng được chỉnh sửa bằng AI.";
-      setAiEditError(message);
-      setError(message);
-      toast.error(message);
-    } finally {
-      setIsAiEditingDraft(false);
-    }
-  }, [aiEditPrompt, output, outputFormat, setError, setIsEditing, setOutput, toast, user]);
 
   const selectedLayout = React.useMemo(() => {
     if (!selectedLayoutId || !selectedLayoutVersion) return undefined;
@@ -530,10 +516,22 @@ export const EditorWorkspace = (props: any) => {
     const firstContext = selectedContextItems[0];
     const noDraft = !normalizeEditorialBriefContent(output || "").trim();
     if (!firstContext) {
+      if (noDraft) {
+        return [
+          makeCommand("draft_new", "Mở luồng soạn thảo mới"),
+          makeCommand("add_source", "Thêm nguồn tư liệu"),
+          makeCommand("review_current_draft", "Kiểm tra nội dung hiện có", true),
+          makeCommand("more"),
+        ];
+      }
       return [
-        makeCommand("draft_new", "Mở luồng soạn thảo mới"),
+        makeCommand("review_current_draft", "Kiểm tra lỗi & đề xuất sửa"),
+        makeCommand("suggest_title_sapo", "Gợi ý tiêu đề & sapo"),
+        makePromptCommand("Rút gọn nội dung", "Rút gọn nội dung bản thảo hiện tại nhưng vẫn giữ cấu trúc xuất bản và các ý chính.", "Tạo đề xuất trong Copilot"),
+        makePromptCommand("Nâng cấp lập luận", "Nâng cấp lập luận của bản thảo hiện tại; không bịa số liệu hoặc nguồn mới.", "Tạo đề xuất trong Copilot"),
+        makePromptCommand("Chuẩn hóa văn phong website", "Chuẩn hóa văn phong website cho bản thảo hiện tại, rõ ràng và mạch lạc.", "Tạo đề xuất trong Copilot"),
+        makePromptCommand("Làm rõ số liệu/nguồn", "Rà soát các số liệu và nguồn kiểm chứng trong bản thảo, nêu điểm cần làm rõ.", "Tạo đề xuất trong Copilot"),
         makeCommand("add_source", "Thêm nguồn tư liệu"),
-        makeCommand("review_current_draft", "Kiểm tra nội dung hiện có", noDraft),
         makeCommand("more"),
       ];
     }
@@ -594,9 +592,8 @@ export const EditorWorkspace = (props: any) => {
       setPillAnchor({ top: Math.max(92, rect.top + window.scrollY - 8), left: Math.min(window.innerWidth - 180, rect.right + window.scrollX - 150) });
       setIsContextPillVisible(true);
       setCopilotStatusMessage(null);
-      if (autoOpenCopilotOnSelect && copilotViewMode !== "fullscreen") setCopilotViewMode("expanded");
     }
-  }, [autoOpenCopilotOnSelect, copilotViewMode, selectedContextItems]);
+  }, [selectedContextItems]);
 
   const handleCanvasBlockOpen = React.useCallback((block: ArticleBlock, event: React.MouseEvent<HTMLElement>) => {
     const contextItem = buildContextFromBlock(block);
@@ -911,18 +908,23 @@ export const EditorWorkspace = (props: any) => {
 
   const startManualEdit = React.useCallback((contextId?: string) => {
     const targetContext = (contextId ? selectedContextItems.find((item) => item.id === contextId) : selectedBlockContext) || selectedBlockContext;
-    if (!targetContext?.blockId || !targetContext.excerpt?.trim()) {
-      setCopilotStatusMessage("Hãy chọn một block trên A4 Preview trước khi sửa thủ công.");
+    if (selectedContextItems.length !== 1 || !targetContext?.blockId || !["paragraph", "heading", "selection"].includes(targetContext.type)) {
+      setCopilotStatusMessage("Sửa thủ công chỉ hỗ trợ một đoạn văn, tiêu đề hoặc vùng chọn tại một thời điểm.");
+      return;
+    }
+    const originalText = (targetContext.fullText || targetContext.excerpt || "").trim();
+    if (!originalText) {
+      setCopilotStatusMessage("Hãy chọn một block có nội dung văn bản trước khi sửa thủ công.");
       return;
     }
     setManualEditState({
       contextId: targetContext.id,
       blockId: targetContext.blockId,
       contextType: targetContext.type,
-      contextTitle: targetContext.title,
-      currentText: targetContext.excerpt,
-      originalText: targetContext.excerpt,
-      value: targetContext.excerpt,
+      contextTitle: manualEditTitleForContext(targetContext),
+      currentText: originalText,
+      originalText,
+      value: originalText,
       error: null,
     });
     setPendingProposal(null);
@@ -938,7 +940,7 @@ export const EditorWorkspace = (props: any) => {
       return;
     }
     const latestBlock = articleDocument.blocks.find((block) => block.id === manualEditState.blockId);
-    const latestText = latestBlock ? getArticleBlockExcerpt(latestBlock) : "";
+    const latestText = latestBlock ? getArticleBlockFullText(latestBlock) : "";
     const source = normalizeEditorialBriefContent(output || "");
     if (!latestBlock || latestText.trim() !== manualEditState.originalText.trim() || !source.includes(manualEditState.originalText)) {
       setManualEditState((current) => current ? { ...current, error: "Không thể áp dụng vì nội dung gốc đã thay đổi." } : current);
@@ -959,8 +961,9 @@ export const EditorWorkspace = (props: any) => {
     toast.success("Đã áp dụng sửa thủ công vào bản thảo.", { id: "manual-edit-success", duration: 4000 });
   }, [articleDocument.blocks, manualEditState, output, setOutput, toast]);
 
-  const handleRunCopilotCommand = React.useCallback(async (rawCommandId: string) => {
+  const handleRunCopilotCommand = React.useCallback(async (rawCommandId: string, promptOverride?: string) => {
     const commandId = rawCommandId as CopilotCommandId;
+    const commandPrompt = normalizeEditorialBriefInput(promptOverride || copilotInput);
     const draftText = normalizeEditorialBriefContent(output || "");
     setActiveCommandId(commandId);
 
@@ -987,7 +990,7 @@ export const EditorWorkspace = (props: any) => {
       setCopilotStatusMessage("Chọn loại văn bản trong Copilot để bắt đầu từ mẫu phù hợp.");
       return;
     }
-    if (commandId === "more" && !copilotInput.trim()) {
+    if (commandId === "more" && !commandPrompt) {
       setCopilotStatusMessage("Nhập yêu cầu cụ thể cho Copilot trước khi dùng lệnh Khác.");
       return;
     }
@@ -1007,7 +1010,7 @@ export const EditorWorkspace = (props: any) => {
       const contexts = effectiveCopilotContexts();
       const result = await executeEditorialWorkflowCommand({
         commandId,
-        prompt: commandId === "more" ? copilotInput : undefined,
+        prompt: commandId === "more" ? commandPrompt : undefined,
         contexts,
         selectedBlock,
         articleDocument,
@@ -1102,7 +1105,7 @@ ${pendingProposal.proposedText}`;
   const handleSubmitCopilotPrompt = React.useCallback(async () => {
     const prompt = normalizeEditorialBriefInput(copilotInput);
     if (!prompt) return;
-    await handleRunCopilotCommand("more");
+    await handleRunCopilotCommand("more", prompt);
     setCopilotInput("");
   }, [copilotInput, handleRunCopilotCommand]);
 
@@ -2428,53 +2431,6 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                       )}
                                     </div>
                                   </div>
-
-                                  {taskType === "WRITE_NEW" && (
-                                    <div className="rounded-lg border border-blue-100 bg-blue-50/40 p-4 space-y-3">
-                                      <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-                                        <div>
-                                          <h3 className="text-xs font-bold text-[#002D56] uppercase tracking-wide">Chỉnh sửa bằng AI</h3>
-                                          <p className="text-[11px] text-slate-500">Nhập yêu cầu riêng cho bản thảo hiện tại, tách khỏi thông tin tạo bài ban đầu.</p>
-                                        </div>
-                                        {isAiEditingDraft && (
-                                          <span className="text-[11px] font-semibold text-blue-700 flex items-center gap-1.5">
-                                            <Loader2 className="w-3.5 h-3.5 animate-spin" /> Đang chỉnh sửa…
-                                          </span>
-                                        )}
-                                      </div>
-                                      <div className="flex flex-wrap gap-2">
-                                        {aiQuickPrompts.map((prompt) => (
-                                          <button
-                                            key={prompt}
-                                            type="button"
-                                            onClick={() => setAiEditPrompt(prompt)}
-                                            className="rounded-full border border-blue-100 bg-white px-3 py-1.5 text-[10px] font-semibold text-blue-700 hover:bg-blue-100"
-                                          >
-                                            {prompt}
-                                          </button>
-                                        ))}
-                                      </div>
-                                      <div className="flex flex-col gap-2 lg:flex-row">
-                                        <textarea
-                                          value={aiEditPrompt}
-                                          onChange={(event) => setAiEditPrompt(normalizeEditorialBriefInput(event.target.value))}
-                                          placeholder="Nhập yêu cầu chỉnh sửa cho bản thảo hiện tại…"
-                                          className="min-h-[84px] flex-1 rounded-lg border border-blue-100 bg-white px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-200"
-                                        />
-                                        <button
-                                          type="button"
-                                          onClick={() => void applyAiEdit()}
-                                          disabled={isAiEditingDraft || !aiEditPrompt.trim()}
-                                          className="inline-flex items-center justify-center gap-2 rounded-lg bg-[#002D56] px-4 py-2 text-xs font-bold text-white hover:bg-slate-900 disabled:cursor-not-allowed disabled:opacity-60 lg:w-48"
-                                        >
-                                          {isAiEditingDraft ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
-                                          Áp dụng chỉnh sửa bằng AI
-                                        </button>
-                                      </div>
-                                      {aiEditError && <p className="text-[11px] font-semibold text-red-600">{aiEditError}</p>}
-                                    </div>
-                                  )}
-
                                   {taskType === "WRITE_NEW" && (
                                     <EditorialPreflightPanel
                                       kind={editorialKind}
