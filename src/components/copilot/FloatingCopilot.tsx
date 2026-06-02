@@ -40,6 +40,7 @@ export interface CopilotContextItem {
   type: CopilotContextType;
   title: string;
   excerpt?: string;
+  fullText?: string;
   sourceId?: string;
   blockId?: string;
 }
@@ -82,6 +83,7 @@ export interface CopilotCommand {
   label: string;
   description?: string;
   disabled?: boolean;
+  prompt?: string;
 }
 
 interface FloatingCopilotProps {
@@ -116,7 +118,7 @@ interface FloatingCopilotProps {
   onReturnToCanvas: () => void;
   onRemoveContext: (id: string) => void;
   onClearContext: () => void;
-  onRunCommand: (id: string) => void;
+  onRunCommand: (id: string, prompt?: string) => void;
   onInputChange: (value: string) => void;
   onSubmitPrompt: () => void;
   onApplyProposal: () => void;
@@ -252,15 +254,6 @@ export function FloatingCopilot({
               <button type="button" onClick={onClearContext} className="text-[11px] font-bold text-slate-500 hover:text-red-600">Bỏ chọn</button>
             )}
           </div>
-          <label className="mt-2 flex items-center gap-2 text-[11px] font-semibold text-slate-600">
-            <input
-              type="checkbox"
-              checked={autoOpenOnSelect}
-              onChange={(event) => onToggleAutoOpenOnSelect(event.target.checked)}
-              className="h-4 w-4 rounded border-slate-300 text-[#002D56]"
-            />
-            Tự mở Copilot khi chọn nội dung
-          </label>
           {selectedContextItems.length > 0 && (
             <div className="mt-3 space-y-2">
               {selectedContextItems.map((item) => (
@@ -296,9 +289,9 @@ export function FloatingCopilot({
             {commands.map((command) => (
               <button
                 type="button"
-                key={command.id}
+                key={`${command.id}:${command.label}`}
                 disabled={command.disabled || isBusy}
-                onClick={() => onRunCommand(command.id)}
+                onClick={() => onRunCommand(command.id, command.prompt)}
                 className={cn(
                   "rounded-xl border p-3 text-left transition disabled:cursor-not-allowed disabled:opacity-50",
                   activeCommandId === command.id ? "border-[#002D56] bg-blue-50 text-[#002D56]" : "border-slate-200 bg-white hover:border-blue-200 hover:bg-slate-50",
@@ -433,14 +426,14 @@ export function FloatingCopilot({
             <p className="text-sm font-black text-amber-900">Sửa thủ công</p>
             <p className="mt-1 text-xs font-medium text-amber-800">{manualEdit.contextTitle}</p>
             <div className="mt-3 rounded-xl bg-white p-3 ring-1 ring-amber-100">
-              <p className="text-[11px] font-black uppercase tracking-[0.14em] text-slate-400">Nội dung hiện tại</p>
-              <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-slate-700">{manualEdit.currentText}</p>
+              <p className="text-[11px] font-black uppercase tracking-[0.14em] text-slate-400">Nội dung hiện tại (toàn bộ block)</p>
+              <div className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap pr-1 text-sm leading-relaxed text-slate-700 custom-scrollbar">{manualEdit.currentText}</div>
             </div>
             <textarea
               value={manualEdit.value}
               onChange={(event) => onManualEditChange?.(event.target.value)}
-              rows={6}
-              className="mt-3 w-full resize-y rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm leading-relaxed text-slate-800 outline-none focus:border-amber-500"
+              rows={8}
+              className="mt-3 max-h-[min(42dvh,360px)] min-h-[200px] w-full resize-y overflow-y-auto rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm leading-relaxed text-slate-800 outline-none focus:border-amber-500"
             />
             {manualEdit.error && <p className="mt-2 text-xs font-bold text-red-600">{manualEdit.error}</p>}
             <div className="mt-3 flex flex-wrap gap-2">
