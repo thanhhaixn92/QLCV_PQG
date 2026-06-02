@@ -14,6 +14,10 @@ interface A4PrintPreviewProps {
   selectedBlockIds?: string[];
   onBlockSelect?: (block: ArticleBlock, event: React.MouseEvent<HTMLElement>) => void;
   onBlockOpen?: (block: ArticleBlock, event: React.MouseEvent<HTMLElement>) => void;
+  editingBlockId?: string | null;
+  editingValue?: string;
+  onEditingValueChange?: (value: string) => void;
+  emptyBlockIds?: string[];
 }
 
 export function getArticleBlockText(block: ArticleBlock, slot: keyof ArticleBlock["slots"] = "text"): string {
@@ -108,6 +112,52 @@ export function getArticleBlockExcerpt(block: ArticleBlock): string {
   return block.type;
 }
 
+function editableBlockClass(block: ArticleBlock): string {
+  return [
+    blockStyleClass(block),
+    "a4-canvas-block-editor",
+    "min-h-[2.5rem] rounded-md bg-white/95 px-2 py-1 outline-none ring-2 ring-amber-400 focus:ring-amber-500 whitespace-pre-wrap",
+  ].join(" ");
+}
+
+function renderEditableBlock(
+  block: ArticleBlock,
+  options?: { editingBlockId?: string | null; editingValue?: string; onEditingValueChange?: (value: string) => void },
+): React.ReactNode | null {
+  if (options?.editingBlockId !== block.id) return null;
+
+  const value = options.editingValue || "";
+  const Tag = block.type === "title" ? "h1" : block.type === "section-heading" ? "h2" : "div";
+
+  return (
+    <Tag
+      className={editableBlockClass(block)}
+      contentEditable
+      suppressContentEditableWarning
+      data-canvas-block-id={block.id}
+      data-canvas-block-type={block.type}
+      data-canvas-editing="true"
+      onInput={(event) => options.onEditingValueChange?.((event.currentTarget.textContent || "").replace(/\u200B/gu, ""))}
+    >
+      {value || <span data-export-exclude="true" className="text-slate-400">Nhập nội dung…</span>}
+    </Tag>
+  );
+}
+
+function renderEmptyBlockPlaceholder(block: ArticleBlock): React.ReactNode {
+  return (
+    <div
+      className={[blockStyleClass(block), "a4-canvas-empty-block rounded-md border border-dashed border-amber-300 bg-amber-50/60 px-2 py-2 text-sm font-semibold text-slate-400"].join(" ")}
+      data-canvas-block-id={block.id}
+      data-canvas-block-type={block.type}
+      data-export-exclude="true"
+      aria-label="Block trống trong phiên chỉnh sửa"
+    >
+      Nhập nội dung…
+    </div>
+  );
+}
+
 function withSelectableBlock(
   node: React.ReactNode,
   block: ArticleBlock,
@@ -116,6 +166,10 @@ function withSelectableBlock(
     selectedBlockIds?: string[];
     onBlockSelect?: (block: ArticleBlock, event: React.MouseEvent<HTMLElement>) => void;
     onBlockOpen?: (block: ArticleBlock, event: React.MouseEvent<HTMLElement>) => void;
+    editingBlockId?: string | null;
+    editingValue?: string;
+    onEditingValueChange?: (value: string) => void;
+    emptyBlockIds?: string[];
   },
 ): React.ReactNode {
   if (!options?.selectableBlocks || !React.isValidElement(node)) return node;
@@ -304,11 +358,21 @@ export function renderArticleDocumentToHtmlA4(
     selectedBlockIds?: string[];
     onBlockSelect?: (block: ArticleBlock, event: React.MouseEvent<HTMLElement>) => void;
     onBlockOpen?: (block: ArticleBlock, event: React.MouseEvent<HTMLElement>) => void;
+    editingBlockId?: string | null;
+    editingValue?: string;
+    onEditingValueChange?: (value: string) => void;
+    emptyBlockIds?: string[];
   },
 ): React.ReactNode {
-  return document.blocks.map((block) => (
-    <React.Fragment key={block.id}>{withSelectableBlock(renderBlock(block), block, options)}</React.Fragment>
-  ));
+  return document.blocks.map((block) => {
+    const editable = renderEditableBlock(block, options);
+    const rendered = editable || (options?.emptyBlockIds?.includes(block.id) ? renderEmptyBlockPlaceholder(block) : renderBlock(block));
+    return (
+      <React.Fragment key={block.id}>
+        {withSelectableBlock(rendered, block, options)}
+      </React.Fragment>
+    );
+  });
 }
 
 export const A4PrintPreview = ({
@@ -320,6 +384,10 @@ export const A4PrintPreview = ({
   selectedBlockIds = [],
   onBlockSelect,
   onBlockOpen,
+  editingBlockId,
+  editingValue,
+  onEditingValueChange,
+  emptyBlockIds = [],
 }: A4PrintPreviewProps) => {
   const validation = React.useMemo(() => validateArticleDocument(document), [document]);
   const validationCounts = React.useMemo(
@@ -351,7 +419,7 @@ export const A4PrintPreview = ({
         className={["print-layout", "a4-preview", className].filter(Boolean).join(" ")}
         data-template-id={document.templateId}
       >
-        {renderArticleDocumentToHtmlA4(document, { selectableBlocks, selectedBlockIds, onBlockSelect, onBlockOpen })}
+        {renderArticleDocumentToHtmlA4(document, { selectableBlocks, selectedBlockIds, onBlockSelect, onBlockOpen, editingBlockId, editingValue, onEditingValueChange, emptyBlockIds })}
       </article>
     </>
   );
