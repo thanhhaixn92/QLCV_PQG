@@ -5,7 +5,9 @@ import {
   Copy,
   Edit3,
   FileText,
+  FileUp,
   Loader2,
+  Link as LinkIcon,
   Maximize2,
   MessageCircle,
   Minimize2,
@@ -14,6 +16,7 @@ import {
   Send,
   Sparkles,
   Trash2,
+  Type,
   X,
 } from "lucide-react";
 import { cn } from "../../lib/utils";
@@ -62,6 +65,11 @@ export interface CopilotDraftFlowState {
   error?: string | null;
 }
 
+export interface CopilotSourceFlowState {
+  sourceSummary: string;
+  selectedSources: Array<{ id: string; title: string; excerpt?: string }>;
+}
+
 export interface CopilotManualEditState {
   contextTitle: string;
   currentText: string;
@@ -86,11 +94,17 @@ interface FloatingCopilotProps {
   inputValue: string;
   isBusy?: boolean;
   draftFlow?: CopilotDraftFlowState | null;
+  sourceFlow?: CopilotSourceFlowState | null;
   manualEdit?: CopilotManualEditState | null;
   autoOpenOnSelect: boolean;
   onToggleAutoOpenOnSelect: (value: boolean) => void;
   onDraftFlowChange?: (patch: Partial<CopilotDraftFlowState>) => void;
   onSubmitDraftFlow?: () => void;
+  onCancelDraftFlow?: () => void;
+  onOpenSourceWorkspace?: (tab?: "library" | "text" | "link" | "upload") => void;
+  onCancelSourceFlow?: () => void;
+  onOpenHistory?: () => void;
+  onChooseTemplate?: () => void;
   onStartManualEdit?: (contextId?: string) => void;
   onManualEditChange?: (value: string) => void;
   onApplyManualEdit?: () => void;
@@ -141,11 +155,17 @@ export function FloatingCopilot({
   inputValue,
   isBusy = false,
   draftFlow,
+  sourceFlow,
   manualEdit,
   autoOpenOnSelect,
   onToggleAutoOpenOnSelect,
   onDraftFlowChange,
   onSubmitDraftFlow,
+  onCancelDraftFlow,
+  onOpenSourceWorkspace,
+  onCancelSourceFlow,
+  onOpenHistory,
+  onChooseTemplate,
   onStartManualEdit,
   onManualEditChange,
   onApplyManualEdit,
@@ -164,6 +184,7 @@ export function FloatingCopilot({
   onCancelProposal,
 }: FloatingCopilotProps) {
   const contextSummary = summarizeContext(selectedContextItems);
+  const isDraftBriefMissing = Boolean(draftFlow) && !draftFlow?.brief.trim();
 
   if (viewMode === "collapsed") {
     return (
@@ -254,7 +275,7 @@ export function FloatingCopilot({
                     </button>
                   </div>
                   {item.excerpt && <p className="mt-2 line-clamp-3 text-xs leading-relaxed text-slate-600">{item.excerpt}</p>}
-                  {item.blockId && onStartManualEdit && (
+                  {selectedContextItems.length === 1 && item.blockId && onStartManualEdit && ["paragraph", "heading", "selection"].includes(item.type) && (
                     <button
                       type="button"
                       onClick={() => onStartManualEdit(item.id)}
@@ -288,6 +309,12 @@ export function FloatingCopilot({
               </button>
             ))}
           </div>
+          {selectedContextItems.length === 0 && (onOpenHistory || onChooseTemplate) && (
+            <div className="mt-3 flex flex-wrap gap-x-3 gap-y-2 text-[11px] font-bold">
+              {onOpenHistory && <button type="button" onClick={onOpenHistory} className="text-[#002D56] underline-offset-4 hover:underline">Mở lịch sử văn bản</button>}
+              {onChooseTemplate && <button type="button" onClick={onChooseTemplate} className="text-[#002D56] underline-offset-4 hover:underline">Chọn mẫu văn bản</button>}
+            </div>
+          )}
         </div>
 
         {draftFlow && (
@@ -296,7 +323,7 @@ export function FloatingCopilot({
               <span className="rounded-xl bg-blue-50 p-2 text-[#002D56]"><FileText className="h-4 w-4" /></span>
               <div>
                 <p className="text-sm font-black text-slate-900">Soạn văn bản mới</p>
-                <p className="text-xs text-slate-500">Nhập yêu cầu ngay trong Copilot; Canvas chỉ hiển thị bản thảo sau khi tạo.</p>
+                <p className="text-xs text-slate-500">Copilot sẽ tạo bản thảo từ yêu cầu của bạn. Canvas chỉ hiển thị bản thảo và kết quả để kiểm chứng.</p>
               </div>
             </div>
             <div className="mt-3 space-y-3">
@@ -328,16 +355,76 @@ export function FloatingCopilot({
                 />
               </label>
               <p className="rounded-xl bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-600">{draftFlow.sourceSummary}</p>
-              {draftFlow.error && <p className="text-xs font-bold text-red-600">{draftFlow.error}</p>}
-              <button
-                type="button"
-                onClick={onSubmitDraftFlow}
-                disabled={isBusy}
-                className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[#002D56] px-4 py-2.5 text-sm font-black text-white hover:bg-slate-900 disabled:opacity-60"
-              >
-                {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />} Tạo bản thảo
+              {(draftFlow.error || isDraftBriefMissing) && (
+                <p className={cn("text-xs font-bold", draftFlow.error ? "text-red-600" : "text-amber-600")}>
+                  {draftFlow.error || "Vui lòng nhập yêu cầu hoặc bối cảnh để tạo bản thảo."}
+                </p>
+              )}
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={onSubmitDraftFlow}
+                  disabled={isBusy || isDraftBriefMissing}
+                  className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-[#002D56] px-4 py-2.5 text-sm font-black text-white hover:bg-slate-900 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />} Tạo bản thảo
+                </button>
+                <button
+                  type="button"
+                  onClick={onCancelDraftFlow}
+                  className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-slate-700 hover:bg-slate-50"
+                >
+                  <RotateCcw className="h-4 w-4" /> Hủy
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+
+        {sourceFlow && (
+          <div className="mt-4 rounded-2xl border border-blue-200 bg-white p-3 shadow-sm">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-black text-slate-900">Thêm nguồn tư liệu</p>
+                <p className="mt-1 text-xs text-slate-500">Nguồn giúp AI bám căn cứ khi tạo hoặc chỉnh sửa bản thảo.</p>
+              </div>
+              <button type="button" onClick={onCancelSourceFlow} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Đóng luồng nguồn">
+                <X className="h-4 w-4" />
               </button>
             </div>
+            <p className="mt-3 rounded-xl bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-600">{sourceFlow.sourceSummary}</p>
+            {sourceFlow.selectedSources.length > 0 && (
+              <div className="mt-3 space-y-2">
+                {sourceFlow.selectedSources.map((source) => (
+                  <div key={source.id} className="rounded-xl border border-blue-100 bg-blue-50/40 p-2">
+                    <p className="truncate text-xs font-black text-slate-800">{source.title}</p>
+                    {source.excerpt && <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-slate-600">{source.excerpt}</p>}
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              {[
+                { id: "library" as const, label: "Kho tư liệu", icon: FileText },
+                { id: "text" as const, label: "Dán văn bản", icon: Type },
+                { id: "link" as const, label: "Thêm liên kết", icon: LinkIcon },
+                { id: "upload" as const, label: "Tải tệp lên", icon: FileUp },
+              ].map((option) => (
+                <button
+                  type="button"
+                  key={option.id}
+                  onClick={() => onOpenSourceWorkspace?.(option.id)}
+                  className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-left text-xs font-bold text-slate-700 hover:border-blue-200 hover:bg-blue-50"
+                >
+                  <option.icon className="mb-2 h-4 w-4 text-[#002D56]" />
+                  {option.label}
+                </button>
+              ))}
+            </div>
+            <button type="button" onClick={() => onOpenSourceWorkspace?.()} className="mt-3 w-full rounded-xl border border-[#002D56] bg-white px-4 py-2.5 text-xs font-black text-[#002D56] hover:bg-blue-50">
+              Mở vùng nguồn
+            </button>
           </div>
         )}
 
