@@ -15,7 +15,7 @@ import { EditorialPreflightPanel } from './EditorialPreflightPanel';
 import { TaskType, OutputFormat } from '../../types';
 import type { EditorialWorkspaceMode } from '../../types/editorial';
 import type { ArticleBlock } from '../../lib/publishing/articleDocument';
-import { FloatingCopilot, type CopilotCommand, type CopilotContextItem, type CopilotDraftFlowState, type CopilotManualEditState, type CopilotProposal, type CopilotViewMode } from '../copilot/FloatingCopilot';
+import { FloatingCopilot, type CopilotCommand, type CopilotContextItem, type CopilotDraftFlowState, type CopilotManualEditState, type CopilotProposal, type CopilotSourceFlowState, type CopilotViewMode } from '../copilot/FloatingCopilot';
 
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '../../lib/utils';
@@ -76,7 +76,23 @@ type CopilotCommandId =
   | "export_docx"
   | "export_pdf"
   | "export_html_a4"
+  | "open_history"
+  | "choose_template"
   | "more";
+
+
+const COPILOT_DRAFT_KIND_ORDER = [
+  "website_article",
+  "news",
+  "press_release",
+  "administrative_report",
+  "official_letter",
+  "plan",
+  "meeting_minutes",
+  "speech_outline",
+  "briefing_note",
+  "summary_note",
+] as const;
 
 const COMMAND_LABELS: Record<CopilotCommandId, string> = {
   draft_new: "Soạn văn bản mới",
@@ -107,6 +123,8 @@ const COMMAND_LABELS: Record<CopilotCommandId, string> = {
   export_docx: "Xuất Word",
   export_pdf: "Xuất PDF",
   export_html_a4: "Xuất HTML A4",
+  open_history: "Mở lịch sử văn bản",
+  choose_template: "Chọn mẫu văn bản",
   more: "Khác",
 };
 
@@ -195,7 +213,7 @@ export const EditorWorkspace = (props: any) => {
 
 
   const hasGeneratedDraft = Boolean(output?.trim()) || currentStep === "draft";
-  const [isBriefPanelOpen, setIsBriefPanelOpen] = React.useState(true);
+  const [isBriefPanelOpen, setIsBriefPanelOpen] = React.useState(false);
   const [isDraftDirty, setIsDraftDirty] = React.useState(false);
   const [lastSavedAt, setLastSavedAt] = React.useState<number | null>(null);
   const [isSavingDraft, setIsSavingDraft] = React.useState(false);
@@ -210,6 +228,7 @@ export const EditorWorkspace = (props: any) => {
   const [copilotStatusMessage, setCopilotStatusMessage] = React.useState<string | null>(null);
   const [isCopilotBusy, setIsCopilotBusy] = React.useState(false);
   const [isCopilotDraftFlowOpen, setIsCopilotDraftFlowOpen] = React.useState(false);
+  const [isCopilotSourceFlowOpen, setIsCopilotSourceFlowOpen] = React.useState(false);
   const [copilotDraftExtraNotes, setCopilotDraftExtraNotes] = React.useState("");
   const [copilotDraftFlowError, setCopilotDraftFlowError] = React.useState<string | null>(null);
   const [manualEditState, setManualEditState] = React.useState<(CopilotManualEditState & { contextId: string; blockId: string; originalText: string; contextType: CopilotContextItem["type"] }) | null>(null);
@@ -288,10 +307,7 @@ export const EditorWorkspace = (props: any) => {
   }, [clearEditorialDraft, localDraftKey, toast]);
 
   React.useEffect(() => {
-    if (!hasGeneratedDraft) {
-      setIsBriefPanelOpen(true);
-      return;
-    }
+    if (!hasGeneratedDraft) return;
     setIsBriefPanelOpen(false);
     if (currentStep !== "draft") setCurrentStep("draft");
   }, [currentStep, hasGeneratedDraft]);
@@ -334,7 +350,7 @@ export const EditorWorkspace = (props: any) => {
     setError(null);
     setIsEditing(false);
     setCurrentStep("brief");
-    setIsBriefPanelOpen(true);
+    setIsBriefPanelOpen(false);
     setRecommendationBrief("");
     setRecommendedLayouts([]);
     setSelectedLayoutId(undefined);
@@ -345,6 +361,7 @@ export const EditorWorkspace = (props: any) => {
     setIsDraftDirty(false);
     setLastSavedAt(null);
     setIsCopilotDraftFlowOpen(false);
+    setIsCopilotSourceFlowOpen(false);
     setCopilotDraftExtraNotes("");
     setCopilotDraftFlowError(null);
     setManualEditState(null);
@@ -515,9 +532,8 @@ export const EditorWorkspace = (props: any) => {
     if (!firstContext) {
       return [
         makeCommand("draft_new", "Mở luồng soạn thảo mới"),
+        makeCommand("add_source", "Thêm nguồn tư liệu"),
         makeCommand("review_current_draft", "Kiểm tra nội dung hiện có", noDraft),
-        makeCommand("suggest_title_sapo", "Đề xuất tiêu đề/sapo", noDraft),
-        makeCommand("add_source", "Mở nguồn tư liệu"),
         makeCommand("more"),
       ];
     }
@@ -525,10 +541,10 @@ export const EditorWorkspace = (props: any) => {
       return [makeCommand("manual_edit", "Chỉnh trực tiếp block đã chọn"), makeCommand("rewrite_selection"), makeCommand("shorten_selection"), makeCommand("fix_selection"), makeCommand("more")];
     }
     if (firstContext.type === "table") {
-      return [makeCommand("manual_edit", "Chỉnh trực tiếp block đã chọn"), makeCommand("create_caption"), makeCommand("normalize_table"), makeCommand("check_table_numbers"), makeCommand("more")];
+      return [makeCommand("create_caption"), makeCommand("normalize_table"), makeCommand("check_table_numbers"), makeCommand("more")];
     }
     if (firstContext.type === "figure") {
-      return [makeCommand("manual_edit", "Chỉnh trực tiếp block đã chọn"), makeCommand("figure_caption"), makeCommand("suggest_figure"), makeCommand("describe_figure"), makeCommand("more")];
+      return [makeCommand("figure_caption"), makeCommand("suggest_figure"), makeCommand("describe_figure"), makeCommand("more")];
     }
     if (firstContext.type === "source") {
       return [makeCommand("summarize_selected_source"), makeCommand("use_source_to_update_draft"), makeCommand("attach_source_to_draft"), makeCommand("compare_source_with_draft"), makeCommand("more")];
@@ -773,9 +789,9 @@ export const EditorWorkspace = (props: any) => {
       : [];
   }, [output, selectedContextItems]);
 
-  const copilotKindOptions = React.useMemo(() => Object.entries(EDITORIAL_KIND_CONFIG as Record<string, { label?: string }>).map(([value, config]) => ({
+  const copilotKindOptions = React.useMemo(() => COPILOT_DRAFT_KIND_ORDER.map((value) => ({
     value,
-    label: config?.label || value,
+    label: (EDITORIAL_KIND_CONFIG as Record<string, { label?: string }>)[value]?.label || value,
   })), []);
 
   const runProcessWithLayout = React.useCallback(async (layoutId?: string, layoutVersion?: string) => {
@@ -793,11 +809,15 @@ export const EditorWorkspace = (props: any) => {
       handleToolChange?.("draft_new");
       setTaskType?.("WRITE_NEW");
     }
+    if (!COPILOT_DRAFT_KIND_ORDER.includes(editorialKind as any)) {
+      setEditorialKind("website_article" as any);
+    }
     setIsCopilotDraftFlowOpen(true);
+    setIsCopilotSourceFlowOpen(false);
     setCopilotDraftFlowError(null);
     setCopilotViewMode("expanded");
     setWorkspaceMode("edit");
-  }, [currentTool?.taskType, handleToolChange, setTaskType]);
+  }, [currentTool?.taskType, editorialKind, handleToolChange, setEditorialKind, setTaskType]);
 
   const copilotDraftFlowState = React.useMemo<CopilotDraftFlowState | null>(() => {
     if (!isCopilotDraftFlowOpen) return null;
@@ -813,6 +833,27 @@ export const EditorWorkspace = (props: any) => {
     };
   }, [copilotDraftExtraNotes, copilotDraftFlowError, copilotKindOptions, editorialKind, input, isCopilotDraftFlowOpen, selectedSourceDocIds.length]);
 
+
+  const copilotSourceFlowState = React.useMemo<CopilotSourceFlowState | null>(() => {
+    if (!isCopilotSourceFlowOpen) return null;
+    const selectedSources = Array.isArray(documents)
+      ? documents
+        .filter((document: any) => selectedSourceDocIds.includes(document.id))
+        .slice(0, 3)
+        .map((document: any) => ({
+          id: document.id,
+          title: document.name || document.title || "Nguồn tư liệu",
+          excerpt: extractDocumentText(document).slice(0, 220),
+        }))
+      : [];
+    return {
+      sourceSummary: selectedSourceDocIds.length > 0
+        ? `Đang chọn ${selectedSourceDocIds.length} nguồn tư liệu cho bản thảo.`
+        : "Chưa chọn nguồn. Nguồn giúp AI bám căn cứ khi tạo hoặc chỉnh sửa bản thảo.",
+      selectedSources,
+    };
+  }, [documents, isCopilotSourceFlowOpen, selectedSourceDocIds]);
+
   const updateCopilotDraftFlow = React.useCallback((patch: Partial<CopilotDraftFlowState>) => {
     if (typeof patch.kind === "string") setEditorialKind(patch.kind as any);
     if (typeof patch.brief === "string") setInput(patch.brief);
@@ -823,8 +864,8 @@ export const EditorWorkspace = (props: any) => {
   const submitCopilotDraftFlow = React.useCallback(async () => {
     const brief = normalizeEditorialBriefInput(input);
     const extraNotes = normalizeEditorialBriefInput(copilotDraftExtraNotes);
-    if (!brief && !extraNotes && selectedSourceDocIds.length === 0) {
-      setCopilotDraftFlowError("Vui lòng nhập yêu cầu/bối cảnh hoặc chọn ít nhất một nguồn tư liệu trước khi tạo bản thảo.");
+    if (!brief) {
+      setCopilotDraftFlowError("Vui lòng nhập yêu cầu hoặc bối cảnh để tạo bản thảo.");
       return;
     }
     const mergedBrief = [brief, extraNotes ? `Ý chính / nguồn bổ sung:\n${extraNotes}` : ""].filter(Boolean).join("\n\n");
@@ -834,13 +875,39 @@ export const EditorWorkspace = (props: any) => {
     try {
       await runProcessWithLayout(getDefaultArticleLayout().layoutId, getDefaultArticleLayout().layoutVersion);
       setIsCopilotDraftFlowOpen(false);
+      setIsCopilotSourceFlowOpen(false);
+      setIsBriefPanelOpen(false);
       setCopilotDraftExtraNotes("");
       setWorkspaceMode("edit");
       setCopilotStatusMessage("Đã tạo bản thảo. Hãy kiểm chứng trên Canvas trước khi lưu hoặc xuất.");
     } finally {
       setIsCopilotBusy(false);
     }
-  }, [copilotDraftExtraNotes, input, runProcessWithLayout, selectedSourceDocIds.length, setInput]);
+  }, [copilotDraftExtraNotes, input, runProcessWithLayout, setInput]);
+
+  const openCopilotReviewFlow = React.useCallback(() => {
+    setActiveCommandId("review_current_draft");
+    setIsCopilotDraftFlowOpen(false);
+    setIsCopilotSourceFlowOpen(false);
+    setCopilotViewMode("expanded");
+    setCopilotStatusMessage(output?.trim()
+      ? "Bạn có thể rà soát bản thảo hiện tại trong Copilot. Đề xuất sẽ cần Apply/Cancel rõ ràng."
+      : "Chưa có bản thảo. Hãy dán nội dung vào Copilot hoặc tạo bản thảo trước khi rà soát.");
+  }, [output]);
+
+  const openCopilotSourceFlow = React.useCallback(() => {
+    setActiveCommandId("add_source");
+    setIsCopilotDraftFlowOpen(false);
+    setIsCopilotSourceFlowOpen(true);
+    setCopilotViewMode("expanded");
+    setCopilotStatusMessage("Chọn cách thêm nguồn trong Copilot. Canvas chưa thay đổi cho đến khi bạn bấm Mở vùng nguồn.");
+  }, []);
+
+  const openSourceWorkspaceFromCopilot = React.useCallback((tab?: "library" | "text" | "link" | "upload") => {
+    if (tab) setSourceActiveTab(tab as any);
+    switchWorkspaceMode("sources");
+    setCopilotStatusMessage("Đã mở vùng nguồn tư liệu. Nguồn đã chọn sẽ được gắn với bản thảo hiện tại.");
+  }, [setSourceActiveTab, switchWorkspaceMode]);
 
   const startManualEdit = React.useCallback((contextId?: string) => {
     const targetContext = (contextId ? selectedContextItems.find((item) => item.id === contextId) : selectedBlockContext) || selectedBlockContext;
@@ -907,8 +974,30 @@ export const EditorWorkspace = (props: any) => {
       return;
     }
     if (commandId === "add_source") {
-      switchWorkspaceMode("sources");
-      setCopilotStatusMessage("Canvas đang hiển thị nguồn tư liệu để bạn chọn hoặc thêm mới.");
+      openCopilotSourceFlow();
+      return;
+    }
+    if (commandId === "open_history") {
+      switchWorkspaceMode("history");
+      setCopilotStatusMessage("Đã mở lịch sử văn bản. Bản thảo hiện tại không thay đổi.");
+      return;
+    }
+    if (commandId === "choose_template") {
+      openCopilotDraftFlow();
+      setCopilotStatusMessage("Chọn loại văn bản trong Copilot để bắt đầu từ mẫu phù hợp.");
+      return;
+    }
+    if (commandId === "more" && !copilotInput.trim()) {
+      setCopilotStatusMessage("Nhập yêu cầu cụ thể cho Copilot trước khi dùng lệnh Khác.");
+      return;
+    }
+    if (["rewrite_selection", "shorten_selection", "fix_selection", "strengthen_argument", "create_caption", "normalize_table", "check_table_numbers", "figure_caption", "table_to_analysis", "suggest_figure", "describe_figure", "check_figure_position", "explain_preflight_issue", "fix_preflight_issue", "find_similar_issue", "ignore_preflight_issue"].includes(commandId) && selectedContextItems.length === 0) {
+      setCopilotStatusMessage("Hãy chọn một đoạn, tiêu đề, bảng hoặc hình trên Canvas trước.");
+      return;
+    }
+    if (["summarize_selected_source", "use_source_to_update_draft", "attach_source_to_draft", "compare_source_with_draft"].includes(commandId) && !selectedContextItems.some((item) => item.type === "source")) {
+      setCopilotStatusMessage("Hãy chọn ít nhất một nguồn tư liệu trước khi dùng lệnh này.");
+      openCopilotSourceFlow();
       return;
     }
 
@@ -944,7 +1033,7 @@ export const EditorWorkspace = (props: any) => {
     } finally {
       setIsCopilotBusy(false);
     }
-  }, [articleDocument, copilotInput, createProposal, effectiveCopilotContexts, formatExecutionProposal, openCopilotDraftFlow, output, outputFormat, selectedBlock, startManualEdit, switchWorkspaceMode, toast, user]);
+  }, [articleDocument, copilotInput, createProposal, effectiveCopilotContexts, formatExecutionProposal, openCopilotDraftFlow, openCopilotSourceFlow, output, outputFormat, selectedBlock, selectedContextItems, startManualEdit, switchWorkspaceMode, toast, user]);
 
   const handleApplyCopilotProposal = React.useCallback(() => {
     if (!pendingProposal) return;
@@ -1278,8 +1367,11 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
               {isMoreMenuOpen && (
                 <div className="absolute right-0 z-40 mt-2 w-56 overflow-hidden rounded-xl border border-slate-200 bg-white p-1 shadow-xl">
                   <button type="button" onClick={() => { setIsMoreMenuOpen(false); switchWorkspaceMode("history"); }} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-semibold text-slate-700 hover:bg-slate-50"><History className="h-4 w-4" /> Lịch sử văn bản</button>
-                  <button type="button" onClick={() => { setIsMoreMenuOpen(false); switchWorkspaceMode("sources"); }} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-semibold text-slate-700 hover:bg-slate-50"><BookOpen className="h-4 w-4" /> Nguồn tư liệu</button>
-                  <button type="button" onClick={() => { setIsMoreMenuOpen(false); openCopilotDraftFlow(); }} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-semibold text-slate-700 hover:bg-slate-50"><FileStack className="h-4 w-4" /> Mẫu văn bản</button>
+                  <button type="button" onClick={() => { setIsMoreMenuOpen(false); openCopilotSourceFlow(); }} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-semibold text-slate-700 hover:bg-slate-50"><BookOpen className="h-4 w-4" /> Thêm nguồn bằng Copilot</button>
+                  <button type="button" onClick={() => { setIsMoreMenuOpen(false); openCopilotDraftFlow(); }} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-semibold text-slate-700 hover:bg-slate-50"><FileStack className="h-4 w-4" /> Soạn bằng Copilot</button>
+                  {!hasGeneratedDraft && (
+                    <button type="button" onClick={() => { setIsMoreMenuOpen(false); setIsBriefPanelOpen(true); setWorkspaceMode("edit"); }} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-semibold text-slate-600 hover:bg-slate-50"><Edit3 className="h-4 w-4" /> Tùy chọn nâng cao</button>
+                  )}
                   <button type="button" onClick={() => { setIsMoreMenuOpen(false); setCopilotStatusMessage("Cài đặt xuất bản chi tiết sẽ được mở ở PR tiếp theo; Preflight và export hiện vẫn giữ nguyên."); setCopilotViewMode("expanded"); }} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-semibold text-slate-700 hover:bg-slate-50"><ShieldCheck className="h-4 w-4" /> Cài đặt xuất bản</button>
                   <button type="button" onClick={() => { setIsMoreMenuOpen(false); clearLocalDraft(true); }} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-semibold text-red-600 hover:bg-red-50"><Trash2 className="h-4 w-4" /> Xóa bản nháp</button>
                 </div>
@@ -1584,19 +1676,18 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
   const renderEditMode = () => (
     <div className="grid grid-cols-1 gap-5 h-full">
       {!hasGeneratedDraft && (
-        <section className="rounded-3xl border border-blue-100 bg-gradient-to-br from-white via-blue-50/60 to-white p-6 shadow-sm sm:p-8">
-          <div className="max-w-3xl">
-            <span className="inline-flex items-center gap-2 rounded-full bg-[#002D56] px-3 py-1.5 text-xs font-black uppercase tracking-[0.16em] text-white"><Sparkles className="h-4 w-4" /> Canvas-first Copilot</span>
+        <section className="rounded-3xl border border-blue-100 bg-gradient-to-br from-white via-blue-50/60 to-white p-6 text-center shadow-sm sm:p-8">
+          <div className="mx-auto max-w-2xl">
+            <span className="inline-flex items-center gap-2 rounded-full bg-[#002D56] px-3 py-1.5 text-xs font-black uppercase tracking-[0.16em] text-white"><Sparkles className="h-4 w-4" /> Trợ lý biên tập</span>
             <h2 className="mt-5 text-2xl font-black text-slate-950 sm:text-3xl">Bạn muốn làm gì với Trợ lý biên tập?</h2>
-            <p className="mt-3 text-sm leading-7 text-slate-600">Bấm vào đoạn văn, bảng, hình hoặc nguồn tư liệu để hỏi AI về đúng nội dung đó. Copilot sẽ luôn cho xem Preview trước khi Apply.</p>
+            <p className="mt-3 text-sm leading-7 text-slate-600">Nhập yêu cầu trong Copilot để tạo bản thảo, hoặc chọn nội dung trên Canvas để hỏi AI. Bắt đầu bằng Copilot, sau đó kiểm chứng trên Canvas.</p>
+            <button type="button" onClick={openCopilotExpanded} className="mt-6 inline-flex items-center justify-center gap-2 rounded-2xl bg-[#002D56] px-5 py-3 text-sm font-black text-white shadow-sm hover:bg-slate-900"><MessageCircle className="h-4 w-4" /> Mở Copilot</button>
+            <div className="mt-4 flex flex-wrap items-center justify-center gap-x-4 gap-y-2 text-xs font-bold">
+              <button type="button" onClick={openCopilotDraftFlow} className="text-[#002D56] underline-offset-4 hover:underline">Soạn văn bản mới</button>
+              <button type="button" onClick={openCopilotSourceFlow} className="text-[#002D56] underline-offset-4 hover:underline">Thêm nguồn</button>
+            </div>
+            <button type="button" onClick={() => setIsBriefPanelOpen(true)} className="mt-4 text-[11px] font-semibold text-slate-400 underline-offset-4 hover:text-slate-600 hover:underline">Tùy chọn nâng cao</button>
           </div>
-          <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <button type="button" onClick={openCopilotDraftFlow} className="rounded-2xl border border-blue-100 bg-white p-4 text-left shadow-sm hover:border-[#002D56] hover:bg-blue-50"><FileText className="mb-3 h-6 w-6 text-[#002D56]" /><span className="block text-sm font-black text-slate-900">Soạn văn bản mới</span></button>
-            <button type="button" onClick={() => void handleRunCopilotCommand("review_current_draft")} className="rounded-2xl border border-blue-100 bg-white p-4 text-left shadow-sm hover:border-[#002D56] hover:bg-blue-50"><ClipboardCheck className="mb-3 h-6 w-6 text-[#002D56]" /><span className="block text-sm font-black text-slate-900">Rà soát bản thảo</span></button>
-            <button type="button" onClick={() => { setCopilotStatusMessage("Hãy chọn nguồn tư liệu trước khi tóm tắt tài liệu."); setCopilotViewMode("expanded"); switchWorkspaceMode("sources"); }} className="rounded-2xl border border-blue-100 bg-white p-4 text-left shadow-sm hover:border-[#002D56] hover:bg-blue-50"><FileStack className="mb-3 h-6 w-6 text-[#002D56]" /><span className="block text-sm font-black text-slate-900">Tóm tắt tài liệu</span></button>
-            <button type="button" onClick={() => switchWorkspaceMode("sources")} className="rounded-2xl border border-blue-100 bg-white p-4 text-left shadow-sm hover:border-[#002D56] hover:bg-blue-50"><BookOpen className="mb-3 h-6 w-6 text-[#002D56]" /><span className="block text-sm font-black text-slate-900">Thêm nguồn tư liệu</span></button>
-          </div>
-          <button type="button" onClick={() => { setCopilotStatusMessage("Tour nhanh 45 giây sẽ được hoàn thiện ở PR tiếp theo. PR1 đã khóa hành vi: click block chỉ chọn context, không tự sửa."); setCopilotViewMode("expanded"); }} className="mt-5 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-slate-700 hover:bg-slate-50">Tour nhanh 45 giây</button>
         </section>
       )}
                         {/* Workspace controls and sources */}
@@ -2033,7 +2124,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                         {/* Main Editor Area */}
                         <div className="space-y-6 min-w-0">
                           {/* Input Area */}
-                          {(!hasGeneratedDraft || isBriefPanelOpen) && (
+                          {isBriefPanelOpen && !hasGeneratedDraft && (
                           <section className="bg-white rounded-md shadow-sm border border-slate-200 overflow-hidden flex flex-col min-h-[400px]">
                             <div className="px-5 sm:px-6 py-4 sm:py-5 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
                               <div className="flex items-center gap-3">
@@ -2042,8 +2133,9 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                 </div>
                                 <div className="">
                                   <span className="text-xs sm:text-sm font-semibold text-[#002D56] tracking-normal">
-                                    {currentTool?.inputLabel || "Thông tin đầu vào"}
+                                    Biểu mẫu nâng cao
                                   </span>
+                                  <p className="mt-0.5 text-[10px] font-medium text-slate-500">Copilot vẫn là luồng chính; biểu mẫu này chỉ dùng khi cần nhập chi tiết thủ công.</p>
                                   {selectedSourceDocIds.length > 0 && (
                                     <p className="text-[8px] sm:text-[10px] text-emerald-600 font-semibold flex items-center gap-1.5 mt-0.5 uppercase">
                                       <Database className="w-2.5 h-2.5 sm:w-3.5 sm:h-3.5" />{" "}
@@ -2060,6 +2152,13 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                     Đang đọc tệp...
                                   </span>
                                 )}
+                                <button
+                                  type="button"
+                                  onClick={() => setIsBriefPanelOpen(false)}
+                                  className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-[11px] font-bold text-slate-600 hover:bg-slate-50"
+                                >
+                                  Đóng biểu mẫu nâng cao
+                                </button>
                                 <button
                                   onClick={handleCreateNewArticle}
                                   className="text-slate-300 hover:text-red-500 p-2 sm:p-2.5 rounded-md transition-all hover:bg-red-50"
@@ -2150,7 +2249,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                   ) : (
                                     <>
                                       <Zap className="w-4 h-4 fill-current" />
-                                      Bắt đầu xử lý
+                                      Tạo từ biểu mẫu nâng cao
                                     </>
                                   )}
                                 </button>
@@ -2164,8 +2263,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                   <ShieldCheck className="w-3.5 h-3.5 text-[#002D56]" />
                                 </div>
                                 <p className="text-[11px] text-slate-500 font-medium leading-relaxed">
-                                  Hệ thống sẽ đồng nhất thuật ngữ và cấu trúc
-                                  bài viết theo quy chuẩn Hoa Tiêu Miền Bắc.
+                                  Copilot sẽ tạo bản thảo từ yêu cầu của bạn. Canvas chỉ hiển thị bản thảo và kết quả để kiểm chứng.
                                 </p>
                               </div>
                             </div>
@@ -2252,20 +2350,6 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                             {isEditing
                                               ? "Đang sửa"
                                               : "Sửa thủ công"}
-                                          </button>
-                                          <button
-                                            onClick={() => setIsBriefPanelOpen((value) => !value)}
-                                            className="text-[10px] font-semibold px-3 py-1.5 rounded-md transition-all flex items-center gap-2 tracking-tight bg-white border border-blue-100 text-blue-700 hover:bg-blue-50"
-                                          >
-                                            <Edit3 className="w-3.5 h-3.5" />
-                                            {isBriefPanelOpen ? "Ẩn đầu vào" : "Chỉnh sửa đầu vào"}
-                                          </button>
-                                          <button
-                                            onClick={handleCreateNewArticle}
-                                            className="text-[10px] font-semibold px-3 py-1.5 rounded-md transition-all flex items-center gap-2 tracking-tight bg-white border border-emerald-100 text-emerald-700 hover:bg-emerald-50"
-                                          >
-                                            <Plus className="w-3.5 h-3.5" />
-                                            Tạo bài mới
                                           </button>
                                           <button
                                             onClick={handleSaveDraft}
@@ -2668,12 +2752,18 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
         statusMessage={copilotStatusMessage}
         inputValue={copilotInput}
         draftFlow={copilotDraftFlowState}
+        sourceFlow={copilotSourceFlowState}
         manualEdit={manualEditState}
         isBusy={isCopilotBusy}
         autoOpenOnSelect={autoOpenCopilotOnSelect}
         onToggleAutoOpenOnSelect={setAutoOpenCopilotOnSelect}
         onDraftFlowChange={updateCopilotDraftFlow}
         onSubmitDraftFlow={() => void submitCopilotDraftFlow()}
+        onCancelDraftFlow={() => { setIsCopilotDraftFlowOpen(false); setCopilotDraftFlowError(null); setCopilotStatusMessage("Đã hủy tạo bản thảo. Canvas không thay đổi."); }}
+        onOpenSourceWorkspace={openSourceWorkspaceFromCopilot}
+        onCancelSourceFlow={() => { setIsCopilotSourceFlowOpen(false); setCopilotStatusMessage("Đã đóng luồng thêm nguồn. Canvas không thay đổi."); }}
+        onOpenHistory={() => { switchWorkspaceMode("history"); setCopilotStatusMessage("Đã mở lịch sử văn bản. Bản thảo hiện tại không thay đổi."); }}
+        onChooseTemplate={openCopilotDraftFlow}
         onStartManualEdit={startManualEdit}
         onManualEditChange={(value) => setManualEditState((current) => current ? { ...current, value, error: null } : current)}
         onApplyManualEdit={applyManualEdit}
