@@ -15,7 +15,10 @@ const TEMPLATE_KEYWORD_RULES: TemplateKeywordRule[] = [
   { templateId: "news_article_basic", keywords: ["tin tức", "tin tuc", "sự kiện", "su kien", "đưa tin", "dua tin"], reason: "Có tín hiệu tin tức hoặc sự kiện.", weight: 44 },
   { templateId: "activity_report_article", keywords: ["hoạt động", "hoat dong", "phản ánh hoạt động", "tong thuat", "tổng thuật"], reason: "Có tín hiệu phản ánh/tổng thuật hoạt động.", weight: 40 },
   { templateId: "website_feature_article", keywords: ["chuyên đề", "chuyen de", "phân tích", "phan tich", "bài dài", "bai dai"], reason: "Phù hợp bài chuyên đề có luận điểm.", weight: 34 },
-  { templateId: "official_report_basic", keywords: ["báo cáo", "bao cao", "hành chính", "hanh chinh", "tổng kết", "tong ket", "sơ kết", "so ket"], reason: "Có tín hiệu báo cáo/hành chính/tổng kết.", weight: 48 },
+  { templateId: "internal_newsletter", keywords: ["bản tin", "ban tin", "thông báo nội bộ", "thong bao noi bo", "cập nhật", "cap nhat"], reason: "Phù hợp bản tin ngắn/thông báo nội bộ.", weight: 44 },
+  { templateId: "formal_press_article", keywords: ["trang trọng", "trang trong", "thông cáo", "thong cao", "chính thức", "chinh thuc", "công bố", "cong bo"], reason: "Có tín hiệu bài trang trọng/thông cáo chính thức.", weight: 44 },
+  { templateId: "kpi_data_report", keywords: ["số liệu", "so lieu", "kpi", "chỉ tiêu", "chi tieu", "doanh thu", "sản lượng", "san luong"], reason: "Có tín hiệu báo cáo số liệu/KPI hoặc chỉ tiêu.", weight: 54 },
+  { templateId: "official_report_basic", keywords: ["báo cáo", "bao cao", "hành chính", "hanh chinh", "tổng kết", "tong ket", "sơ kết", "so ket", "nhiệm vụ", "nhiem vu"], reason: "Có tín hiệu báo cáo/hành chính/tổng kết.", weight: 48 },
   { templateId: "official_dispatch_basic", keywords: ["công văn", "cong van", "đề nghị", "de nghi", "kính gửi", "kinh gui"], reason: "Có tín hiệu công văn hoặc nội dung đề nghị.", weight: 48 },
   { templateId: "work_plan", keywords: ["kế hoạch", "ke hoach", "tiến độ", "tien do", "phân công", "phan cong"], reason: "Có tín hiệu kế hoạch và phân công.", weight: 46 },
   { templateId: "meeting_minutes", keywords: ["biên bản", "bien ban", "cuộc họp", "cuoc hop", "nội dung họp", "noi dung hop"], reason: "Có tín hiệu biên bản/cuộc họp.", weight: 46 },
@@ -32,7 +35,10 @@ const TEMPLATE_KEYWORD_RULES: TemplateKeywordRule[] = [
 const DOCUMENT_KIND_TEMPLATE_HINTS: Record<string, string[]> = {
   [normalizeTemplateText("website_article")]: ["website_article_basic"],
   [normalizeTemplateText("news")]: ["news_article_basic"],
+  [normalizeTemplateText("newsletter")]: ["internal_newsletter"],
+  [normalizeTemplateText("press_release")]: ["formal_press_article"],
   [normalizeTemplateText("administrative_report")]: ["official_report_basic"],
+  [normalizeTemplateText("kpi_data_report")]: ["kpi_data_report"],
   [normalizeTemplateText("official_letter")]: ["official_dispatch_basic"],
   [normalizeTemplateText("plan")]: ["work_plan"],
   [normalizeTemplateText("meeting_minutes")]: ["meeting_minutes"],
@@ -99,5 +105,6 @@ export const matchEditorialTemplates = (input: EditorialTemplateMatchInput): Edi
       ...scoreTemplate(template, input, searchText),
       missingInputs: resolveMissingInputs(template.requiredInputs, input.providedInputs),
     }))
-    .sort((left, right) => right.score - left.score || left.templateId.localeCompare(right.templateId));
+    .sort((left, right) => right.score - left.score || left.templateId.localeCompare(right.templateId))
+    .slice(0, 3);
 };
