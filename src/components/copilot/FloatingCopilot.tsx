@@ -55,6 +55,13 @@ export interface CopilotProposal {
   executionResult?: EditorialExecutionResult;
 }
 
+export interface CopilotTemplateRecommendation {
+  id: string;
+  name: string;
+  description: string;
+  score: number;
+}
+
 export interface CopilotDraftFlowState {
   kind: string;
   kindOptions: Array<{ value: string; label: string }>;
@@ -62,6 +69,8 @@ export interface CopilotDraftFlowState {
   extraNotes: string;
   sourceSummary: string;
   error?: string | null;
+  templates?: CopilotTemplateRecommendation[];
+  selectedTemplateId?: string | null;
 }
 
 export interface CopilotSourceFlowState {
@@ -98,6 +107,7 @@ interface FloatingCopilotProps {
   manualEdit?: CopilotManualEditState | null;
   onDraftFlowChange?: (patch: Partial<CopilotDraftFlowState>) => void;
   onSubmitDraftFlow?: () => void;
+  onGenerateTemplateSkeleton?: () => void;
   onCancelDraftFlow?: () => void;
   onOpenSourceWorkspace?: (tab?: "library" | "text" | "link" | "upload") => void;
   onCancelSourceFlow?: () => void;
@@ -173,6 +183,7 @@ export function FloatingCopilot({
   manualEdit,
   onDraftFlowChange,
   onSubmitDraftFlow,
+  onGenerateTemplateSkeleton,
   onCancelDraftFlow,
   onOpenSourceWorkspace,
   onCancelSourceFlow,
@@ -376,25 +387,76 @@ export function FloatingCopilot({
                   className="mt-1 w-full resize-none rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 outline-none focus:border-[#002D56] focus:bg-white"
                 />
               </label>
+
+              {draftFlow.templates && draftFlow.templates.length > 0 && (
+                <div className="space-y-2 mt-4">
+                  <p className="text-xs font-bold text-slate-600">Gợi ý mẫu phù hợp</p>
+                  <div className="grid gap-2">
+                    {draftFlow.templates.slice(0, 3).map((template) => (
+                      <label
+                        key={template.id}
+                        className={cn(
+                          "relative flex cursor-pointer rounded-xl border p-3 shadow-sm hover:border-blue-400 focus:outline-none",
+                          draftFlow.selectedTemplateId === template.id ? "border-[#002D56] bg-blue-50 ring-1 ring-[#002D56]" : "border-slate-200 bg-white"
+                        )}
+                      >
+                        <input
+                          type="radio"
+                          name="templateSelection"
+                          value={template.id}
+                          checked={draftFlow.selectedTemplateId === template.id}
+                          onChange={() => onDraftFlowChange?.({ selectedTemplateId: template.id })}
+                          className="sr-only"
+                        />
+                        <div className="flex w-full items-start gap-3">
+                          <div className={cn(
+                            "flex h-4 w-4 shrink-0 items-center justify-center rounded-full border mt-0.5",
+                            draftFlow.selectedTemplateId === template.id ? "border-[#002D56] bg-[#002D56]" : "border-slate-300"
+                          )}>
+                            {draftFlow.selectedTemplateId === template.id && <div className="h-1.5 w-1.5 rounded-full bg-white" />}
+                          </div>
+                          <div className="min-w-0">
+                            <span className="block text-[13px] font-black text-slate-900">{template.name}</span>
+                            <span className="block text-[11px] leading-relaxed text-slate-600 mt-0.5">
+                              {template.description}
+                            </span>
+                          </div>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <p className="rounded-xl bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-600">{draftFlow.sourceSummary}</p>
               {(draftFlow.error || isDraftBriefMissing) && (
                 <p className={cn("text-xs font-bold", draftFlow.error ? "text-red-600" : "text-amber-600")}>
                   {draftFlow.error || "Vui lòng nhập yêu cầu hoặc bối cảnh để tạo bản thảo."}
                 </p>
               )}
-              <div className="flex flex-wrap gap-2">
+              <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
                 <button
                   type="button"
                   onClick={onSubmitDraftFlow}
                   disabled={isBusy || isDraftBriefMissing}
-                  className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-[#002D56] px-4 py-2.5 text-sm font-black text-white hover:bg-slate-900 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="inline-flex min-h-[44px] flex-1 items-center justify-center gap-2 rounded-xl bg-[#002D56] px-4 py-2.5 text-sm font-black text-white hover:bg-slate-900 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />} Tạo bản thảo
+                  {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />} AI viết bản thảo
                 </button>
+                {draftFlow.selectedTemplateId && onGenerateTemplateSkeleton && (
+                  <button
+                    type="button"
+                    onClick={onGenerateTemplateSkeleton}
+                    disabled={isBusy}
+                    className="inline-flex min-h-[44px] flex-1 items-center justify-center gap-2 rounded-xl border-2 border-[#002D56] bg-white px-4 py-2.5 text-sm font-black text-[#002D56] hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    Dùng dàn ý mẫu này
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={onCancelDraftFlow}
-                  className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-slate-700 hover:bg-slate-50"
+                  className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-slate-700 hover:bg-slate-50"
                 >
                   <RotateCcw className="h-4 w-4" /> Hủy
                 </button>

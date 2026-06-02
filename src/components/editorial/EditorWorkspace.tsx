@@ -32,8 +32,14 @@ import { validateArticleDocument } from '../../lib/publishing/validateArticleDoc
 import {
   countPreflightIssuesBySeverity,
   hasBlockingPreflightIssues,
+  createPreflightIssue,
+  dedupePreflightIssues,
 } from '../../lib/publishing/preflightIssue';
 import { getArticleLayout, getDefaultArticleLayout } from '../../lib/publishing/layoutRegistry';
+import { matchEditorialTemplates } from '../../lib/editorialTemplateMatcher';
+import { getEditorialTemplateById } from '../../lib/editorialTemplateRegistry';
+import { buildEditorialTemplateDraft } from '../../lib/editorialTemplateBuilder';
+import { runDocumentPreflight } from '../../lib/documentStandards/documentPreflightRunner';
 import { buildArticleHtml, buildArticleHtmlFilename } from '../../lib/publishing/htmlExport';
 import { normalizeArticleDocumentForExport } from '../../lib/publishing/articleExportAdapter';
 import { normalizeEditorialBriefContent, normalizeEditorialBriefInput } from '../../lib/editorialBrief';
@@ -322,6 +328,20 @@ function downloadHtmlFile(html: string, filename: string): void {
   URL.revokeObjectURL(url);
 }
 
+function resolveDocumentStandardProfileId(kindOrTemplateId?: string): "website_article" | "news_article" | "company_intro_article" | "administrative_report" | "official_dispatch" | "meeting_minutes" | "work_plan" | "notice_basic" | "summary_sheet" {
+  const norm = (kindOrTemplateId || "").toLowerCase();
+  if (norm.includes("website") || norm.includes("default")) return "website_article";
+  if (norm.includes("news")) return "news_article";
+  if (norm.includes("company") || norm.includes("intro")) return "company_intro_article";
+  if (norm.includes("report")) return "administrative_report";
+  if (norm.includes("dispatch")) return "official_dispatch";
+  if (norm.includes("meeting") || norm.includes("minute")) return "meeting_minutes";
+  if (norm.includes("plan")) return "work_plan";
+  if (norm.includes("notice")) return "notice_basic";
+  if (norm.includes("summary")) return "summary_sheet";
+  return "website_article";
+}
+
 export const EditorWorkspace = (props: any) => {
   const {
     selectedEditorialToolId, handleToolChange,
@@ -354,6 +374,7 @@ export const EditorWorkspace = (props: any) => {
   const [isCopilotSourceFlowOpen, setIsCopilotSourceFlowOpen] = React.useState(false);
   const [copilotDraftExtraNotes, setCopilotDraftExtraNotes] = React.useState("");
   const [copilotDraftFlowError, setCopilotDraftFlowError] = React.useState<string | null>(null);
+  const [copilotDraftSelectedTemplateId, setCopilotDraftSelectedTemplateId] = React.useState<string | null>(null);
   const [manualEditState, setManualEditState] = React.useState<(CopilotManualEditState & { contextId: string; blockId: string; originalText: string; contextType: CopilotContextItem["type"] }) | null>(null);
   const [canvasBlockEditState, setCanvasBlockEditState] = React.useState<CanvasBlockEditState | null>(null);
   const [canvasBlockOverrides, setCanvasBlockOverrides] = React.useState<Record<string, CanvasBlockOverride>>({});
@@ -486,6 +507,7 @@ export const EditorWorkspace = (props: any) => {
     setIsCopilotSourceFlowOpen(false);
     setCopilotDraftExtraNotes("");
     setCopilotDraftFlowError(null);
+    setCopilotDraftSelectedTemplateId(null);
     setManualEditState(null);
     setCanvasBlockEditState(null);
     setCanvasBlockOverrides({});
@@ -575,7 +597,55 @@ export const EditorWorkspace = (props: any) => {
   const emptyCanvasBlockIds = React.useMemo(() => Object.values(canvasBlockOverrides).filter((override) => override.empty).map((override) => override.block.id), [canvasBlockOverrides]);
   const articleExportModel = React.useMemo(() => normalizeArticleDocumentForExport(articleDocument), [articleDocument]);
   const articleValidation = React.useMemo(() => validateArticleDocument(articleDocument), [articleDocument]);
-  const preflightIssues = React.useMemo(() => articleValidation.preflightIssues, [articleValidation]);
+  
+  const preflightIssues = React.useMemo(() => {
+    let issues = [...articleValidation.preflightIssues];
+    
+    // Convert articleDocument blocks into structured text for Doc Standards preflight
+    const docTextParts: string[] = [];
+    if (articleDocument.metadata?.title) docTextParts.push(articleDocument.metadata.title);
+    if (articleDocument.metadata?.sapo) docTextParts.push(articleDocument.metadata.sapo);
+    
+    articleDocument.blocks?.forEach(b => {
+      // Very basic text extraction
+      if (b.type === "paragraph" && typeof b.slots.text === "string") {
+        docTextParts.push(b.slots.text);
+      } else if (b.type === "section-heading" && typeof b.slots.text === "string") {
+        docTextParts.push(b.slots.text);
+      } else if (b.type === "bullet-list" && Array.isArray(b.slots.items)) {
+        b.slots.items.forEach((item: any) => {
+          if (typeof item === "string") docTextParts.push(item);
+        });
+      }
+    });
+
+    const docText = docTextParts.join("\n\n").trim();
+    if (docText) {
+      try {
+        const docStandardsIssues = runDocumentPreflight({
+          text: docText,
+          profileId: resolveDocumentStandardProfileId(articleDocument.templateId),
+          title: articleDocument.metadata?.title,
+          sapo: articleDocument.metadata?.sapo,
+        });
+
+        const translatedIssues = docStandardsIssues.map(dsi => createPreflightIssue({
+          severity: dsi.severity,
+          code: `ds-${dsi.ruleId}`,
+          message: dsi.message,
+          suggestion: dsi.suggestion,
+          source: "editorial-check",
+        }));
+        
+        issues = [...issues, ...translatedIssues];
+      } catch (err) {
+        console.warn("Preflight runner failed:", err);
+      }
+    }
+    
+    return dedupePreflightIssues(issues);
+  }, [articleValidation, articleDocument]);
+
   const preflightCounts = React.useMemo(() => countPreflightIssuesBySeverity(preflightIssues), [preflightIssues]);
   const hasPreflightBlockers = React.useMemo(() => hasBlockingPreflightIssues(preflightIssues), [preflightIssues]);
 
@@ -1082,6 +1152,26 @@ export const EditorWorkspace = (props: any) => {
 
   const copilotDraftFlowState = React.useMemo<CopilotDraftFlowState | null>(() => {
     if (!isCopilotDraftFlowOpen) return null;
+
+    let templates: CopilotDraftFlowState["templates"] = undefined;
+    if (input.trim() || copilotDraftExtraNotes.trim() || selectedSourceDocIds.length > 0) {
+      const matchResult = matchEditorialTemplates({
+        documentKind: editorialKind,
+        userBrief: input,
+        sourceSummary: copilotDraftExtraNotes,
+      });
+
+      templates = matchResult.slice(0, 3).map((match) => {
+        const template = getEditorialTemplateById(match.templateId);
+        return {
+          id: match.templateId,
+          name: template?.name || match.templateId,
+          description: template?.description || "",
+          score: match.score,
+        };
+      });
+    }
+
     return {
       kind: editorialKind,
       kindOptions: copilotKindOptions,
@@ -1091,8 +1181,10 @@ export const EditorWorkspace = (props: any) => {
         ? `Đang dùng ${selectedSourceDocIds.length} nguồn tư liệu đã chọn.`
         : "Chưa chọn nguồn tư liệu. Bạn vẫn có thể tạo bản thảo từ yêu cầu hiện tại.",
       error: copilotDraftFlowError,
+      templates,
+      selectedTemplateId: copilotDraftSelectedTemplateId,
     };
-  }, [copilotDraftExtraNotes, copilotDraftFlowError, copilotKindOptions, editorialKind, input, isCopilotDraftFlowOpen, selectedSourceDocIds.length]);
+  }, [copilotDraftExtraNotes, copilotDraftFlowError, copilotDraftSelectedTemplateId, copilotKindOptions, editorialKind, input, isCopilotDraftFlowOpen, selectedSourceDocIds.length]);
 
 
   const copilotSourceFlowState = React.useMemo<CopilotSourceFlowState | null>(() => {
@@ -1119,8 +1211,71 @@ export const EditorWorkspace = (props: any) => {
     if (typeof patch.kind === "string") setEditorialKind(patch.kind as any);
     if (typeof patch.brief === "string") setInput(patch.brief);
     if (typeof patch.extraNotes === "string") setCopilotDraftExtraNotes(patch.extraNotes);
+    if (patch.selectedTemplateId !== undefined) setCopilotDraftSelectedTemplateId(patch.selectedTemplateId);
     setCopilotDraftFlowError(null);
   }, [setEditorialKind, setInput]);
+
+  const handleGenerateTemplateSkeleton = React.useCallback(async () => {
+    if (!copilotDraftSelectedTemplateId) {
+      setCopilotDraftFlowError("Vui lòng chọn một mẫu từ danh sách gợi ý.");
+      return;
+    }
+
+    setIsCopilotBusy(true);
+    setCopilotDraftFlowError(null);
+    try {
+      const draft = buildEditorialTemplateDraft({
+        templateId: copilotDraftSelectedTemplateId,
+        userBrief: input,
+        sourceSummary: copilotDraftExtraNotes,
+        providedInputs: {},
+      });
+
+      // Output string builder
+      const lines: string[] = [];
+      for (const block of draft.blocks) {
+        const bType = block.type as string;
+        if (bType === "title") {
+          lines.push(`# ${block.content || block.placeholder || "Tiêu đề chính"}`);
+        } else if (bType === "lead" || bType === "sapo") {
+          lines.push(`**${block.content || block.placeholder || "Sapo/Lead in..."}**`);
+        } else if (bType === "section" || bType === "section_heading" || bType === "heading") {
+          lines.push(`## ${block.content || block.label || "Tiêu đề mục hiện tại"}`);
+        } else if (bType === "table") {
+          lines.push((block.content || block.placeholder || "| | |\n|---|---|\n| | |"));
+        } else if (bType === "figure" || bType === "figure_placeholder") {
+          lines.push(`![${block.label}]()`);
+          if (block.placeholder) lines.push(block.placeholder);
+        } else {
+          lines.push(block.content || block.placeholder || block.label);
+        }
+        lines.push("");
+      }
+
+      const generatedDraft = lines.join("\n").trim();
+      setOutput(generatedDraft);
+      
+      const targetLayoutId = getDefaultArticleLayout().layoutId;
+      const targetLayoutVersion = getDefaultArticleLayout().layoutVersion;
+      
+      setSelectedLayoutId(targetLayoutId);
+      setSelectedLayoutVersion(targetLayoutVersion);
+      setCurrentStep("draft");
+      setIsDraftDirty(true);
+      setLastSavedAt(null);
+      
+      setIsCopilotDraftFlowOpen(false);
+      setIsCopilotSourceFlowOpen(false);
+      setIsBriefPanelOpen(false);
+      setCopilotDraftExtraNotes("");
+      setWorkspaceMode("edit");
+      setCopilotStatusMessage("Đã tải dàn ý mẫu lên Canvas. Bạn có thể sửa trực tiếp hoặc yêu cầu Copilot viết tiếp nội dung.");
+    } catch (err: any) {
+      setCopilotDraftFlowError(err.message || "Không thể tạo dàn ý từ mẫu đã chọn.");
+    } finally {
+      setIsCopilotBusy(false);
+    }
+  }, [copilotDraftSelectedTemplateId, input, copilotDraftExtraNotes, setOutput]);
 
   const submitCopilotDraftFlow = React.useCallback(async () => {
     const brief = normalizeEditorialBriefInput(input);
@@ -3062,6 +3217,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
         isBusy={isCopilotBusy}
         onDraftFlowChange={updateCopilotDraftFlow}
         onSubmitDraftFlow={() => void submitCopilotDraftFlow()}
+        onGenerateTemplateSkeleton={() => void handleGenerateTemplateSkeleton()}
         onCancelDraftFlow={() => { setIsCopilotDraftFlowOpen(false); setCopilotDraftFlowError(null); setCopilotStatusMessage("Đã hủy tạo bản thảo. Canvas không thay đổi."); }}
         onOpenSourceWorkspace={openSourceWorkspaceFromCopilot}
         onCancelSourceFlow={() => { setIsCopilotSourceFlowOpen(false); setCopilotStatusMessage("Đã đóng luồng thêm nguồn. Canvas không thay đổi."); }}
