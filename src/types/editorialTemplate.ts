@@ -19,7 +19,10 @@ export type EditorialTemplateCategory =
   | "work_plan"
   | "meeting_minutes"
   | "notice"
-  | "summary_sheet";
+  | "summary_sheet"
+  | "data_report"
+  | "press_release"
+  | "newsletter";
 
 export type EditorialLayoutBlockType =
   | "title"
@@ -85,6 +88,11 @@ export interface EditorialTemplateFormatProfile {
   notes?: string[];
 }
 
+export interface EditorialTemplateMiniPreviewBlock {
+  label: string;
+  hint?: string;
+}
+
 export interface EditorialTemplate {
   id: string;
   name: string;
@@ -95,6 +103,7 @@ export interface EditorialTemplate {
   requiredInputs: EditorialTemplateInputSpec[];
   optionalInputs: EditorialTemplateInputSpec[];
   layoutBlocks: EditorialLayoutBlock[];
+  miniPreviewBlocks?: EditorialTemplateMiniPreviewBlock[];
   preflightHints: string[];
   formatProfile?: EditorialTemplateFormatProfile;
   tags: string[];

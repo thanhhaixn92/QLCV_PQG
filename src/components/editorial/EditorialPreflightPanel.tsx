@@ -16,14 +16,16 @@ interface Props {
   markdownContent?: string;
   articleDocument?: ArticleDocument;
   issues?: PreflightIssue[];
+  hasDraft?: boolean;
 }
 
 const DRAFT_MARKER_PATTERN = /\[(?:\s*Bổ sung\s*:|\s*Cần\s+(?:bổ sung|bổ sung\/kiểm chứng|kiểm chứng)\s*:?)[^\]]*\]/i;
+const COMPACT_WARNING_LIMIT = 2;
 
 const SEVERITY_LABELS: Record<PreflightSeverity, string> = {
-  blocker: 'Lỗi bắt buộc',
+  blocker: 'Lỗi chặn',
   warning: 'Cần rà soát',
-  info: 'Thông tin',
+  info: 'Gợi ý',
 };
 
 const SEVERITY_STYLES: Record<PreflightSeverity, string> = {
@@ -36,6 +38,37 @@ function severityIcon(severity: PreflightSeverity) {
   if (severity === 'blocker') return <AlertCircle className="h-4 w-4 text-red-600" />;
   if (severity === 'warning') return <AlertTriangle className="h-4 w-4 text-amber-600" />;
   return <Info className="h-4 w-4 text-sky-600" />;
+}
+
+function normalizeIssuePart(value: string | undefined): string {
+  return (value || '').trim().replace(/\s+/gu, ' ').toLowerCase();
+}
+
+function issueDedupeKey(issue: PreflightIssue): string {
+  const targetHint = issue.path || issue.blockId || issue.field || issue.blockType;
+  return [
+    issue.severity,
+    issue.source,
+    issue.code,
+    targetHint,
+    normalizeIssuePart(issue.message),
+  ]
+    .map((part) => normalizeIssuePart(part))
+    .join('|');
+}
+
+function dedupePanelIssues(issues: PreflightIssue[]): PreflightIssue[] {
+  const seen = new Set<string>();
+  const deduped: PreflightIssue[] = [];
+
+  dedupePreflightIssues(issues).forEach((issue) => {
+    const key = issueDedupeKey(issue);
+    if (seen.has(key)) return;
+    seen.add(key);
+    deduped.push(issue);
+  });
+
+  return deduped;
 }
 
 function legacyIssuesFromMarkdown(kind: EditorialDocumentKind | undefined, markdownContent: string): PreflightIssue[] {
@@ -102,15 +135,29 @@ function legacyIssuesFromMarkdown(kind: EditorialDocumentKind | undefined, markd
   return issues;
 }
 
-export function EditorialPreflightPanel({ kind, markdownContent = '', articleDocument, issues }: Props) {
+function renderIssue(issue: PreflightIssue) {
+  return (
+    <li key={issue.id} className="rounded-xl bg-white/70 px-3 py-2 text-xs leading-relaxed text-slate-700">
+      <p className="font-semibold text-slate-900">{issue.message}</p>
+      {issue.suggestion && <p className="mt-1 text-slate-600">Gợi ý: {issue.suggestion}</p>}
+    </li>
+  );
+}
+
+export function EditorialPreflightPanel({ kind, markdownContent = '', articleDocument, issues, hasDraft }: Props) {
+  const hasRealDraft = hasDraft ?? Boolean(markdownContent.trim());
+  const [isExpanded, setIsExpanded] = React.useState(false);
+
   const preflightIssues = React.useMemo(() => {
-    if (issues) return dedupePreflightIssues(issues);
-    if (articleDocument) return validateArticleDocument(articleDocument).preflightIssues;
-    return dedupePreflightIssues(legacyIssuesFromMarkdown(kind, markdownContent));
-  }, [articleDocument, issues, kind, markdownContent]);
+    if (!hasRealDraft) return [];
+    if (issues) return dedupePanelIssues(issues);
+    if (articleDocument) return dedupePanelIssues(validateArticleDocument(articleDocument).preflightIssues);
+    return dedupePanelIssues(legacyIssuesFromMarkdown(kind, markdownContent));
+  }, [articleDocument, hasRealDraft, issues, kind, markdownContent]);
 
   const counts = React.useMemo(() => countPreflightIssuesBySeverity(preflightIssues), [preflightIssues]);
-  const status = counts.blocker > 0 ? 'Chưa thể xuất bản' : counts.warning > 0 ? 'Cần rà soát' : 'Sẵn sàng xuất bản';
+  const status = counts.blocker > 0 ? 'Chưa thể xuất bản' : counts.warning > 0 || counts.info > 0 ? 'Cần rà soát' : 'Sẵn sàng xuất bản';
+  const summary = `${status} · ${counts.blocker} lỗi chặn · ${counts.warning} cảnh báo · ${counts.info} gợi ý`;
   const statusClass = counts.blocker > 0
     ? 'border-red-200 bg-red-50/70 text-red-800'
     : counts.warning > 0
@@ -121,70 +168,85 @@ export function EditorialPreflightPanel({ kind, markdownContent = '', articleDoc
     warning: preflightIssues.filter((issue) => issue.severity === 'warning'),
     info: preflightIssues.filter((issue) => issue.severity === 'info'),
   } satisfies Record<PreflightSeverity, PreflightIssue[]>;
+  const visibleWarnings = isExpanded ? groupedIssues.warning : groupedIssues.warning.slice(0, COMPACT_WARNING_LIMIT);
+  const hiddenWarningCount = Math.max(0, groupedIssues.warning.length - visibleWarnings.length);
+  const hasDetails = preflightIssues.length > 0;
+  const detailsId = 'editorial-preflight-details';
+
+  if (!hasRealDraft) {
+    return (
+      <aside className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-500 shadow-sm" aria-label="Bảng kiểm xuất bản">
+        Chưa có bản thảo để rà soát.
+      </aside>
+    );
+  }
 
   return (
-    <aside className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5" aria-label="Bảng kiểm xuất bản">
-      <div className={cn('mb-4 rounded-2xl border px-3 py-3', statusClass)}>
-        <div className="flex items-start gap-3">
-          <div className="mt-0.5 shrink-0">
-            {counts.blocker > 0 ? <AlertCircle className="h-5 w-5" /> : counts.warning > 0 ? <AlertTriangle className="h-5 w-5" /> : <CheckCircle2 className="h-5 w-5" />}
-          </div>
+    <aside className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm sm:p-4" aria-label="Bảng kiểm xuất bản">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className={cn('flex min-w-0 items-center gap-2 rounded-xl border px-3 py-2', statusClass)}>
+          <span className="shrink-0">
+            {counts.blocker > 0 ? <AlertCircle className="h-4 w-4" /> : counts.warning > 0 ? <AlertTriangle className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4" />}
+          </span>
           <div className="min-w-0">
-            <p className="text-[11px] font-bold uppercase tracking-[0.18em] opacity-75">Preflight cockpit</p>
-            <h3 className="text-base font-semibold leading-tight">{status}</h3>
-            <p className="mt-1 text-xs leading-relaxed opacity-85">
-              {counts.blocker > 0
-                ? 'Cần xử lý lỗi bắt buộc trước khi xuất Word/PDF.'
-                : counts.warning > 0
-                  ? 'Có thể xuất bản nháp, nhưng cần rà soát các cảnh báo.'
-                  : 'Không phát hiện blocker hoặc warning nghiêm trọng.'}
-            </p>
+            <p className="truncate text-sm font-black">{summary}</p>
+            {counts.blocker > 0 && <p className="mt-0.5 text-[11px] font-semibold opacity-85">Cần xử lý lỗi chặn trước khi xuất Word/PDF.</p>}
           </div>
         </div>
+        {hasDetails && (
+          <button
+            type="button"
+            onClick={() => setIsExpanded((value) => !value)}
+            aria-expanded={isExpanded}
+            aria-controls={detailsId}
+            className="inline-flex h-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700 hover:bg-slate-50"
+          >
+            {isExpanded ? 'Thu gọn' : 'Xem chi tiết'}
+          </button>
+        )}
       </div>
 
-      <div className="mb-4 grid grid-cols-3 gap-2 text-center">
-        <div className="rounded-2xl border border-red-100 bg-red-50 px-2 py-2">
-          <p className="text-lg font-bold text-red-700">{counts.blocker}</p>
-          <p className="text-[10px] font-semibold uppercase tracking-wide text-red-700/70">Blocker</p>
-        </div>
-        <div className="rounded-2xl border border-amber-100 bg-amber-50 px-2 py-2">
-          <p className="text-lg font-bold text-amber-700">{counts.warning}</p>
-          <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-700/70">Warning</p>
-        </div>
-        <div className="rounded-2xl border border-sky-100 bg-sky-50 px-2 py-2">
-          <p className="text-lg font-bold text-sky-700">{counts.info}</p>
-          <p className="text-[10px] font-semibold uppercase tracking-wide text-sky-700/70">Info</p>
-        </div>
-      </div>
+      {hasDetails ? (
+        <div id={detailsId} className="mt-3 space-y-2">
+          {groupedIssues.blocker.length > 0 && (
+            <section className={cn('rounded-xl border px-3 py-2', SEVERITY_STYLES.blocker)}>
+              <div className="mb-2 flex items-center gap-2">
+                {severityIcon('blocker')}
+                <h4 className="text-xs font-bold uppercase tracking-[0.14em]">{SEVERITY_LABELS.blocker} ({groupedIssues.blocker.length})</h4>
+              </div>
+              <ul className="space-y-2">{groupedIssues.blocker.map(renderIssue)}</ul>
+            </section>
+          )}
 
-      {preflightIssues.length === 0 ? (
-        <div className="flex items-start gap-2 rounded-2xl border border-emerald-100 bg-emerald-50 px-3 py-3 text-sm text-emerald-800">
-          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
-          <p className="leading-relaxed">Bản thảo đã sẵn sàng để xuất Word/PDF theo kiểm tra hiện tại.</p>
+          {visibleWarnings.length > 0 && (
+            <section className={cn('rounded-xl border px-3 py-2', SEVERITY_STYLES.warning)}>
+              <div className="mb-2 flex items-center gap-2">
+                {severityIcon('warning')}
+                <h4 className="text-xs font-bold uppercase tracking-[0.14em]">{SEVERITY_LABELS.warning} ({groupedIssues.warning.length})</h4>
+              </div>
+              <ul className="space-y-2">{visibleWarnings.map(renderIssue)}</ul>
+              {!isExpanded && hiddenWarningCount > 0 && <p className="mt-2 text-xs font-semibold text-amber-800/80">Còn {hiddenWarningCount} cảnh báo khác. Bấm Xem chi tiết để mở đầy đủ.</p>}
+            </section>
+          )}
+
+          {!isExpanded && groupedIssues.info.length > 0 && (
+            <p className="rounded-xl border border-sky-100 bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-800">Có {groupedIssues.info.length} gợi ý bổ sung.</p>
+          )}
+
+          {isExpanded && groupedIssues.info.length > 0 && (
+            <section className={cn('rounded-xl border px-3 py-2', SEVERITY_STYLES.info)}>
+              <div className="mb-2 flex items-center gap-2">
+                {severityIcon('info')}
+                <h4 className="text-xs font-bold uppercase tracking-[0.14em]">{SEVERITY_LABELS.info} ({groupedIssues.info.length})</h4>
+              </div>
+              <ul className="space-y-2">{groupedIssues.info.map(renderIssue)}</ul>
+            </section>
+          )}
         </div>
       ) : (
-        <div className="space-y-3">
-          {(['blocker', 'warning', 'info'] as PreflightSeverity[]).map((severity) => {
-            const group = groupedIssues[severity];
-            if (group.length === 0) return null;
-            return (
-              <section key={severity} className={cn('rounded-2xl border px-3 py-3', SEVERITY_STYLES[severity])}>
-                <div className="mb-2 flex items-center gap-2">
-                  {severityIcon(severity)}
-                  <h4 className="text-xs font-bold uppercase tracking-[0.16em]">{SEVERITY_LABELS[severity]} ({group.length})</h4>
-                </div>
-                <ul className="space-y-2">
-                  {group.map((issue) => (
-                    <li key={issue.id} className="rounded-xl bg-white/65 px-3 py-2 text-xs leading-relaxed text-slate-700">
-                      <p className="font-semibold text-slate-900">{issue.message}</p>
-                      {issue.suggestion && <p className="mt-1 text-slate-600">Gợi ý: {issue.suggestion}</p>}
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            );
-          })}
+        <div className="mt-3 flex items-start gap-2 rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+          <p className="leading-relaxed">Bản thảo đã sẵn sàng để xuất Word/PDF theo kiểm tra hiện tại.</p>
         </div>
       )}
     </aside>
