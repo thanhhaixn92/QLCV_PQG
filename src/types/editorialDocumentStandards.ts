@@ -3,6 +3,7 @@ export type DocumentStandardProfileId =
   | "news_article"
   | "company_intro_article"
   | "administrative_report"
+  | "kpi_data_report"
   | "official_dispatch"
   | "meeting_minutes"
   | "work_plan"
@@ -65,6 +66,10 @@ export interface DocumentStandardProfile {
   requiresDocumentNumber?: boolean;
   requiresRecipientLine?: boolean;
   requiresSignatureBlock?: boolean;
+  requiresResultsSection?: boolean;
+  requiresAssessmentSection?: boolean;
+  requiresDataSection?: boolean;
+  requiresRecommendationSection?: boolean;
 }
 
 export interface DocumentPreflightParagraph {

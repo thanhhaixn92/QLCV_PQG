@@ -116,7 +116,7 @@ function editableBlockClass(block: ArticleBlock): string {
   return [
     blockStyleClass(block),
     "a4-canvas-block-editor",
-    "min-h-[2.5rem] rounded-md bg-white/95 px-2 py-1 outline-none ring-2 ring-amber-400 focus:ring-amber-500 whitespace-pre-wrap",
+    "min-h-[2.5rem] rounded-lg bg-white/95 px-2 py-1 outline-none ring-2 ring-[#002D56]/35 focus:ring-[#002D56]/55 whitespace-pre-wrap transition-shadow",
   ].join(" ");
 }
 
@@ -130,24 +130,45 @@ function renderEditableBlock(
   const Tag = block.type === "title" ? "h1" : block.type === "section-heading" ? "h2" : "div";
 
   return (
-    <Tag
-      className={editableBlockClass(block)}
-      contentEditable
-      suppressContentEditableWarning
-      data-canvas-block-id={block.id}
-      data-canvas-block-type={block.type}
-      data-canvas-editing="true"
-      onInput={(event) => options.onEditingValueChange?.((event.currentTarget.textContent || "").replace(/\u200B/gu, ""))}
-    >
-      {value || <span data-export-exclude="true" className="text-slate-400">Nhập nội dung…</span>}
-    </Tag>
+    <div className="relative" data-canvas-editing-wrapper="true">
+      <Tag
+        className={editableBlockClass(block)}
+        contentEditable
+        suppressContentEditableWarning
+        data-canvas-block-id={block.id}
+        data-canvas-block-type={block.type}
+        data-canvas-editing="true"
+        onInput={(event) => options.onEditingValueChange?.((event.currentTarget.textContent || "").replace(/\u200B/gu, ""))}
+        onPaste={(event) => {
+          event.preventDefault();
+          const text = event.clipboardData.getData("text/plain");
+          const selection = window.getSelection();
+          if (!selection || selection.rangeCount === 0) return;
+          selection.deleteFromDocument();
+          selection.getRangeAt(0).insertNode(document.createTextNode(text));
+          selection.collapseToEnd();
+          options.onEditingValueChange?.((event.currentTarget.textContent || "").replace(/\u200B/gu, ""));
+        }}
+      >
+        {value}
+      </Tag>
+      {!value && (
+        <span
+          data-export-exclude="true"
+          className="pointer-events-none absolute left-2 top-1 select-none text-sm font-semibold text-slate-400"
+          aria-hidden="true"
+        >
+          Nhập nội dung…
+        </span>
+      )}
+    </div>
   );
 }
 
 function renderEmptyBlockPlaceholder(block: ArticleBlock): React.ReactNode {
   return (
     <div
-      className={[blockStyleClass(block), "a4-canvas-empty-block rounded-md border border-dashed border-amber-300 bg-amber-50/60 px-2 py-2 text-sm font-semibold text-slate-400"].join(" ")}
+      className={[blockStyleClass(block), "a4-canvas-empty-block rounded-lg border border-dashed border-slate-300 bg-slate-50/80 px-2 py-2 text-sm font-semibold text-slate-400"].join(" ")}
       data-canvas-block-id={block.id}
       data-canvas-block-type={block.type}
       data-export-exclude="true"
@@ -379,7 +400,7 @@ export const A4PrintPreview = ({
   document,
   className = "",
   rootId,
-  showValidationSummary = true,
+  showValidationSummary = false,
   selectableBlocks = false,
   selectedBlockIds = [],
   onBlockSelect,
@@ -405,11 +426,11 @@ export const A4PrintPreview = ({
         >
           <strong>
             {validationCounts.blocker > 0
-              ? "ArticleDocument cần xử lý blocker trước khi xuất bản."
+              ? "Bản thảo cần xử lý lỗi chặn trước khi xuất bản."
               : "Bản thảo còn cảnh báo trước khi xuất bản chính thức."}
           </strong>
           <p>
-            Blocker: {validationCounts.blocker} · Warning: {validationCounts.warning} · Info: {validationCounts.info}
+            Lỗi chặn: {validationCounts.blocker} · Cảnh báo: {validationCounts.warning} · Gợi ý: {validationCounts.info}
           </p>
         </aside>
       )}

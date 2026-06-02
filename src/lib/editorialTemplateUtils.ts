@@ -8,6 +8,8 @@ export const USER_FACING_PLACEHOLDERS = {
   title: "[Cần bổ sung tiêu đề]",
   recipient: "[Cần bổ sung nơi nhận]",
   conclusion: "[Cần bổ sung kết luận]",
+  time: "[Cần bổ sung thời gian]",
+  responsibleUnit: "[Cần bổ sung đơn vị thực hiện]",
 } as const;
 
 export const normalizeTemplateText = (value: string): string =>

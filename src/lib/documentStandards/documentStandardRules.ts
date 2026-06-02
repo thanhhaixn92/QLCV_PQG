@@ -33,6 +33,15 @@ export const DOCUMENT_STANDARD_RULE_CATEGORIES: DocumentStandardRuleCategory[] =
   "export_safety",
 ];
 
+function hasAnySectionText(context: DocumentPreflightContext, keywords: readonly string[]): boolean {
+  const haystack = [
+    context.normalizedText,
+    ...context.headings.map((heading) => heading.text),
+    ...context.paragraphs.map((paragraph) => paragraph.text),
+  ].join("\n").toLocaleLowerCase("vi-VN");
+  return keywords.some((keyword) => haystack.includes(keyword.toLocaleLowerCase("vi-VN")));
+}
+
 function issue(
   context: DocumentPreflightContext,
   ruleId: string,
@@ -179,6 +188,40 @@ export const DOCUMENT_STANDARD_RULES: DocumentStandardRule[] = [
           ]
         : [];
     },
+  },
+  {
+    id: "missing_report_sections",
+    category: "content_structure",
+    defaultSeverity: "warning",
+    description: "Detects missing report/data-report sections required by the selected profile.",
+    run: (context) => {
+      const checks = [
+        [context.profile.requiresResultsSection, ["kết quả", "ket qua", "tình hình", "tinh hinh"], "Thiếu mục kết quả/tình hình.", "Bổ sung phần tình hình hoặc kết quả đạt được.", "report-results"],
+        [context.profile.requiresAssessmentSection, ["đánh giá", "danh gia", "nhận định", "nhan dinh"], "Thiếu mục đánh giá.", "Bổ sung phần đánh giá, nhận định hoặc phân tích kết quả.", "report-assessment"],
+        [context.profile.requiresDataSection, ["số liệu", "so lieu", "kpi", "chỉ tiêu", "chi tieu", "bảng"], "Thiếu phần số liệu/chỉ tiêu.", "Bổ sung bảng hoặc danh sách số liệu/chỉ tiêu kèm nguồn.", "report-data"],
+        [context.profile.requiresRecommendationSection, ["kiến nghị", "kien nghi", "phương hướng", "phuong huong", "đề xuất", "de xuat"], "Thiếu phương hướng/kiến nghị.", "Bổ sung phần phương hướng, kiến nghị hoặc đề xuất xử lý.", "report-recommendation"],
+      ] as const;
+      return checks
+        .filter(([required, keywords]) => Boolean(required) && !hasAnySectionText(context, keywords))
+        .map(([, , message, suggestion, targetHint]) => issue(context, "missing_report_sections", "content_structure", "warning", message, suggestion, targetHint));
+    },
+  },
+  {
+    id: "user_facing_placeholder",
+    category: "content_structure",
+    defaultSeverity: "warning",
+    description: "Detects approved user-facing placeholders that still need completion.",
+    run: (context) => Array.from(context.normalizedText.matchAll(/\[Cần\s+(?:bổ sung|ghi|xác minh)[^\]]*\]/giu)).slice(0, 12).map((match) =>
+      issue(
+        context,
+        "user_facing_placeholder",
+        "content_structure",
+        "warning",
+        "Cần hoàn thiện nội dung placeholder.",
+        "Bổ sung dữ liệu thật, nguồn hoặc xác minh thông tin trước khi xuất bản chính thức.",
+        `placeholder@${match.index ?? 0}`,
+      ),
+    ),
   },
   {
     id: "raw_markdown_marker",
@@ -509,7 +552,10 @@ export const DOCUMENT_STANDARD_RULES: DocumentStandardRule[] = [
         [/\b(?:copilot|trợ lý biên tập|hỏi ai)\b/iu, "Copilot UI marker không được nằm trong nội dung in/xuất.", "Loại bỏ nhãn Copilot khỏi #printable-article trước khi xuất.", "copilot-ui-marker"],
         [/\b(?:pill|highlight|selected block|đang chọn)\b/iu, "Marker pill/highlight không được xuất hiện trong nội dung xuất.", "Đảm bảo UI chọn block nằm ngoài nội dung export hoặc được loại trừ.", "pill-highlight-marker"],
         [/\b(?:toolbar|editor toolbar|thanh công cụ|placeholder nhập nội dung)\b/iu, "Toolbar/editor placeholder không được xuất hiện trong nội dung xuất.", "Loại bỏ placeholder/toolbar khỏi vùng nội dung export.", "toolbar-editor-marker"],
+        [/\b(?:command dock|context strip|sửa trên canvas|sua tren canvas)\b/iu, "Marker UI biên tập không được nằm trong nội dung xuất.", "Loại bỏ nhãn Command Dock/Context Strip/Sửa trên Canvas khỏi nội dung trước khi xuất.", "editor-ui-marker"],
+        [/\bnhập nội dung…?\b/iu, "Placeholder UI nhập nội dung không được nằm trong nội dung xuất.", "Chỉ dùng placeholder này trong editor, không lưu vào nội dung thật.", "editor-placeholder-text"],
         [/data-export-exclude/iu, "Có marker data-export-exclude trong text content.", "Export layer nên bỏ qua element data-export-exclude; nếu marker xuất hiện dạng text thì cần loại bỏ.", "data-export-exclude-text"],
+        [/contenteditable/iu, "Có marker contenteditable trong text content.", "Không để thuộc tính DOM/editor lọt vào nội dung xuất.", "contenteditable-text"],
       ] as const;
       return checks
         .filter(([pattern]) => pattern.test(context.normalizedText))

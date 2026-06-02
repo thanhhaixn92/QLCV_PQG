@@ -7,7 +7,51 @@ import type {
 } from "../types/editorialTemplate";
 import { getEditorialTemplateById } from "./editorialTemplateRegistry";
 import { matchEditorialTemplates } from "./editorialTemplateMatcher";
-import { resolveMissingInputs } from "./editorialTemplateUtils";
+import { resolveMissingInputs, USER_FACING_PLACEHOLDERS } from "./editorialTemplateUtils";
+
+const administrativeHeaderBlocks: EditorialLayoutBlock[] = [
+  {
+    id: "organization_name",
+    type: "metadata",
+    label: "Cơ quan ban hành",
+    placeholder: USER_FACING_PLACEHOLDERS.responsibleUnit,
+    contentHint: "Ghi tên cơ quan/tổ chức ban hành văn bản.",
+    required: true,
+  },
+  {
+    id: "national_header",
+    type: "metadata",
+    label: "Quốc hiệu/tiêu ngữ",
+    placeholder: "CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM\nĐộc lập - Tự do - Hạnh phúc",
+    contentHint: "Giữ đúng thể thức nếu văn bản cần phong cách hành chính.",
+    required: true,
+  },
+  {
+    id: "document_number",
+    type: "metadata",
+    label: "Số/ký hiệu",
+    placeholder: "Số: [Cần bổ sung số/ký hiệu]",
+    contentHint: "Bổ sung số và ký hiệu văn bản khi có.",
+    required: true,
+  },
+  {
+    id: "place_date",
+    type: "metadata",
+    label: "Địa danh, ngày tháng",
+    placeholder: USER_FACING_PLACEHOLDERS.time,
+    contentHint: "Bổ sung địa danh và ngày tháng ban hành.",
+    required: true,
+  },
+];
+
+const layoutBlocksForTemplate = (template: EditorialTemplate): EditorialLayoutBlock[] => {
+  if (!template.isOfficialStyleSupported) return template.layoutBlocks;
+  const existingIds = new Set(template.layoutBlocks.map((block) => block.id));
+  return [
+    ...administrativeHeaderBlocks.filter((block) => !existingIds.has(block.id)),
+    ...template.layoutBlocks,
+  ];
+};
 
 const resolveTemplate = (input: EditorialTemplateDraftInput): EditorialTemplate => {
   if (input.templateId) {
@@ -92,7 +136,7 @@ export const buildEditorialTemplateDraft = (input: EditorialTemplateDraftInput):
   const missingInputs = resolveMissingInputs(template.requiredInputs, input.providedInputs);
 
   let contentAllocated = false;
-  const blocks = template.layoutBlocks.map((layoutBlock) => {
+  const blocks = layoutBlocksForTemplate(template).map((layoutBlock) => {
     const result = buildDraftBlock(layoutBlock, input, contentAllocated);
     contentAllocated = result.contentAllocated;
     return result.draftBlock;

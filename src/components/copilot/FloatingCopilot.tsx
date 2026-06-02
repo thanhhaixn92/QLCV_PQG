@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { cn } from "../../lib/utils";
 import type { EditorialExecutionResult } from "../../types/editorialExecution";
+import type { EditorialTemplateGroup } from "../../types/editorialTemplate";
 
 export type CopilotViewMode = "collapsed" | "expanded" | "fullscreen";
 
@@ -60,6 +61,11 @@ export interface CopilotTemplateRecommendation {
   name: string;
   description: string;
   score: number;
+  groupLabel?: string;
+  reason?: string;
+  missingInputs?: string[];
+  previewLines?: string[];
+  nonAiLabel?: string;
 }
 
 export interface CopilotDraftFlowState {
@@ -71,18 +77,13 @@ export interface CopilotDraftFlowState {
   error?: string | null;
   templates?: CopilotTemplateRecommendation[];
   selectedTemplateId?: string | null;
+  targetGroup?: EditorialTemplateGroup;
 }
 
 export interface CopilotSourceFlowState {
   sourceSummary: string;
   selectedSources: Array<{ id: string; title: string; excerpt?: string }>;
-}
-
-export interface CopilotManualEditState {
-  contextTitle: string;
-  currentText: string;
-  value: string;
-  error?: string | null;
+  totalSelectedCount?: number;
 }
 
 export interface CopilotCommand {
@@ -104,7 +105,6 @@ interface FloatingCopilotProps {
   isBusy?: boolean;
   draftFlow?: CopilotDraftFlowState | null;
   sourceFlow?: CopilotSourceFlowState | null;
-  manualEdit?: CopilotManualEditState | null;
   onDraftFlowChange?: (patch: Partial<CopilotDraftFlowState>) => void;
   onSubmitDraftFlow?: () => void;
   onGenerateTemplateSkeleton?: () => void;
@@ -113,10 +113,6 @@ interface FloatingCopilotProps {
   onCancelSourceFlow?: () => void;
   onOpenHistory?: () => void;
   onChooseTemplate?: () => void;
-  onStartManualEdit?: (contextId?: string) => void;
-  onManualEditChange?: (value: string) => void;
-  onApplyManualEdit?: () => void;
-  onCancelManualEdit?: () => void;
   onCopyProposal?: () => void;
   onOpen: () => void;
   onClose: () => void;
@@ -180,14 +176,12 @@ export function FloatingCopilot({
   isBusy = false,
   draftFlow,
   sourceFlow,
-  manualEdit,
   onDraftFlowChange,
   onSubmitDraftFlow,
   onGenerateTemplateSkeleton,
   onCancelDraftFlow,
   onOpenSourceWorkspace,
   onCancelSourceFlow,
-  onCancelManualEdit,
   onCopyProposal,
   onOpen,
   onClose,
@@ -214,14 +208,14 @@ export function FloatingCopilot({
   React.useEffect(() => {
     if (!isOverflowOpen) return undefined;
 
-    const closeOnOutsideClick = (event: MouseEvent) => {
+    const closeOnOutsideClick = (event: PointerEvent) => {
       if (!overflowRef.current?.contains(event.target as Node)) {
         setIsOverflowOpen(false);
       }
     };
 
-    document.addEventListener("mousedown", closeOnOutsideClick);
-    return () => document.removeEventListener("mousedown", closeOnOutsideClick);
+    document.addEventListener("pointerdown", closeOnOutsideClick, true);
+    return () => document.removeEventListener("pointerdown", closeOnOutsideClick, true);
   }, [isOverflowOpen]);
 
   const runDockCommand = React.useCallback((command: CopilotCommand) => {
@@ -289,7 +283,7 @@ export function FloatingCopilot({
       </header>
 
       <nav className="relative shrink-0 border-b border-slate-100 bg-white px-3 py-2" aria-label="Command Dock" ref={overflowRef}>
-        <div className="flex max-h-20 flex-wrap items-center gap-2 overflow-hidden">
+        <div className="flex flex-nowrap items-center gap-2 overflow-x-auto pb-1 [scrollbar-width:thin]">
           {primaryCommands.map((command) => (
             <button
               type="button"
@@ -356,7 +350,7 @@ export function FloatingCopilot({
               <span className="rounded-xl bg-blue-50 p-2 text-[#002D56]"><FileText className="h-4 w-4" /></span>
               <div>
                 <p className="text-sm font-black text-slate-900">Soạn văn bản mới</p>
-                <p className="text-xs text-slate-500">Copilot sẽ tạo bản thảo từ yêu cầu của bạn. Canvas chỉ hiển thị bản thảo và kết quả để kiểm chứng.</p>
+                <p className="text-xs text-slate-500">Chọn tạo bằng AI hoặc dựng khung theo mẫu có sẵn rồi chỉnh trên Canvas.</p>
               </div>
             </div>
             <div className="mt-3 space-y-3">
@@ -369,12 +363,36 @@ export function FloatingCopilot({
                   {draftFlow.kindOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                 </select>
               </label>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-2">
+                <p className="px-1 text-[11px] font-black uppercase tracking-[0.14em] text-slate-500">Chọn nhanh theo nhu cầu</p>
+                <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                  {[
+                    { group: "communication_content" as const, label: "Soạn truyền thông", hint: "Website, tin tức, giới thiệu" },
+                    { group: "review_improvement" as const, label: "Rà soát bản thảo", hint: "Văn phong, nguồn, lập luận" },
+                    { group: "administrative_document" as const, label: "Chuẩn hành chính", hint: "Báo cáo, công văn, biên bản" },
+                  ].map((item) => (
+                    <button
+                      key={item.group}
+                      type="button"
+                      onClick={() => onDraftFlowChange?.({ targetGroup: item.group })}
+                      className={cn(
+                        "rounded-xl border px-2.5 py-2 text-left transition hover:border-blue-200 hover:bg-white focus:outline-none focus:ring-2 focus:ring-blue-200",
+                        draftFlow.targetGroup === item.group ? "border-[#002D56] bg-white text-[#002D56]" : "border-slate-200 bg-white/70 text-slate-700",
+                      )}
+                    >
+                      <span className="block text-xs font-black">{item.label}</span>
+                      <span className="mt-0.5 block text-[10px] font-semibold text-slate-500">{item.hint}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               <label className="block text-xs font-bold text-slate-600">Yêu cầu / bối cảnh
                 <textarea
                   value={draftFlow.brief}
                   onChange={(event) => onDraftFlowChange?.({ brief: event.target.value })}
                   placeholder="VD: Soạn tin website về công tác bảo đảm an toàn hàng hải..."
-                  rows={4}
+                  rows={3}
                   className="mt-1 w-full resize-none rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 outline-none focus:border-[#002D56] focus:bg-white"
                 />
               </label>
@@ -383,21 +401,41 @@ export function FloatingCopilot({
                   value={draftFlow.extraNotes}
                   onChange={(event) => onDraftFlowChange?.({ extraNotes: event.target.value })}
                   placeholder="Gạch đầu dòng ý chính, số liệu, tên nguồn..."
-                  rows={3}
+                  rows={2}
                   className="mt-1 w-full resize-none rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 outline-none focus:border-[#002D56] focus:bg-white"
                 />
               </label>
 
-              {draftFlow.templates && draftFlow.templates.length > 0 && (
-                <div className="space-y-2 mt-4">
-                  <p className="text-xs font-bold text-slate-600">Gợi ý mẫu phù hợp</p>
-                  <div className="grid gap-2">
+              <section className="rounded-2xl border border-blue-100 bg-blue-50/60 p-3">
+                <p className="text-xs font-black uppercase tracking-[0.14em] text-[#002D56]">Tạo bằng AI</p>
+                <p className="mt-1 text-xs leading-relaxed text-slate-600">Gọi AI để viết bản thảo đầy đủ từ yêu cầu, ý chính và nguồn đã chọn.</p>
+                <button
+                  type="button"
+                  onClick={onSubmitDraftFlow}
+                  disabled={isBusy || isDraftBriefMissing}
+                  className="mt-2 inline-flex min-h-[42px] w-full items-center justify-center gap-2 rounded-xl bg-[#002D56] px-4 py-2.5 text-sm font-black text-white hover:bg-slate-900 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />} Tạo bằng AI
+                </button>
+              </section>
+
+              <section className="rounded-2xl border border-slate-200 bg-slate-50/70 p-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <p className="text-xs font-black uppercase tracking-[0.14em] text-slate-700">Dựng theo mẫu có sẵn</p>
+                    <p className="mt-1 text-xs leading-relaxed text-slate-600">Không dùng AI, chỉ dựng khung để bạn chỉnh trên Canvas.</p>
+                  </div>
+                  {draftFlow.templates && draftFlow.templates.length > 0 && <span className="shrink-0 rounded-full bg-white px-2 py-1 text-[10px] font-black text-slate-500 ring-1 ring-slate-200">{draftFlow.templates.length} mẫu</span>}
+                </div>
+
+                {draftFlow.templates && draftFlow.templates.length > 0 ? (
+                  <div className="mt-3 max-h-72 space-y-2 overflow-y-auto pr-1 custom-scrollbar">
                     {draftFlow.templates.slice(0, 3).map((template) => (
                       <label
                         key={template.id}
                         className={cn(
-                          "relative flex cursor-pointer rounded-xl border p-3 shadow-sm hover:border-blue-400 focus:outline-none",
-                          draftFlow.selectedTemplateId === template.id ? "border-[#002D56] bg-blue-50 ring-1 ring-[#002D56]" : "border-slate-200 bg-white"
+                          "block cursor-pointer rounded-xl border p-3 shadow-sm transition hover:border-blue-300",
+                          draftFlow.selectedTemplateId === template.id ? "border-[#002D56] bg-white ring-1 ring-[#002D56]" : "border-slate-200 bg-white"
                         )}
                       >
                         <input
@@ -408,59 +446,62 @@ export function FloatingCopilot({
                           onChange={() => onDraftFlowChange?.({ selectedTemplateId: template.id })}
                           className="sr-only"
                         />
-                        <div className="flex w-full items-start gap-3">
+                        <div className="flex items-start gap-2">
                           <div className={cn(
-                            "flex h-4 w-4 shrink-0 items-center justify-center rounded-full border mt-0.5",
+                            "mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border",
                             draftFlow.selectedTemplateId === template.id ? "border-[#002D56] bg-[#002D56]" : "border-slate-300"
                           )}>
                             {draftFlow.selectedTemplateId === template.id && <div className="h-1.5 w-1.5 rounded-full bg-white" />}
                           </div>
-                          <div className="min-w-0">
-                            <span className="block text-[13px] font-black text-slate-900">{template.name}</span>
-                            <span className="block text-[11px] leading-relaxed text-slate-600 mt-0.5">
-                              {template.description}
-                            </span>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <span className="text-[13px] font-black text-slate-900">{template.name}</span>
+                              {template.groupLabel && <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-600">{template.groupLabel}</span>}
+                              <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-black text-emerald-700 ring-1 ring-emerald-100">{template.nonAiLabel || "Không dùng AI"}</span>
+                            </div>
+                            <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-slate-600">{template.reason || template.description || "Phù hợp để dựng nhanh khung bản thảo."}</p>
+                            {template.missingInputs && template.missingInputs.length > 0 && (
+                              <p className="mt-1 text-[11px] font-semibold text-amber-700">Thiếu: {template.missingInputs.slice(0, 2).join(", ")}{template.missingInputs.length > 2 ? ` +${template.missingInputs.length - 2}` : ""}</p>
+                            )}
+                            {template.previewLines && template.previewLines.length > 0 && (
+                              <div className="mt-2 rounded-lg bg-slate-50 px-2 py-1.5 text-[11px] leading-5 text-slate-600 ring-1 ring-slate-100">
+                                {template.previewLines.slice(0, 5).map((line) => <p key={`${template.id}:${line}`} className="truncate">• {line}</p>)}
+                              </div>
+                            )}
                           </div>
                         </div>
                       </label>
                     ))}
                   </div>
-                </div>
-              )}
+                ) : (
+                  <p className="mt-3 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-slate-500 ring-1 ring-slate-100">Nhập yêu cầu hoặc chọn nguồn để gợi ý mẫu phù hợp.</p>
+                )}
 
-              <p className="rounded-xl bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-600">{draftFlow.sourceSummary}</p>
-              {(draftFlow.error || isDraftBriefMissing) && (
-                <p className={cn("text-xs font-bold", draftFlow.error ? "text-red-600" : "text-amber-600")}>
-                  {draftFlow.error || "Vui lòng nhập yêu cầu hoặc bối cảnh để tạo bản thảo."}
-                </p>
-              )}
-              <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-                <button
-                  type="button"
-                  onClick={onSubmitDraftFlow}
-                  disabled={isBusy || isDraftBriefMissing}
-                  className="inline-flex min-h-[44px] flex-1 items-center justify-center gap-2 rounded-xl bg-[#002D56] px-4 py-2.5 text-sm font-black text-white hover:bg-slate-900 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />} AI viết bản thảo
-                </button>
                 {draftFlow.selectedTemplateId && onGenerateTemplateSkeleton && (
                   <button
                     type="button"
                     onClick={onGenerateTemplateSkeleton}
                     disabled={isBusy}
-                    className="inline-flex min-h-[44px] flex-1 items-center justify-center gap-2 rounded-xl border-2 border-[#002D56] bg-white px-4 py-2.5 text-sm font-black text-[#002D56] hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-60"
+                    className="mt-3 inline-flex min-h-[42px] w-full items-center justify-center gap-2 rounded-xl border-2 border-[#002D56] bg-white px-4 py-2.5 text-sm font-black text-[#002D56] hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    Dùng dàn ý mẫu này
+                    Dựng bản thảo theo mẫu
                   </button>
                 )}
-                <button
-                  type="button"
-                  onClick={onCancelDraftFlow}
-                  className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-slate-700 hover:bg-slate-50"
-                >
-                  <RotateCcw className="h-4 w-4" /> Hủy
-                </button>
-              </div>
+              </section>
+
+              <p className="rounded-xl bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-600">{draftFlow.sourceSummary}</p>
+              {(draftFlow.error || isDraftBriefMissing) && (
+                <p className={cn("text-xs font-bold", draftFlow.error ? "text-red-600" : "text-amber-600")}>
+                  {draftFlow.error || "Vui lòng nhập yêu cầu hoặc bối cảnh để tạo bản thảo bằng AI."}
+                </p>
+              )}
+              <button
+                type="button"
+                onClick={onCancelDraftFlow}
+                className="inline-flex min-h-[40px] w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50"
+              >
+                <RotateCcw className="h-4 w-4" /> Hủy
+              </button>
             </div>
           </div>
         )}
@@ -469,26 +510,29 @@ export function FloatingCopilot({
         {sourceFlow && (
           <div className="mt-4 rounded-2xl border border-blue-200 bg-white p-3 shadow-sm">
             <div className="flex items-start justify-between gap-3">
-              <div>
+              <div className="min-w-0">
                 <p className="text-sm font-black text-slate-900">Thêm nguồn tư liệu</p>
-                <p className="mt-1 text-xs text-slate-500">Nguồn giúp AI bám căn cứ khi tạo hoặc chỉnh sửa bản thảo.</p>
+                <p className="mt-1 line-clamp-2 text-xs text-slate-500">Nguồn giúp AI bám căn cứ khi tạo hoặc chỉnh sửa bản thảo.</p>
               </div>
               <button type="button" onClick={onCancelSourceFlow} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Đóng luồng nguồn">
                 <X className="h-4 w-4" />
               </button>
             </div>
-            <p className="mt-3 rounded-xl bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-600">{sourceFlow.sourceSummary}</p>
+            <p className="mt-3 line-clamp-2 rounded-xl bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-600">{sourceFlow.sourceSummary}</p>
             {sourceFlow.selectedSources.length > 0 && (
-              <div className="mt-3 space-y-2">
-                {sourceFlow.selectedSources.map((source) => (
-                  <div key={source.id} className="rounded-xl border border-blue-100 bg-blue-50/40 p-2">
+              <div className="mt-3 space-y-1.5">
+                {sourceFlow.selectedSources.slice(0, 3).map((source) => (
+                  <div key={source.id} className="rounded-xl border border-blue-100 bg-blue-50/40 px-2.5 py-2">
                     <p className="truncate text-xs font-black text-slate-800">{source.title}</p>
-                    {source.excerpt && <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-slate-600">{source.excerpt}</p>}
+                    {source.excerpt && <p className="mt-0.5 line-clamp-1 text-[11px] leading-relaxed text-slate-600">{source.excerpt}</p>}
                   </div>
                 ))}
+                {(sourceFlow.totalSelectedCount || sourceFlow.selectedSources.length) > sourceFlow.selectedSources.slice(0, 3).length && (
+                  <p className="text-[11px] font-bold text-slate-500">+{(sourceFlow.totalSelectedCount || sourceFlow.selectedSources.length) - sourceFlow.selectedSources.slice(0, 3).length} nguồn khác</p>
+                )}
               </div>
             )}
-            <div className="mt-3 grid grid-cols-2 gap-2">
+            <div className="mt-3 flex flex-wrap gap-2">
               {[
                 { id: "library" as const, label: "Kho tư liệu", icon: FileText },
                 { id: "text" as const, label: "Dán văn bản", icon: Type },
@@ -499,35 +543,35 @@ export function FloatingCopilot({
                   type="button"
                   key={option.id}
                   onClick={() => onOpenSourceWorkspace?.(option.id)}
-                  className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-left text-xs font-bold text-slate-700 hover:border-blue-200 hover:bg-blue-50"
+                  className="inline-flex min-h-9 items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-bold text-slate-700 hover:border-blue-200 hover:bg-blue-50"
                 >
-                  <option.icon className="mb-2 h-4 w-4 text-[#002D56]" />
+                  <option.icon className="h-3.5 w-3.5 text-[#002D56]" />
                   {option.label}
                 </button>
               ))}
             </div>
-            <button type="button" onClick={() => onOpenSourceWorkspace?.()} className="mt-3 w-full rounded-xl border border-[#002D56] bg-white px-4 py-2.5 text-xs font-black text-[#002D56] hover:bg-blue-50">
-              Mở vùng nguồn
-            </button>
           </div>
         )}
 
-        {manualEdit && (
-          <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50/70 p-3">
-            <p className="text-sm font-black text-amber-900">Sửa trên Canvas</p>
-            <p className="mt-1 line-clamp-2 text-xs font-medium text-amber-800">{manualEdit.contextTitle}</p>
-            <p className="mt-3 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-slate-600 ring-1 ring-amber-100">Chế độ sửa trực tiếp trên Canvas sẽ được hoàn thiện ở bước sau. Nội dung gốc chưa thay đổi.</p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <button type="button" onClick={onCancelManualEdit} className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50">
-                <RotateCcw className="h-4 w-4" /> Hủy
-              </button>
-            </div>
-          </div>
-        )}
 
-        {statusMessage && (
-          <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-800">{statusMessage}</div>
-        )}
+        {statusMessage && (() => {
+          const normalizedStatus = statusMessage.toLowerCase();
+          const isErrorStatus = /lỗi|không thể|không tìm|thất bại|error/u.test(normalizedStatus);
+          const isWarningStatus = /hãy|vui lòng|chưa|cần|thiếu/u.test(normalizedStatus) && !statusMessage.startsWith("Đã");
+          const isSuccessStatus = statusMessage.startsWith("Đã");
+          return (
+            <div className={cn(
+              "mt-4 rounded-xl border px-3 py-2 text-sm font-medium",
+              isErrorStatus
+                ? "border-red-200 bg-red-50 text-red-700"
+                : isWarningStatus
+                  ? "border-amber-200 bg-amber-50 text-amber-800"
+                  : isSuccessStatus
+                    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                    : "border-slate-200 bg-slate-50 text-slate-700",
+            )}>{statusMessage}</div>
+          );
+        })()}
 
         {pendingProposal && (
           <div className={cn("mt-4 rounded-2xl border p-3", pendingProposal.canApply ? "border-emerald-200 bg-emerald-50/60" : "border-slate-200 bg-slate-50")}>
@@ -591,12 +635,10 @@ export function FloatingCopilot({
         <div className="mb-2 max-h-16 overflow-hidden rounded-xl border border-blue-100 bg-blue-50/70 px-3 py-1.5">
           <div className="flex items-center justify-between gap-2">
             <p className="min-w-0 truncate text-xs font-black text-[#002D56]"><Paperclip className="mr-1 inline h-3.5 w-3.5" />{contextSummary}</p>
-            {selectedContextItems.length > 0 && (
-              <button type="button" onClick={onClearContext} className="shrink-0 text-[11px] font-bold text-slate-500 hover:text-red-600">Xóa tất cả</button>
-            )}
+            <button type="button" onClick={onClearContext} disabled={selectedContextItems.length === 0} className="shrink-0 text-[11px] font-bold text-slate-500 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40">Xóa tất cả</button>
           </div>
           {selectedContextItems.length > 0 && (
-            <div className="mt-1 flex max-h-7 items-center gap-1.5 overflow-hidden">
+            <div className="mt-1 flex max-h-8 min-w-0 items-center gap-1.5 overflow-hidden">
               {selectedContextItems.slice(0, 2).map((item) => (
                 <span key={item.id} className="inline-flex min-w-0 max-w-[170px] items-center gap-1 rounded-full bg-white px-2 py-1 text-[11px] font-bold text-slate-700 ring-1 ring-blue-100">
                   <span className="truncate">{item.title || CONTEXT_LABELS[item.type]}</span>
