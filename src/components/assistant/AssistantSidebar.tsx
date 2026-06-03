@@ -1,5 +1,5 @@
 import React from "react";
-import { Bot, PanelLeftOpen, X } from "lucide-react";
+import { Bot, PanelRightOpen, X } from "lucide-react";
 import { cn } from "../../lib/utils";
 
 interface AssistantSidebarProps {
@@ -20,10 +20,10 @@ export function AssistantSidebar({ isOpen, moduleStatus, contextPane, chatPane, 
           data-export-exclude="true"
           data-assistant-sidebar-toggle="true"
           onClick={onOpen}
-          className="absolute left-0 top-1/2 z-40 inline-flex h-32 w-11 -translate-y-1/2 flex-col items-center justify-center gap-2 border-y border-r border-slate-200 bg-white text-[11px] font-black uppercase tracking-[0.12em] text-[#002D56] shadow-none transition hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-blue-200"
+          className="absolute right-0 top-1/2 z-40 inline-flex h-32 w-11 -translate-y-1/2 flex-col items-center justify-center gap-2 border-y border-l border-slate-200 bg-white text-[11px] font-black uppercase tracking-[0.12em] text-[#002D56] shadow-none transition hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-blue-200"
           aria-label="Mở Trợ lý Hoa Tiêu"
         >
-          <PanelLeftOpen className="h-4 w-4" />
+          <PanelRightOpen className="h-4 w-4" />
           <span className="[writing-mode:vertical-rl]">Trợ lý</span>
         </button>
       )}
@@ -42,10 +42,10 @@ export function AssistantSidebar({ isOpen, moduleStatus, contextPane, chatPane, 
         data-export-exclude="true"
         data-assistant-sidebar="true"
         className={cn(
-          "absolute bottom-0 left-0 top-0 z-40 flex w-[min(92vw,420px)] max-w-[440px] flex-col border-r border-slate-200 bg-slate-50 text-slate-800 transition-transform duration-200 ease-out sm:w-[400px] xl:w-[420px]",
+          "absolute bottom-0 right-0 top-0 z-40 flex w-[min(92vw,400px)] max-w-[420px] flex-col border-l border-slate-200 bg-slate-50 text-slate-800 transition-transform duration-200 ease-out sm:w-[380px] xl:w-[400px]",
           "shadow-none",
-          isOpen ? "translate-x-0" : "-translate-x-[calc(100%+1rem)]",
-          "max-sm:fixed max-sm:inset-y-0 max-sm:left-0 max-sm:w-[88vw] max-sm:max-w-none",
+          isOpen ? "translate-x-0" : "translate-x-[calc(100%+1rem)]",
+          "max-sm:fixed max-sm:inset-y-0 max-sm:right-0 max-sm:w-[88vw] max-sm:max-w-none",
         )}
         aria-label="Trợ lý Hoa Tiêu"
         aria-hidden={!isOpen}

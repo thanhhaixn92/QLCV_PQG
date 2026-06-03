@@ -4282,10 +4282,10 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
         className={cn(
           "h-full min-w-0 min-h-0 overflow-y-auto overscroll-contain custom-scrollbar space-y-5 pb-24 transition-[padding] duration-200",
           copilotViewMode === "fullscreen"
-            ? "pl-0 pr-12"
+            ? "pl-0 pr-0"
             : copilotViewMode !== "collapsed"
-              ? "pl-[420px] max-sm:pl-0 pr-12"
-              : "pl-12 max-sm:pl-0 pr-12",
+              ? "pl-0 pr-[400px] max-sm:pr-0"
+              : "pl-0 pr-11 max-sm:pr-0",
         )}
         onClick={handleWorkspaceClick}
       >
