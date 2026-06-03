@@ -228,6 +228,8 @@ export function FloatingCopilot({
     return (
       <button
         type="button"
+        data-copilot-root="true"
+        data-export-exclude="true"
         onClick={onOpen}
         className="fixed bottom-5 right-5 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-[#002D56] text-white shadow-2xl shadow-slate-900/25 transition hover:bg-slate-900 focus:outline-none focus:ring-4 focus:ring-blue-200"
         aria-label="Mở Copilot biên tập"
@@ -246,6 +248,8 @@ export function FloatingCopilot({
 
   return (
     <section
+      data-copilot-root="true"
+      data-export-exclude="true"
       className={cn(
         "fixed flex flex-col overflow-hidden border border-slate-200 bg-white shadow-2xl shadow-slate-900/20",
         isFullscreen

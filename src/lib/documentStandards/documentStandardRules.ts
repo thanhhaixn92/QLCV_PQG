@@ -10,7 +10,6 @@ import {
   detectAdministrativeHeaderHints,
   detectAiSuggestionMarkers,
   detectFigureCaptionHints,
-  detectLongParagraphs,
   detectPossibleNumericClaims,
   detectRawMarkdownMarkers,
   detectStandaloneGarbageText,
@@ -63,6 +62,60 @@ function issue(
   };
 }
 
+function longParagraphThreshold(context: DocumentPreflightContext, role?: string): number {
+  if (role === "sapo") return 95;
+
+  switch (context.profileId) {
+    case "website_article":
+    case "news_article":
+    case "company_intro_article":
+      return 180;
+    case "administrative_report":
+    case "kpi_data_report":
+    case "official_dispatch":
+    case "meeting_minutes":
+    case "work_plan":
+    case "summary_sheet":
+      return 245;
+    default:
+      return 220;
+  }
+}
+
+function groupedLongParagraphIssues(context: DocumentPreflightContext): DocumentPreflightIssue[] {
+  const matches = context.paragraphs
+    .filter((paragraph) => (paragraph.role ?? "body") === "body" || paragraph.role === "sapo")
+    .map((paragraph, index) => {
+      const wordCount = countWords(paragraph.text);
+      return {
+        paragraph,
+        index,
+        wordCount,
+        threshold: longParagraphThreshold(context, paragraph.role),
+      };
+    })
+    .filter((match) => match.wordCount > match.threshold);
+
+  if (matches.length === 0) return [];
+
+  const longest = matches.reduce((current, match) => (match.wordCount > current.wordCount ? match : current), matches[0]);
+  const severity: DocumentPreflightSeverity = longest.wordCount >= longest.threshold + 90 ? "warning" : "info";
+  const articleLike = ["website_article", "news_article", "company_intro_article"].includes(context.profileId);
+  const scopeText = articleLike ? "website/bản tin" : "báo cáo/văn bản hành chính";
+
+  return [
+    issue(
+      context,
+      "long_paragraph",
+      "content_structure",
+      severity,
+      `Có ${matches.length} đoạn tương đối dài so với ngưỡng ${scopeText}.`,
+      `Đoạn dài nhất khoảng ${longest.wordCount} từ; có thể tách thành 2 đoạn hoặc chuyển một phần thành danh sách/bảng nếu cần tăng khả năng đọc.`,
+      `long-paragraphs-${matches.length}`,
+    ),
+  ];
+}
+
 export const DOCUMENT_STANDARD_RULES: DocumentStandardRule[] = [
   {
     id: "missing_title",
@@ -91,7 +144,7 @@ export const DOCUMENT_STANDARD_RULES: DocumentStandardRule[] = [
   {
     id: "missing_sapo_lead",
     category: "content_structure",
-    defaultSeverity: "warning",
+    defaultSeverity: "info",
     description: "Detects missing sapo/lead for article-like profiles.",
     run: (context) =>
       context.profile?.requiresSapo && !context.sapo
@@ -100,9 +153,9 @@ export const DOCUMENT_STANDARD_RULES: DocumentStandardRule[] = [
               context,
               "missing_sapo_lead",
               "content_structure",
-              "warning",
-              "Thiếu sapo/lead.",
-              "Bổ sung sapo 1–3 câu tóm tắt thông tin chính và giá trị của bài viết.",
+              "info",
+              "Có thể bổ sung sapo/lead.",
+              "Nếu dùng cho website/bản tin, bổ sung sapo 2–3 câu để tóm tắt thông tin chính và giá trị của bài viết.",
               "document-sapo",
             ),
           ]
@@ -131,20 +184,9 @@ export const DOCUMENT_STANDARD_RULES: DocumentStandardRule[] = [
   {
     id: "long_paragraph",
     category: "content_structure",
-    defaultSeverity: "warning",
+    defaultSeverity: "info",
     description: "Detects paragraphs that are likely too long for review or mobile reading.",
-    run: (context) =>
-      detectLongParagraphs(context.paragraphs).map((match) =>
-        issue(
-          context,
-          "long_paragraph",
-          "content_structure",
-          "warning",
-          "Đoạn văn quá dài.",
-          "Tách đoạn hoặc chuyển một phần nội dung thành danh sách/bảng để dễ đọc hơn.",
-          match.targetHint,
-        ),
-      ),
+    run: groupedLongParagraphIssues,
   },
   {
     id: "very_short_orphan_paragraph",

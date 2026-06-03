@@ -11,12 +11,16 @@ import {
   type PreflightSeverity,
 } from '../../lib/publishing/preflightIssue';
 
+type PreflightReviewStatus = "idle" | "checking" | "ready" | "stale";
+
 interface Props {
   kind?: EditorialDocumentKind;
   markdownContent?: string;
   articleDocument?: ArticleDocument;
   issues?: PreflightIssue[];
   hasDraft?: boolean;
+  reviewStatus?: PreflightReviewStatus;
+  onRequestReview?: () => void;
 }
 
 const DRAFT_MARKER_PATTERN = /\[(?:\s*Bổ sung\s*:|\s*Cần\s+(?:bổ sung|bổ sung\/kiểm chứng|kiểm chứng)\s*:?)[^\]]*\]/i;
@@ -144,16 +148,17 @@ function renderIssue(issue: PreflightIssue) {
   );
 }
 
-export function EditorialPreflightPanel({ kind, markdownContent = '', articleDocument, issues, hasDraft }: Props) {
+export function EditorialPreflightPanel({ kind, markdownContent = '', articleDocument, issues, hasDraft, reviewStatus = 'ready', onRequestReview }: Props) {
   const hasRealDraft = hasDraft ?? Boolean(markdownContent.trim());
   const [isExpanded, setIsExpanded] = React.useState(false);
+  const shouldShowResults = reviewStatus === 'ready';
 
   const preflightIssues = React.useMemo(() => {
-    if (!hasRealDraft) return [];
+    if (!hasRealDraft || !shouldShowResults) return [];
     if (issues) return dedupePanelIssues(issues);
     if (articleDocument) return dedupePanelIssues(validateArticleDocument(articleDocument).preflightIssues);
     return dedupePanelIssues(legacyIssuesFromMarkdown(kind, markdownContent));
-  }, [articleDocument, hasRealDraft, issues, kind, markdownContent]);
+  }, [articleDocument, hasRealDraft, issues, kind, markdownContent, shouldShowResults]);
 
   const counts = React.useMemo(() => countPreflightIssuesBySeverity(preflightIssues), [preflightIssues]);
   const status = counts.blocker > 0 ? 'Chưa thể xuất bản' : counts.warning > 0 || counts.info > 0 ? 'Cần rà soát' : 'Sẵn sàng xuất bản';
@@ -175,14 +180,43 @@ export function EditorialPreflightPanel({ kind, markdownContent = '', articleDoc
 
   if (!hasRealDraft) {
     return (
-      <aside className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-500 shadow-sm" aria-label="Bảng kiểm xuất bản">
+      <aside className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-500 shadow-sm" aria-label="Bảng kiểm xuất bản" data-preflight-panel="true" data-export-exclude="true">
         Chưa có bản thảo để rà soát.
       </aside>
     );
   }
 
+  if (!shouldShowResults) {
+    const isChecking = reviewStatus === 'checking';
+    const isStale = reviewStatus === 'stale';
+    return (
+      <aside className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm sm:p-4" aria-label="Bảng kiểm xuất bản" data-preflight-panel="true" data-export-exclude="true">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <p className="text-sm font-black text-slate-900">Kiểm tra trước xuất bản</p>
+            <p className={cn('mt-1 text-xs leading-5 font-semibold', isStale ? 'text-amber-700' : 'text-slate-500')}>
+              {isChecking
+                ? 'Đang rà soát bản thảo…'
+                : isStale
+                  ? 'Nội dung đã thay đổi sau lần rà soát gần nhất. Bấm Rà soát lại để cập nhật.'
+                  : 'Bản thảo đã được tạo. Bạn có thể rà soát trước khi lưu hoặc xuất.'}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onRequestReview}
+            disabled={isChecking}
+            className="inline-flex h-9 shrink-0 items-center justify-center rounded-lg border border-[#002D56] bg-white px-3 text-xs font-black text-[#002D56] hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {isStale ? 'Rà soát lại' : 'Rà soát bản thảo'}
+          </button>
+        </div>
+      </aside>
+    );
+  }
+
   return (
-    <aside className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm sm:p-4" aria-label="Bảng kiểm xuất bản">
+    <aside className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm sm:p-4" aria-label="Bảng kiểm xuất bản" data-preflight-panel="true" data-export-exclude="true">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div className={cn('flex min-w-0 items-center gap-2 rounded-xl border px-3 py-2', statusClass)}>
           <span className="shrink-0">
@@ -246,7 +280,7 @@ export function EditorialPreflightPanel({ kind, markdownContent = '', articleDoc
       ) : (
         <div className="mt-3 flex items-start gap-2 rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
           <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
-          <p className="leading-relaxed">Bản thảo đã sẵn sàng để xuất Word/PDF theo kiểm tra hiện tại.</p>
+          <p className="leading-relaxed">Bản thảo chưa phát hiện vấn đề lớn theo lần rà soát hiện tại.</p>
         </div>
       )}
     </aside>

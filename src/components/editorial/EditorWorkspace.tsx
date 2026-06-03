@@ -111,6 +111,8 @@ interface CanvasBlockOverride {
   index: number;
 }
 
+type PreflightUiStatus = "idle" | "checking" | "ready" | "stale";
+
 const CANVAS_EDITABLE_BLOCK_TYPES = new Set<ArticleBlock["type"]>([
   "title",
   "sapo",
@@ -202,13 +204,99 @@ function canvasBlockEditLabel(blockType: ArticleBlock["type"]): string {
   return "Đoạn văn";
 }
 
+function normalizeCanvasMultilineText(value: unknown): string {
+  return String(value ?? "")
+    .replace(/\r\n?/gu, "\n")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/gu, "")
+    .replace(/[\u200B\u200C\u200D\uFEFF]/gu, "")
+    .split("\n")
+    .map((line) => line.replace(/[ \t]+$/gu, ""))
+    .join("\n")
+    .replace(/\n{4,}/gu, "\n\n\n")
+    .trim();
+}
+
 function blockWithTextOverride(block: ArticleBlock, value: string): ArticleBlock {
+  const multilineValue = normalizeCanvasMultilineText(value);
   if (block.type === "bullet-list" || block.type === "ordered-list") {
-    const items = value.split(/\r?\n/u).map((line) => line.replace(/^[-*+]\s+/u, "").replace(/^\d+[.)]\s+/u, "").trim()).filter(Boolean);
+    const items = multilineValue.split(/\n/u).map((line) => line.replace(/^[-*+]\s+/u, "").replace(/^\d+[.)]\s+/u, "").trim()).filter(Boolean);
     return { ...block, slots: { ...block.slots, items } };
   }
 
-  return { ...block, slots: { ...block.slots, text: value } };
+  // Canvas text blocks are multiline containers; do not flatten newlines during edit commit.
+  return { ...block, slots: { ...block.slots, text: multilineValue } };
+}
+
+function comparableCanvasLine(value: unknown): string {
+  return normalizeCanvasMultilineText(value)
+    .replace(/(?:\*\*|__|`)/gu, "")
+    .replace(/^#{1,6}\s+/u, "")
+    .replace(/^[-*+]\s+/u, "")
+    .replace(/^\d+[.)]\s+/u, "")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .toLocaleLowerCase("vi-VN");
+}
+
+function multilineTextLines(value: unknown): string[] {
+  return normalizeCanvasMultilineText(value)
+    .split(/\n/u)
+    .map((line) => comparableCanvasLine(line))
+    .filter(Boolean);
+}
+
+function getOverrideMultilineLines(block: ArticleBlock): string[] {
+  if (block.type === "bullet-list" || block.type === "ordered-list" || block.type === "lead-in-list") return [];
+  const text = normalizeCanvasMultilineText(block.slots?.text);
+  if (!text.includes("\n")) return [];
+  return multilineTextLines(text);
+}
+
+function findParsedMultilineRun(blocks: ArticleBlock[], override: CanvasBlockOverride): { start: number; length: number } | null {
+  const lines = getOverrideMultilineLines(override.block);
+  if (lines.length <= 1) return null;
+
+  const blockLines = blocks.map((block) => comparableCanvasLine(getArticleBlockFullText(block)));
+  const expectedLength = lines.length;
+  const preferredStart = Math.max(0, Math.min(override.index, blocks.length - 1));
+  const starts = [
+    preferredStart,
+    preferredStart - 2,
+    preferredStart - 1,
+    preferredStart + 1,
+    preferredStart + 2,
+    ...blocks.map((_block, index) => index),
+  ].filter((start, index, all) => start >= 0 && start + expectedLength <= blocks.length && all.indexOf(start) === index);
+
+  for (const start of starts) {
+    const matches = lines.every((line, offset) => blockLines[start + offset] === line);
+    if (matches) return { start, length: expectedLength };
+  }
+
+  return null;
+}
+
+function applyCanvasBlockOverrides(baseBlocks: ArticleBlock[], overrides: CanvasBlockOverride[]): ArticleBlock[] {
+  let blocks = [...baseBlocks];
+
+  overrides
+    .sort((a, b) => a.index - b.index)
+    .forEach((override) => {
+      const multilineRun = findParsedMultilineRun(blocks, override);
+      if (multilineRun) {
+        blocks.splice(multilineRun.start, multilineRun.length, override.block);
+        return;
+      }
+
+      const existingIndex = blocks.findIndex((block) => block.id === override.block.id);
+      if (existingIndex >= 0) {
+        blocks[existingIndex] = override.block;
+        return;
+      }
+      blocks.splice(Math.min(override.index, blocks.length), 0, override.block);
+    });
+
+  return blocks;
 }
 
 function normalizePreflightText(value: unknown): string {
@@ -572,6 +660,8 @@ export const EditorWorkspace = (props: any) => {
   const [activeHeaderMenu, setActiveHeaderMenu] = React.useState<null | "export" | "more">(null);
   const headerMenuRef = React.useRef<HTMLDivElement | null>(null);
   const [exportingFormat, setExportingFormat] = React.useState<null | "pdf" | "docx" | "html">(null);
+  const [preflightUiStatus, setPreflightUiStatus] = React.useState<PreflightUiStatus>("idle");
+  const [lastPreflightDraftSignature, setLastPreflightDraftSignature] = React.useState<string | null>(null);
   const lastToastAtRef = React.useRef<Record<string, number>>({});
   const currentDraftId = React.useMemo(
     () => currentSessionId || `local-${user?.uid || "guest"}-editorial-main`,
@@ -627,6 +717,8 @@ export const EditorWorkspace = (props: any) => {
     setPillAnchor(null);
     setIsContextPillVisible(false);
     setActiveCommandId(null);
+    setPreflightUiStatus("idle");
+    setLastPreflightDraftSignature(null);
   }, []);
 
   const resetEditorialDraftState = React.useCallback(() => {
@@ -767,6 +859,8 @@ export const EditorWorkspace = (props: any) => {
     setCopilotDraftSelectedTemplateId(null);
     setCanvasBlockEditState(null);
     setCanvasBlockOverrides({});
+    setPreflightUiStatus("idle");
+    setLastPreflightDraftSignature(null);
   }, [setError, setInput, setIsEditing, setOutput]);
 
   const hasProtectedWorkspaceData = React.useMemo(() => (
@@ -835,19 +929,7 @@ export const EditorWorkspace = (props: any) => {
     const overrides = Object.values(canvasBlockOverrides);
     if (overrides.length === 0) return baseDocument;
 
-    const blocks = [...baseDocument.blocks];
-    overrides
-      .sort((a, b) => a.index - b.index)
-      .forEach((override) => {
-        const existingIndex = blocks.findIndex((block) => block.id === override.block.id);
-        if (existingIndex >= 0) {
-          blocks[existingIndex] = override.block;
-          return;
-        }
-        blocks.splice(Math.min(override.index, blocks.length), 0, override.block);
-      });
-
-    return { ...baseDocument, blocks };
+    return { ...baseDocument, blocks: applyCanvasBlockOverrides(baseDocument.blocks, overrides) };
   }, [canvasBlockOverrides, output, selectedLayout, user?.displayName, user?.email]);
 
   const emptyCanvasBlockIds = React.useMemo(() => Object.values(canvasBlockOverrides).filter((override) => override.empty).map((override) => override.block.id), [canvasBlockOverrides]);
@@ -891,10 +973,44 @@ export const EditorWorkspace = (props: any) => {
     return normalizePreflightIssuesForDisplay(issues);
   }, [articleValidation, articleDocument, hasGeneratedDraft]);
 
+  const preflightDraftSignature = React.useMemo(() => JSON.stringify({
+    output: normalizeEditorialBriefContent(output || ""),
+    overrides: Object.keys(canvasBlockOverrides).sort(),
+  }), [canvasBlockOverrides, output]);
+
+  React.useEffect(() => {
+    if (!hasGeneratedDraft) {
+      setPreflightUiStatus("idle");
+      setLastPreflightDraftSignature(null);
+      return;
+    }
+    if (preflightUiStatus === "ready" && lastPreflightDraftSignature && lastPreflightDraftSignature !== preflightDraftSignature) {
+      setPreflightUiStatus("stale");
+    }
+  }, [hasGeneratedDraft, lastPreflightDraftSignature, preflightDraftSignature, preflightUiStatus]);
+
+  const runUserRequestedPreflight = React.useCallback((source: "button" | "copilot" | "export" = "button") => {
+    if (!hasGeneratedDraft) {
+      setCopilotStatusMessage("Chưa có bản thảo để rà soát.");
+      return false;
+    }
+    setPreflightUiStatus("checking");
+    setLastPreflightDraftSignature(preflightDraftSignature);
+    window.setTimeout(() => setPreflightUiStatus("ready"), 0);
+    if (source !== "export") {
+      setCopilotStatusMessage(preflightIssues.length > 0
+        ? `Đã rà soát bản thảo: ${preflightIssues.length} vấn đề/gợi ý cần xem.`
+        : "Đã rà soát bản thảo. Chưa phát hiện vấn đề lớn.");
+    }
+    return true;
+  }, [hasGeneratedDraft, preflightDraftSignature, preflightIssues.length]);
+
+  const visiblePreflightIssues = preflightUiStatus === "ready" ? preflightIssues : [];
   const preflightCounts = React.useMemo(() => countPreflightIssuesBySeverity(preflightIssues), [preflightIssues]);
   const hasPreflightBlockers = React.useMemo(() => hasBlockingPreflightIssues(preflightIssues), [preflightIssues]);
 
   const validateArticleBeforeExport = React.useCallback(async () => {
+    runUserRequestedPreflight("export");
     if (hasPreflightBlockers) {
       const message = "Chưa thể xuất bản vì còn lỗi bắt buộc cần xử lý.";
       notifyError("preflight-warning", message);
@@ -908,7 +1024,7 @@ export const EditorWorkspace = (props: any) => {
     }
 
     return true;
-  }, [hasPreflightBlockers, notifyError, notifyWarning, preflightCounts.warning, requestConfirmAsync, setError]);
+  }, [hasPreflightBlockers, notifyError, notifyWarning, preflightCounts.warning, requestConfirmAsync, runUserRequestedPreflight, setError]);
 
 
   const switchWorkspaceMode = React.useCallback((mode: EditorialWorkspaceMode) => {
@@ -1015,6 +1131,20 @@ export const EditorWorkspace = (props: any) => {
     setCopilotStatusMessage("Đã xóa context. Draft, nguồn và phiên làm việc vẫn được giữ nguyên.");
   }, []);
 
+  const clearCanvasSelection = React.useCallback(() => {
+    setSelectedContextItems((items) => items.filter((item) => !item.blockId));
+    setPillAnchor(null);
+    setIsContextPillVisible(false);
+    setPendingProposal(null);
+  }, []);
+
+  const handleWorkspaceClick = React.useCallback((event: React.MouseEvent<HTMLElement>) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    if (target.closest('[data-canvas-block-id], [data-canvas-editing-wrapper], [data-copilot-root], [data-context-pill], [data-preflight-panel]')) return;
+    clearCanvasSelection();
+  }, [clearCanvasSelection]);
+
   const handleCanvasBlockSelect = React.useCallback((block: ArticleBlock, event: React.MouseEvent<HTMLElement>) => {
     const contextItem = buildContextFromBlock(block);
     const wasSelected = selectedContextItems.some((item) => item.id === contextItem.id);
@@ -1023,13 +1153,14 @@ export const EditorWorkspace = (props: any) => {
     setSelectedContextItems((current) => {
       if (wasSelected) {
         const nextItems = current.filter((item) => item.id !== contextItem.id);
-        if (nextItems.length === 0) {
+        const nextCanvasItems = nextItems.filter((item) => item.blockId);
+        if (nextCanvasItems.length === 0) {
           setPillAnchor(null);
           setIsContextPillVisible(false);
-                setCopilotStatusMessage("Chưa chọn ngữ cảnh");
+          setCopilotStatusMessage("Chưa chọn ngữ cảnh");
         } else {
           setPillAnchor({ top: Math.max(92, rect.top + window.scrollY - 8), left: Math.min(window.innerWidth - 180, rect.right + window.scrollX - 150) });
-          setIsContextPillVisible(nextItems.length <= 3);
+          setIsContextPillVisible(nextCanvasItems.length <= 3);
         }
         return nextItems;
       }
@@ -1103,9 +1234,7 @@ export const EditorWorkspace = (props: any) => {
       return;
     }
 
-    const replacement = canvasBlockEditState.blockType === "title" || canvasBlockEditState.blockType === "section-heading"
-      ? canvasBlockEditState.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)[0] || ""
-      : canvasBlockEditState.value.replace(/\r?\n[ \t]*$/u, "");
+    const replacement = normalizeCanvasMultilineText(canvasBlockEditState.value);
     const isEmpty = replacement.trim().length === 0;
     const nextOutput = canvasBlockEditState.originalText.trim() ? replaceOutputText(canvasBlockEditState.originalText, replacement) : null;
 
@@ -1115,9 +1244,13 @@ export const EditorWorkspace = (props: any) => {
     }
 
     const overrideBlock = blockWithTextOverride(latestBlock, replacement);
+    const shouldKeepMultilineOverride = !isEmpty
+      && latestBlock.type !== "bullet-list"
+      && latestBlock.type !== "ordered-list"
+      && normalizeCanvasMultilineText(overrideBlock.slots?.text).includes("\n");
     setCanvasBlockOverrides((current) => {
       const next = { ...current };
-      if (isEmpty || !nextOutput) {
+      if (isEmpty || !nextOutput || shouldKeepMultilineOverride) {
         next[canvasBlockEditState.blockId] = { block: overrideBlock, empty: isEmpty, index: canvasBlockEditState.blockIndex };
       } else {
         delete next[canvasBlockEditState.blockId];
@@ -1239,7 +1372,6 @@ export const EditorWorkspace = (props: any) => {
       handleCanvasBlockSelect(block, event);
     }
     startCanvasBlockEdit(block);
-    setCopilotViewMode("expanded");
   }, [handleCanvasBlockSelect, selectedContextItems, startCanvasBlockEdit]);
 
   const applyCaptionProposalToOutput = React.useCallback((proposal: Extract<EditorialProposal, { type: "add_caption" }>) => {
@@ -1550,25 +1682,32 @@ export const EditorWorkspace = (props: any) => {
         if (bType === "title") {
           lines.push(`# ${value}`);
         } else if (bType === "lead" || bType === "sapo") {
-          lines.push(`**${value}**`);
+          lines.push(value);
         } else if (bType === "metadata") {
-          lines.push(`${block.label}: ${value}`);
-        } else if (bType === "section" || bType === "section_heading" || bType === "heading") {
           lines.push(`## ${block.label}`);
           lines.push(value);
+        } else if (bType === "section" || bType === "section_heading" || bType === "heading") {
+          lines.push(`## ${block.label}`);
+          if (value !== block.label) lines.push(value);
         } else if (bType === "list" || bType === "checklist") {
           lines.push(`## ${block.label}`);
-          lines.push(`- ${value}`);
+          const listItems = value.split(/\n+/u).map((item) => item.trim()).filter(Boolean);
+          lines.push(...(listItems.length > 0 ? listItems.map((item) => `- ${item.replace(/^-\s*/u, "")}`) : [`- ${block.label}`]));
         } else if (bType === "table") {
           lines.push(`## ${block.label}`);
           lines.push("| Nội dung | Ghi chú |");
           lines.push("|---|---|");
           lines.push(`| ${value} | [Cần ghi nguồn] |`);
         } else if (bType === "figure" || bType === "figure_placeholder") {
-          lines.push(`## ${block.label}`);
-          lines.push(value);
+          lines.push(`Vị trí chèn hình minh họa: ${value}`);
+          lines.push("Chú thích hình: [Cần bổ sung chú thích ảnh]");
+          lines.push("Nguồn hình: [Cần bổ sung nguồn hình]");
+        } else if (bType === "quote") {
+          lines.push(`> ${value}`);
+        } else if (bType === "source_note") {
+          lines.push(`Nguồn: ${value}`);
         } else if (bType === "signature") {
-          lines.push(`**${block.label}:** ${value}`);
+          lines.push(`${block.label}: ${value}`);
         } else {
           lines.push(value);
         }
@@ -1593,7 +1732,9 @@ export const EditorWorkspace = (props: any) => {
       setCopilotDraftExtraNotes("");
       setCopilotDraftTargetGroup(undefined);
       setWorkspaceMode("edit");
-      setCopilotStatusMessage("Đã tải dàn ý mẫu lên Canvas. Bạn có thể sửa trực tiếp hoặc yêu cầu Copilot viết tiếp nội dung.");
+      setPreflightUiStatus("idle");
+      setLastPreflightDraftSignature(null);
+      setCopilotStatusMessage("Bản thảo đã được tạo. Bạn có thể rà soát trước khi lưu hoặc xuất.");
     } catch (err: any) {
       setCopilotDraftFlowError(err.message || "Không thể tạo dàn ý từ mẫu đã chọn.");
     } finally {
@@ -1620,7 +1761,9 @@ export const EditorWorkspace = (props: any) => {
       setCopilotDraftExtraNotes("");
       setCopilotDraftTargetGroup(undefined);
       setWorkspaceMode("edit");
-      setCopilotStatusMessage("Đã tạo bản thảo. Hãy kiểm chứng trên Canvas trước khi lưu hoặc xuất.");
+      setPreflightUiStatus("idle");
+      setLastPreflightDraftSignature(null);
+      setCopilotStatusMessage("Bản thảo đã được tạo. Bạn có thể rà soát trước khi lưu hoặc xuất.");
     } finally {
       setIsCopilotBusy(false);
     }
@@ -1664,10 +1807,18 @@ export const EditorWorkspace = (props: any) => {
     }
     if (commandId === "manual_edit") {
       if (selectedContextItems.length !== 1 || !selectedBlock) {
-        setCopilotStatusMessage("Hãy chọn một block văn bản trên Canvas trước khi sửa.");
+        setCopilotStatusMessage("Chỉ có thể sửa trực tiếp từng block. Hãy chọn một block văn bản trên Canvas.");
+        return;
+      }
+      if (!CANVAS_EDITABLE_BLOCK_TYPES.has(selectedBlock.type)) {
+        setCopilotStatusMessage("Block này chưa hỗ trợ sửa trực tiếp.");
         return;
       }
       startCanvasBlockEdit(selectedBlock);
+      return;
+    }
+    if (commandId === "review_current_draft") {
+      runUserRequestedPreflight("copilot");
       return;
     }
     if (commandId === "add_source") {
@@ -1773,7 +1924,7 @@ export const EditorWorkspace = (props: any) => {
     } finally {
       setIsCopilotBusy(false);
     }
-  }, [articleDocument, copilotInput, createProposal, effectiveCopilotContexts, formatExecutionProposal, notifyError, openCopilotDraftFlow, openCopilotSourceFlow, output, outputFormat, selectedBlock, selectedContextItems, startCanvasBlockEdit, switchWorkspaceMode, user]);
+  }, [articleDocument, copilotInput, createProposal, effectiveCopilotContexts, formatExecutionProposal, notifyError, openCopilotDraftFlow, openCopilotSourceFlow, output, outputFormat, runUserRequestedPreflight, selectedBlock, selectedContextItems, startCanvasBlockEdit, switchWorkspaceMode, user]);
 
   const handleApplyCopilotProposal = React.useCallback(() => {
     if (!pendingProposal) return;
@@ -1825,7 +1976,7 @@ ${pendingProposal.proposedText}`;
     }
 
     if (!nextOutput) {
-      setCopilotStatusMessage("Không tìm được đúng vị trí trong bản thảo để áp dụng tự động. Vui lòng copy đề xuất hoặc mở chế độ sửa thủ công.");
+      setCopilotStatusMessage("Không tìm được đúng vị trí trong bản thảo để áp dụng tự động. Vui lòng copy đề xuất hoặc sửa trực tiếp block trên Canvas.");
       return;
     }
     setOutput(nextOutput);
@@ -3089,24 +3240,17 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                         </span>
                                         <div className="flex items-center gap-2">
                                           <button
-                                            onClick={() =>
-                                              setIsEditing(!isEditing)
-                                            }
-                                            className={cn(
-                                              "text-[10px] font-semibold px-3 py-1.5 rounded-md transition-all flex items-center gap-2 tracking-tight",
-                                              isEditing
-                                                ? "bg-[#002D56] text-white shadow-sm"
-                                                : "bg-white border border-slate-200 text-[#002D56] hover:bg-slate-50",
-                                            )}
+                                            onClick={() => {
+                                              if (!selectedBlock) {
+                                                setCopilotStatusMessage("Hãy chọn một block văn bản trên Canvas, sau đó bấm Sửa trên Canvas.");
+                                                return;
+                                              }
+                                              startCanvasBlockEdit(selectedBlock);
+                                            }}
+                                            className="text-[10px] font-semibold px-3 py-1.5 rounded-md transition-all flex items-center gap-2 tracking-tight bg-white border border-slate-200 text-[#002D56] hover:bg-slate-50"
                                           >
-                                            {isEditing ? (
-                                              <Save className="w-3.5 h-3.5" />
-                                            ) : (
-                                              <Edit3 className="w-3.5 h-3.5" />
-                                            )}
-                                            {isEditing
-                                              ? "Đang sửa"
-                                              : "Sửa thủ công"}
+                                            <Edit3 className="w-3.5 h-3.5" />
+                                            Sửa trên Canvas
                                           </button>
                                           <button
                                             onClick={() => { closeAllHeaderMenus(); void handleSaveDraft(); }}
@@ -3170,19 +3314,6 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                           <Copy className="w-4 h-4" />
                                         )}
                                       </button>
-                                      {isEditing && (
-                                        <button
-                                          onClick={() => {
-                                            saveCurrentToSession();
-                                            setIsEditing(false);
-                                          }}
-                                          className="p-2.5 rounded-md bg-emerald-600 text-white shadow-sm shadow-emerald-200 active:scale-90 border border-emerald-500"
-                                          title="Lưu phiên bản"
-                                          aria-label="Lưu phiên bản"
-                                        >
-                                          <Save className="w-4 h-4" />
-                                        </button>
-                                      )}
                                     </div>
                                   </div>
                                   {taskType === "WRITE_NEW" && (
@@ -3190,8 +3321,10 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                       kind={editorialKind}
                                       markdownContent={output}
                                       articleDocument={articleDocument}
-                                      issues={preflightIssues}
+                                      issues={visiblePreflightIssues}
                                       hasDraft={hasGeneratedDraft}
+                                      reviewStatus={preflightUiStatus}
+                                      onRequestReview={() => runUserRequestedPreflight("button")}
                                     />
                                   )}
 
@@ -3201,13 +3334,12 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                       <button
                                         type="button"
                                         onClick={() => void handleExportArticle("pdf")}
-                                        disabled={hasPreflightBlockers || Boolean(exportingFormat)}
-                                        aria-disabled={hasPreflightBlockers || Boolean(exportingFormat)}
+                                        disabled={Boolean(exportingFormat)}
+                                        aria-disabled={Boolean(exportingFormat)}
                                         className={cn(
                                           "inline-flex h-8 items-center gap-1.5 rounded-lg border border-emerald-200 bg-white px-2.5 font-bold text-emerald-700 shadow-sm transition hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50",
-                                          hasPreflightBlockers && "border-red-200 bg-red-50 text-red-700 hover:bg-red-50",
                                         )}
-                                        title={hasPreflightBlockers ? "Chưa thể xuất bản vì còn lỗi bắt buộc cần xử lý." : "Xuất PDF văn bản"}
+                                        title="Kiểm tra trước xuất và tải PDF văn bản"
                                       >
                                         {exportingFormat === "pdf" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FileDown className="h-3.5 w-3.5" />}
                                         PDF
@@ -3217,13 +3349,12 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                       <button
                                         type="button"
                                         onClick={() => void handleExportArticle("docx")}
-                                        disabled={hasPreflightBlockers || Boolean(exportingFormat)}
-                                        aria-disabled={hasPreflightBlockers || Boolean(exportingFormat)}
+                                        disabled={Boolean(exportingFormat)}
+                                        aria-disabled={Boolean(exportingFormat)}
                                         className={cn(
                                           "inline-flex h-8 items-center gap-1.5 rounded-lg border border-blue-200 bg-white px-2.5 font-bold text-blue-700 shadow-sm transition hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50",
-                                          hasPreflightBlockers && "border-red-200 bg-red-50 text-red-700 hover:bg-red-50",
                                         )}
-                                        title={hasPreflightBlockers ? "Chưa thể xuất bản vì còn lỗi bắt buộc cần xử lý." : "Xuất Word (DOCX)"}
+                                        title="Kiểm tra trước xuất và tải Word (DOCX)"
                                       >
                                         {exportingFormat === "docx" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FileText className="h-3.5 w-3.5" />}
                                         Word
@@ -3232,13 +3363,12 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                     <button
                                       type="button"
                                       onClick={() => void handleExportArticle("html")}
-                                      disabled={hasPreflightBlockers || Boolean(exportingFormat)}
-                                      aria-disabled={hasPreflightBlockers || Boolean(exportingFormat)}
+                                      disabled={Boolean(exportingFormat)}
+                                      aria-disabled={Boolean(exportingFormat)}
                                       className={cn(
                                         "inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 font-bold text-slate-700 shadow-sm transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50",
-                                        hasPreflightBlockers && "border-red-200 bg-red-50 text-red-700 hover:bg-red-50",
                                       )}
-                                      title={hasPreflightBlockers ? "Chưa thể xuất bản vì còn lỗi bắt buộc cần xử lý." : "Xuất HTML A4 độc lập"}
+                                      title="Kiểm tra trước xuất và tải HTML A4 độc lập"
                                     >
                                       {exportingFormat === "html" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Globe className="h-3.5 w-3.5" />}
                                       HTML A4
@@ -3246,21 +3376,13 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                   </div>
                                 </div>
 
-                                <div className="p-4 sm:p-6 md:p-10 bg-[#FCFDFF] printable-article-shell">
+                                <div
+                                  className="p-4 sm:p-6 md:p-10 bg-[#FCFDFF] printable-article-shell"
+                                  onDragOver={(event) => event.preventDefault()}
+                                  onDrop={(event) => event.preventDefault()}
+                                >
 
-                                  {isEditing ? (
-                                    <div className="prose prose-slate max-w-none prose-headings:text-[#002D56] prose-headings:font-semibold prose-p:text-slate-700 prose-p:text-lg prose-p:leading-relaxed prose-li:text-slate-600 font-serif">
-                                      <textarea
-                                        value={output}
-                                        onChange={(e) => {
-                                          setOutput(e.target.value);
-                                          markDraftDirty();
-                                        }}
-                                        className="w-full h-[600px] p-6 bg-slate-50 border border-dashed border-slate-200 rounded-lg text-lg leading-relaxed font-serif focus:outline-none focus:border-[#002D56] transition-all"
-                                      />
-                                    </div>
-                                  ) : (
-                                    <>
+                                  <>
                                       {canvasBlockEditState && (() => {
                                         const headingLevel = getCanvasHeadingLevel(canvasBlockEditState.value, canvasBlockEditState.blockType);
                                         const isBulletList = isCanvasBulletList(canvasBlockEditState.value, canvasBlockEditState.blockType);
@@ -3326,10 +3448,9 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                         emptyBlockIds={emptyCanvasBlockIds}
                                       />
                                     </>
-                                  )}
                                 </div>
 
-                                <div className="px-8 py-6 bg-[#002D56] text-white/50 text-[10px] font-semibold text-center uppercase tracking-[0.3em]">
+                                <div data-export-exclude="true" className="px-8 py-6 bg-[#002D56] text-white/50 text-[10px] font-semibold text-center uppercase tracking-[0.3em]">
                                   Bản quyền nội dung thuộc về Tổng Công ty Bảo
                                   đảm an toàn hàng hải Việt Nam
                                 </div>
@@ -3351,15 +3472,21 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
 
   return (
     <div className="relative h-full min-h-0 overflow-hidden">
-      <main className="h-full min-w-0 min-h-0 overflow-y-auto overscroll-contain pr-1 custom-scrollbar space-y-5 pb-24" onClick={(event) => {
-        if (event.target === event.currentTarget) clearCopilotContext();
-      }}>
+      <main
+        className={cn(
+          "h-full min-w-0 min-h-0 overflow-y-auto overscroll-contain custom-scrollbar space-y-5 pb-24 transition-[padding] duration-200",
+          copilotViewMode !== "collapsed" && copilotViewMode !== "fullscreen" ? "pr-1 xl:pr-[440px]" : "pr-1",
+        )}
+        onClick={handleWorkspaceClick}
+      >
         {renderWorkspaceHeader()}
         {renderActiveWorkspace()}
       </main>
 
       {isContextPillVisible && pillAnchor && selectedContextItems.length > 0 && selectedContextItems.length <= 3 && (
         <div
+          data-context-pill="true"
+          data-export-exclude="true"
           className="fixed z-40 flex items-center gap-2 rounded-full border border-blue-200 bg-white px-2 py-2 shadow-xl shadow-slate-900/10"
           style={{ top: pillAnchor.top, left: pillAnchor.left }}
           onMouseEnter={() => setIsContextPillVisible(true)}
