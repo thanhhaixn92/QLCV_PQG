@@ -239,7 +239,7 @@ export function getCopilotChatReply(
 ): string | null {
   switch (intent) {
     case "greeting":
-      return "Chào bạn! Tôi là Trợ lý biên tập. Bạn có thể chọn một đoạn trên Canvas rồi yêu cầu tôi viết lại, rút gọn, mở rộng hoặc hỏi bất cứ điều gì về bài viết. Tôi sẵn sàng hỗ trợ!";
+      return "Chào bạn! Tôi đang hỗ trợ biên tập trong Canvas. Bạn có thể chọn một đoạn rồi yêu cầu viết lại, rút gọn, mở rộng hoặc hỏi về bài viết.";
 
     case "help_request":
       return (
@@ -259,7 +259,7 @@ export function getCopilotChatReply(
           "Nếu chỉ muốn hỏi nhận xét, cứ hỏi tự nhiên nhé!"
         );
       }
-      return "Tôi là Trợ lý biên tập, sẵn sàng giúp bạn chỉnh sửa, kiểm tra hoặc tư vấn nội dung. Bạn muốn làm gì với bản thảo?";
+      return "Tôi đang sẵn sàng giúp bạn chỉnh sửa, kiểm tra hoặc tư vấn nội dung. Bạn muốn làm gì với bản thảo?";
 
     case "context_question":
       // Advisory fallback — safe, deterministic, no proposal

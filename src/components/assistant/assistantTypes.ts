@@ -22,6 +22,7 @@ export interface AssistantContextSummaryItem {
   id: string;
   label: string;
   value: string;
+  details?: string[];
   tone?: "neutral" | "success" | "warning" | "danger";
   icon?: React.ReactNode;
 }

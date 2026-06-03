@@ -24,7 +24,7 @@ export function AssistantContextPane({ title = "Trung tâm hỗ trợ", items, c
       <div className="mb-1.5 flex items-center justify-between gap-2">
         <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-500">{title}</p>
       </div>
-      <div className="space-y-2">
+      <div className="space-y-1.5">
         {items.length === 0 ? (
           <div className="rounded-md border border-dashed border-slate-200 bg-white/80 px-3 py-2.5 text-xs font-semibold leading-5 text-slate-500">
             Chưa có thông tin hỗ trợ trong phiên này.
@@ -41,6 +41,13 @@ export function AssistantContextPane({ title = "Trung tâm hỗ trợ", items, c
                   <div className="min-w-0 flex-1">
                     <p className="text-[11px] font-black uppercase tracking-[0.12em] opacity-70">{item.label}</p>
                     <p className="mt-0.5 line-clamp-2 text-[11px] font-semibold leading-4">{item.value}</p>
+                    {item.details && item.details.length > 0 && (
+                      <ul className="mt-1 space-y-0.5 text-[10px] font-semibold leading-4 opacity-80">
+                        {item.details.slice(0, 5).map((detail) => (
+                          <li key={`${item.id}:${detail}`} className="truncate">• {detail}</li>
+                        ))}
+                      </ul>
+                    )}
                   </div>
                 </div>
               </div>

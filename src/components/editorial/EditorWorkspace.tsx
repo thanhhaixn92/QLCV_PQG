@@ -776,7 +776,7 @@ const COMMAND_LABELS: Record<CopilotCommandId, string> = {
   export_html_a4: "Xuất HTML A4",
   open_history: "Lịch sử",
   choose_template: "Chọn mẫu",
-  more: "Khác",
+  more: "Thêm",
 };
 
 function makeCommand(id: CopilotCommandId, description?: string, disabled?: boolean): CopilotCommand {
@@ -2397,7 +2397,7 @@ export const EditorWorkspace = (props: any) => {
     ];
 
     if (commandId === "more" && !commandPrompt) {
-      setCopilotStatusMessage("Nhập yêu cầu cụ thể trước khi dùng lệnh Khác.");
+      setCopilotStatusMessage("Nhập yêu cầu cụ thể trước khi dùng lệnh Thêm.");
       return;
     }
     if (draftRequiredCommands.includes(commandId) && !draftText.trim()) {
@@ -2524,7 +2524,7 @@ ${pendingProposal.proposedText}`;
 
   const getSourceModeFallback = React.useCallback((prompt: string): string | null => {
     const normalizedPrompt = prompt.toLowerCase();
-    const asksForArticles = /tổng\s+hợp.*(bài\s+báo|bài\s+viết|bản\s+thảo)|liệt\s+kê.*(bài\s+báo|bài\s+viết|bản\s+thảo)|tóm\s+tắt.*(bài\s+báo|bài\s+viết|bản\s+thảo)|các\s+bản\s+thảo\s+hiện\s+có/iu.test(normalizedPrompt);
+    const asksForArticles = /tổng\s+hợp.*(bài\s+báo|bài\s+viết|bản\s+thảo)|liệt\s+kê.*(bài\s+báo|bài\s+viết|bản\s+thảo)|tóm\s+tắt.*(bài\s+báo|bài\s+viết|bản\s+thảo)|(các\s+)?(bài\s+báo|bài\s+viết|bản\s+thảo)\s+hiện\s+có|các\s+bản\s+thảo\s+hiện\s+có/iu.test(normalizedPrompt);
     const asksForLibrary = /tổng\s+hợp.*(kho\s+tư\s+liệu|tài\s+liệu|nguồn)|liệt\s+kê.*(kho\s+tư\s+liệu|tài\s+liệu|nguồn)|tóm\s+tắt.*(kho\s+tư\s+liệu|tài\s+liệu|nguồn)/iu.test(normalizedPrompt);
     const asksForTasks = /tổng\s+hợp.*(công\s+việc|task|nhiệm\s+vụ)|liệt\s+kê.*(công\s+việc|task|nhiệm\s+vụ)|tóm\s+tắt.*(công\s+việc|task|nhiệm\s+vụ)/iu.test(normalizedPrompt);
 
@@ -4166,52 +4166,77 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
 
   const assistantContextItems = React.useMemo<AssistantContextSummaryItem[]>(() => {
     const items: AssistantContextSummaryItem[] = [];
-    const preflightLabel = preflightUiStatus === "ready"
-      ? `${reviewedPreflightIssues.length} vấn đề sau lần rà soát gần nhất`
-      : preflightUiStatus === "stale"
-        ? `${reviewedPreflightIssues.length || visiblePreflightIssues.length} vấn đề, cần rà soát lại`
-        : hasGeneratedDraft
-          ? "Chưa chạy kiểm tra trước xuất"
-          : "Chưa có bản thảo để kiểm tra";
+    const preflightLabel = preflightUiStatus === "checking"
+      ? "Đang rà soát bản thảo…"
+      : preflightUiStatus === "ready"
+        ? reviewedPreflightIssues.length > 0
+          ? `Đã rà soát • ${reviewedPreflightIssues.length} vấn đề/gợi ý`
+          : "Đã rà soát • Chưa phát hiện vấn đề lớn"
+        : preflightUiStatus === "stale"
+          ? "Cần rà soát lại vì bản thảo đã thay đổi"
+          : hasGeneratedDraft
+            ? "Chưa rà soát trước khi xuất"
+            : "Không có bản thảo để kiểm tra";
     items.push({
       id: "preflight",
       label: "Kiểm tra",
       value: preflightLabel,
-      tone: preflightUiStatus === "ready" && reviewedPreflightIssues.length === 0 ? "success" : preflightUiStatus === "stale" ? "warning" : "neutral",
+      details: preflightUiStatus === "stale" && (reviewedPreflightIssues.length || visiblePreflightIssues.length)
+        ? [`${reviewedPreflightIssues.length || visiblePreflightIssues.length} cảnh báo từ lần kiểm tra gần nhất`]
+        : undefined,
+      tone: preflightUiStatus === "ready" && reviewedPreflightIssues.length === 0
+        ? "success"
+        : preflightUiStatus === "checking" || preflightUiStatus === "stale"
+          ? "warning"
+          : "neutral",
     });
 
+    const sourceNames = selectedDraftSources
+      .map((source) => source.title)
+      .filter((title): title is string => Boolean(title && title.trim()))
+      .slice(0, 3);
     items.push({
       id: "sources",
-      label: "Nguồn đang gắn",
+      label: "Nguồn",
       value: selectedDraftSources.length > 0
-        ? `${selectedDraftSources.length} nguồn đã gắn vào phiên biên tập`
-        : "Chưa gắn nguồn cho bản thảo này",
+        ? `${selectedDraftSources.length} nguồn đã gắn vào bản thảo`
+        : "Chưa gắn nguồn cho bản thảo này.",
+      details: sourceNames.length > 0 ? sourceNames : undefined,
       tone: selectedDraftSources.length > 0 ? "success" : "neutral",
     });
 
-    const latestActivity = systemActivityLogs[0];
-    if (latestActivity) {
-      items.push({
-        id: "activity",
-        label: "Hoạt động gần nhất",
-        value: latestActivity.message,
-        tone: latestActivity.type === "error" ? "danger" : latestActivity.type === "warning" ? "warning" : latestActivity.type === "success" ? "success" : "neutral",
-      });
-    }
+    const activityDetails = systemActivityLogs
+      .slice(0, 5)
+      .map((log) => log.message)
+      .filter((message) => message.trim());
+    items.push({
+      id: "activity",
+      label: "Hoạt động gần nhất",
+      value: activityDetails.length > 0 ? `${activityDetails.length} hoạt động mới nhất` : "Chưa có hoạt động phiên này.",
+      details: activityDetails.length > 0 ? activityDetails : undefined,
+      tone: systemActivityLogs[0]?.type === "error"
+        ? "danger"
+        : systemActivityLogs[0]?.type === "warning"
+          ? "warning"
+          : systemActivityLogs[0]?.type === "success"
+            ? "success"
+            : "neutral",
+    });
 
     if (selectedContextItems.length > 0) {
       items.push({
         id: "context",
-        label: "Canvas context",
+        label: "Canvas",
         value: selectedContextItems.length === 1
-          ? `Đã chọn: ${selectedContextItems[0].title}`
-          : `Đã chọn: ${selectedContextItems.length} nội dung trên Canvas`,
+          ? "Đang hỏi theo đoạn đã chọn"
+          : `Đang hỏi theo ${selectedContextItems.length} đoạn đã chọn`,
+        details: selectedContextItems.slice(0, 2).map((item) => item.title || item.excerpt || "Nội dung đã chọn"),
         tone: "success",
       });
     }
 
     return items;
-  }, [hasGeneratedDraft, preflightUiStatus, reviewedPreflightIssues.length, selectedContextItems, selectedDraftSources.length, systemActivityLogs, visiblePreflightIssues.length]);
+  }, [hasGeneratedDraft, preflightUiStatus, reviewedPreflightIssues.length, selectedContextItems, selectedDraftSources, systemActivityLogs, visiblePreflightIssues.length]);
 
   const renderCopilotPanel = (dockMode: "floating" | "rail" | "sidebar" = "sidebar") => (
     <FloatingCopilot
