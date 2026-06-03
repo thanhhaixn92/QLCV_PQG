@@ -346,7 +346,7 @@ export function FloatingCopilot({
         isFullscreen
           ? "fixed inset-0 z-[70] h-[100dvh] w-screen max-w-none rounded-none shadow-2xl shadow-slate-900/20"
           : isSidebarDocked
-            ? "relative h-full min-h-[420px] w-full rounded-none border-0 bg-transparent shadow-none"
+            ? "relative h-full min-h-0 w-full rounded-none border-0 bg-transparent shadow-none"
             : isRailDocked
               ? "relative h-full min-h-[420px] w-full rounded-none shadow-none"
               : "fixed bottom-5 right-5 top-[92px] z-40 w-[min(420px,calc(100vw-2rem))] rounded-2xl shadow-2xl shadow-slate-900/20",
@@ -385,8 +385,8 @@ export function FloatingCopilot({
         <SourceModeBar value={sourceMode} onChange={onSourceModeChange} statusText={sourceModeStatus} />
       )}
 
-      <nav className="relative shrink-0 border-b border-slate-100 bg-white px-3 py-2" aria-label="Command Dock" ref={overflowRef}>
-        <div className="grid grid-cols-4 gap-2">
+      <nav className="relative shrink-0 border-b border-slate-100 bg-white px-2 py-1.5" aria-label="Command Dock" ref={overflowRef}>
+        <div className="grid grid-cols-4 gap-1">
           {primaryCommands.map((command) => (
             <button
               type="button"
@@ -395,7 +395,7 @@ export function FloatingCopilot({
               title={commandDisabledTitle(command)}
               onClick={() => runDockCommand(command)}
               className={cn(
-                "inline-flex min-h-8 min-w-0 items-center justify-center rounded-full border px-2 py-1.5 text-xs font-black transition",
+                "inline-flex min-h-7 min-w-0 items-center justify-center rounded-md border px-1.5 py-1 text-[11px] font-black transition",
                 activeCommandId === command.id ? "border-[#002D56] bg-blue-50 text-[#002D56]" : "border-slate-200 bg-slate-50 text-slate-700 hover:border-blue-200 hover:bg-blue-50",
                 command.disabled && "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400 opacity-70 hover:bg-slate-100",
               )}
@@ -408,7 +408,7 @@ export function FloatingCopilot({
               type="button"
               onClick={() => setIsOverflowOpen((current) => !current)}
               className={cn(
-                "inline-flex min-h-8 min-w-0 items-center justify-center rounded-full border px-2 py-1.5 text-xs font-black transition",
+                "inline-flex min-h-7 min-w-0 items-center justify-center rounded-md border px-1.5 py-1 text-[11px] font-black transition",
                 isOverflowOpen ? "border-[#002D56] bg-blue-50 text-[#002D56]" : "border-slate-200 bg-slate-50 text-slate-700 hover:border-blue-200 hover:bg-blue-50",
               )}
               aria-expanded={isOverflowOpen}
@@ -446,7 +446,7 @@ export function FloatingCopilot({
           </div>
         )}
       </nav>
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 custom-scrollbar">
+      <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3 custom-scrollbar">
         <AssistantMessageList
           messages={assistantMessages}
           isLoading={isBusy}
@@ -742,8 +742,8 @@ export function FloatingCopilot({
         )}
       </div>
 
-      <footer className="shrink-0 border-t border-slate-100 bg-white p-3">
-        <div className="mb-2 max-h-16 overflow-hidden rounded-xl border border-blue-100 bg-blue-50/70 px-3 py-1.5">
+      <footer className="shrink-0 border-t border-slate-100 bg-white p-2.5">
+        <div className="mb-1.5 max-h-14 overflow-hidden rounded-md border border-blue-100 bg-blue-50/70 px-2.5 py-1.5">
           <div className="flex items-center justify-between gap-2">
             <p className="min-w-0 truncate text-xs font-black text-[#002D56]"><Paperclip className="mr-1 inline h-3.5 w-3.5" />{contextSummary}</p>
             <button type="button" onClick={onClearContext} disabled={selectedContextItems.length === 0} className="shrink-0 text-[11px] font-bold text-slate-500 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40">Xóa tất cả</button>
@@ -762,15 +762,15 @@ export function FloatingCopilot({
             </div>
           )}
         </div>
-        <div className="flex min-w-0 items-end gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-2 focus-within:border-[#002D56] focus-within:bg-white">
+        <div className="flex min-w-0 items-end gap-2 rounded-lg border border-slate-200 bg-slate-50 p-2 focus-within:border-[#002D56] focus-within:bg-white">
           <textarea
             value={inputValue}
             onChange={(event) => onInputChange(event.target.value)}
             placeholder="Nhập câu hỏi hoặc yêu cầu biên tập…"
             rows={2}
-            className="min-h-[44px] min-w-0 flex-1 resize-none bg-transparent px-2 py-2 text-sm text-slate-800 outline-none"
+            className="min-h-10 min-w-0 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm text-slate-800 outline-none"
           />
-          <button type="button" disabled={isBusy || !inputValue.trim()} onClick={onSubmitPrompt} className="mb-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#002D56] text-white hover:bg-slate-900 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:opacity-70" aria-label="Gửi câu hỏi hoặc yêu cầu biên tập">
+          <button type="button" disabled={isBusy || !inputValue.trim()} onClick={onSubmitPrompt} className="mb-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[#002D56] text-white hover:bg-slate-900 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:opacity-70" aria-label="Gửi câu hỏi hoặc yêu cầu biên tập">
             {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
           </button>
         </div>

@@ -4281,7 +4281,11 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
       <main
         className={cn(
           "h-full min-w-0 min-h-0 overflow-y-auto overscroll-contain custom-scrollbar space-y-5 pb-24 transition-[padding] duration-200",
-          copilotViewMode !== "collapsed" && copilotViewMode !== "fullscreen" ? "pl-[420px] max-sm:pl-0 pr-12" : "pl-0 pr-12",
+          copilotViewMode === "fullscreen"
+            ? "pl-0 pr-12"
+            : copilotViewMode !== "collapsed"
+              ? "pl-[420px] max-sm:pl-0 pr-12"
+              : "pl-12 max-sm:pl-0 pr-12",
         )}
         onClick={handleWorkspaceClick}
       >

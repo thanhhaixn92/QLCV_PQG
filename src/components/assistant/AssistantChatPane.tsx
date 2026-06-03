@@ -6,7 +6,7 @@ interface AssistantChatPaneProps {
 
 export function AssistantChatPane({ children }: AssistantChatPaneProps) {
   return (
-    <section className="min-h-0 flex-[2] overflow-hidden bg-slate-50/40" aria-label="Chat hỗ trợ" data-export-exclude="true">
+    <section className="min-h-0 flex-[2_1_0%] overflow-hidden bg-slate-50/40" aria-label="Chat hỗ trợ" data-export-exclude="true">
       {children}
     </section>
   );

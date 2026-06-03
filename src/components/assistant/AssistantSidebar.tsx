@@ -20,11 +20,11 @@ export function AssistantSidebar({ isOpen, moduleStatus, contextPane, chatPane, 
           data-export-exclude="true"
           data-assistant-sidebar-toggle="true"
           onClick={onOpen}
-          className="absolute left-0 top-4 z-40 inline-flex min-h-11 items-center gap-2 border border-l-0 border-slate-200 bg-white px-3 text-xs font-black uppercase tracking-[0.14em] text-[#002D56] shadow-sm hover:bg-blue-50"
+          className="absolute left-0 top-1/2 z-40 inline-flex h-32 w-11 -translate-y-1/2 flex-col items-center justify-center gap-2 border-y border-r border-slate-200 bg-white text-[11px] font-black uppercase tracking-[0.12em] text-[#002D56] shadow-none transition hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-blue-200"
           aria-label="Mở Trợ lý Hoa Tiêu"
         >
           <PanelLeftOpen className="h-4 w-4" />
-          Trợ lý
+          <span className="[writing-mode:vertical-rl]">Trợ lý</span>
         </button>
       )}
 
@@ -50,9 +50,9 @@ export function AssistantSidebar({ isOpen, moduleStatus, contextPane, chatPane, 
         aria-label="Trợ lý Hoa Tiêu"
         aria-hidden={!isOpen}
       >
-        <header className="flex shrink-0 items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-3">
+        <header className="flex shrink-0 items-center justify-between gap-3 border-b border-slate-200 bg-white px-3 py-2.5">
           <div className="flex min-w-0 items-center gap-3">
-            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-[#002D56]">
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-blue-50 text-[#002D56]">
               <Bot className="h-4 w-4" />
             </span>
             <div className="min-w-0">
@@ -60,7 +60,7 @@ export function AssistantSidebar({ isOpen, moduleStatus, contextPane, chatPane, 
               <p className="truncate text-xs font-semibold text-slate-500">{moduleStatus}</p>
             </div>
           </div>
-          <button type="button" onClick={onClose} className="rounded-lg p-2 text-slate-500 hover:bg-slate-100" aria-label="Đóng Trợ lý Hoa Tiêu">
+          <button type="button" onClick={onClose} className="flex h-10 w-10 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100" aria-label="Đóng Trợ lý Hoa Tiêu">
             <X className="h-4 w-4" />
           </button>
         </header>
