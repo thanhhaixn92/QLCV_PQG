@@ -16,6 +16,10 @@ import { TaskType, OutputFormat } from '../../types';
 import type { EditorialWorkspaceMode } from '../../types/editorial';
 import type { ArticleBlock } from '../../lib/publishing/articleDocument';
 import { FloatingCopilot, type CopilotCommand, type CopilotContextItem, type CopilotDraftFlowState, type CopilotProposal, type CopilotSourceFlowState, type CopilotViewMode } from '../copilot/FloatingCopilot';
+import { AssistantSidebar } from '../assistant/AssistantSidebar';
+import { AssistantContextPane } from '../assistant/AssistantContextPane';
+import { AssistantChatPane } from '../assistant/AssistantChatPane';
+import type { AssistantContextSummaryItem, AssistantSourceMode } from '../assistant/assistantTypes';
 
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '../../lib/utils';
@@ -772,7 +776,7 @@ const COMMAND_LABELS: Record<CopilotCommandId, string> = {
   export_html_a4: "Xuất HTML A4",
   open_history: "Lịch sử",
   choose_template: "Chọn mẫu",
-  more: "Khác",
+  more: "Thêm",
 };
 
 function makeCommand(id: CopilotCommandId, description?: string, disabled?: boolean): CopilotCommand {
@@ -953,7 +957,7 @@ export const EditorWorkspace = (props: any) => {
   const [lastSavedAt, setLastSavedAt] = React.useState<number | null>(null);
   const [isSavingDraft, setIsSavingDraft] = React.useState(false);
   const [copilotViewMode, setCopilotViewMode] = React.useState<CopilotViewMode>("collapsed");
-  const [railActiveTab, setRailActiveTab] = React.useState<"check" | "activity" | "assistant" | "sources">("assistant");
+  const [assistantSourceMode, setAssistantSourceMode] = React.useState<AssistantSourceMode>("canvas");
   const [copilotChatMessages, setCopilotChatMessages] = React.useState<CopilotChatMessage[]>([]);
   const [selectedContextItems, setSelectedContextItems] = React.useState<CopilotContextItem[]>([]);
   const [activeCommandId, setActiveCommandId] = React.useState<string | null>(null);
@@ -1635,7 +1639,7 @@ export const EditorWorkspace = (props: any) => {
         if (nextCanvasItems.length === 0) {
           setPillAnchor(null);
           setIsContextPillVisible(false);
-          setCopilotStatusMessage("Chưa chọn ngữ cảnh");
+          setCopilotStatusMessage("Đang hỏi chung về bản thảo");
         } else {
           setPillAnchor(nextAnchor);
           setIsContextPillVisible(nextCanvasItems.length <= 3);
@@ -2393,7 +2397,7 @@ export const EditorWorkspace = (props: any) => {
     ];
 
     if (commandId === "more" && !commandPrompt) {
-      setCopilotStatusMessage("Nhập yêu cầu cụ thể trước khi dùng lệnh Khác.");
+      setCopilotStatusMessage("Nhập yêu cầu cụ thể trước khi dùng lệnh Thêm.");
       return;
     }
     if (draftRequiredCommands.includes(commandId) && !draftText.trim()) {
@@ -2437,6 +2441,7 @@ export const EditorWorkspace = (props: any) => {
       }
     } catch (err: any) {
       const message = err?.message || "Không chạy được Editorial Workflow Router.";
+      if (commandId === "more" && commandPrompt) setCopilotInput(commandPrompt);
       setCopilotStatusMessage(message);
       notifyError("proposal-status", message);
     } finally {
@@ -2517,8 +2522,26 @@ ${pendingProposal.proposedText}`;
     notifySuccess("proposal-status", "Đã áp dụng đề xuất vào bản thảo. Hãy kiểm tra lại trên Canvas trước khi lưu.");
   }, [applyCaptionProposalToOutput, notifySuccess, pendingProposal, replaceOutputText, selectedBlockContext, selectedContextItems, setOutput]);
 
-  const handleSubmitCopilotPrompt = React.useCallback(async () => {
-    const prompt = normalizeEditorialBriefInput(copilotInput);
+  const getSourceModeFallback = React.useCallback((prompt: string): string | null => {
+    const normalizedPrompt = prompt.toLowerCase();
+    const asksForArticles = /tổng\s+hợp.*(bài\s+báo|bài\s+viết|bản\s+thảo)|liệt\s+kê.*(bài\s+báo|bài\s+viết|bản\s+thảo)|tóm\s+tắt.*(bài\s+báo|bài\s+viết|bản\s+thảo)|(các\s+)?(bài\s+báo|bài\s+viết|bản\s+thảo)\s+hiện\s+có|các\s+bản\s+thảo\s+hiện\s+có/iu.test(normalizedPrompt);
+    const asksForLibrary = /tổng\s+hợp.*(kho\s+tư\s+liệu|tài\s+liệu|nguồn)|liệt\s+kê.*(kho\s+tư\s+liệu|tài\s+liệu|nguồn)|tóm\s+tắt.*(kho\s+tư\s+liệu|tài\s+liệu|nguồn)/iu.test(normalizedPrompt);
+    const asksForTasks = /tổng\s+hợp.*(công\s+việc|task|nhiệm\s+vụ)|liệt\s+kê.*(công\s+việc|task|nhiệm\s+vụ)|tóm\s+tắt.*(công\s+việc|task|nhiệm\s+vụ)/iu.test(normalizedPrompt);
+
+    if (assistantSourceMode === "articles" || asksForArticles) {
+      return "Tôi chưa truy cập được danh sách bài viết trong phiên này. Bạn có thể mở Lịch sử bài viết hoặc gắn dữ liệu Bài viết trước khi yêu cầu tổng hợp.";
+    }
+    if (assistantSourceMode === "library" || asksForLibrary) {
+      return "Tôi chưa truy cập được dữ liệu Kho tư liệu trong phiên này. Bạn có thể mở Kho tư liệu hoặc gắn nguồn vào bản thảo trước khi yêu cầu tổng hợp.";
+    }
+    if (assistantSourceMode === "tasks" || asksForTasks) {
+      return "Tôi chưa truy cập được danh sách công việc trong phiên này. Bạn có thể mở module Công việc để tôi hỗ trợ theo danh sách task hiện có.";
+    }
+    return null;
+  }, [assistantSourceMode]);
+
+  const handleSubmitCopilotPrompt = React.useCallback(async (promptOverride?: string) => {
+    const prompt = normalizeEditorialBriefInput(promptOverride ?? copilotInput);
     if (!prompt) return;
 
     const hasContext = selectedContextItems.length > 0;
@@ -2533,6 +2556,20 @@ ${pendingProposal.proposedText}`;
     };
     setCopilotChatMessages((prev) => [...prev, userMsg]);
     setCopilotInput("");
+
+    const sourceModeFallback = getSourceModeFallback(prompt);
+    if (sourceModeFallback) {
+      const assistantMsg: CopilotChatMessage = {
+        id: `chat-assistant-${Date.now()}`,
+        role: "assistant",
+        content: sourceModeFallback,
+        createdAt: Date.now(),
+        isContextAdvice: true,
+      };
+      setCopilotChatMessages((prev) => [...prev, assistantMsg]);
+      addSystemActivityLog("info", "Trợ lý đã trả fallback do thiếu dữ liệu nguồn thật cho mode đang chọn.", "Trợ lý", `copilot-source-mode-${assistantSourceMode}`);
+      return;
+    }
 
     // ----------------------------------------------------------------
     // SAFE CHAT INTENTS — never touch proposal workflow
@@ -2578,9 +2615,15 @@ ${pendingProposal.proposedText}`;
     // WORKFLOW INTENTS — generate_draft / preflight / source / edit (with context)
     // These produce a proposal card via the existing engine
     // ----------------------------------------------------------------
-    await handleRunCopilotCommand("more", prompt);
+    try {
+      await handleRunCopilotCommand("more", prompt);
+    } catch {
+      setCopilotInput(prompt);
+    }
   }, [
     copilotInput,
+    assistantSourceMode,
+    getSourceModeFallback,
     addSystemActivityLog,
     selectedContextItems,
     handleRunCopilotCommand,
@@ -4121,232 +4164,133 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
     );
   };
 
-  const renderCopilotPanel = (dockMode: "floating" | "rail" = "rail") => (
-<FloatingCopilot
-        dockMode={dockMode}
-        viewMode={copilotViewMode}
-        selectedContextItems={selectedContextItems}
-        commands={copilotCommands}
-        activeCommandId={activeCommandId}
-        pendingProposal={pendingProposal}
-        statusMessage={copilotStatusMessage}
-        inputValue={copilotInput}
-        chatMessages={copilotChatMessages}
-        draftFlow={copilotDraftFlowState}
-        sourceFlow={copilotSourceFlowState}
-        isBusy={isCopilotBusy}
-        onDraftFlowChange={updateCopilotDraftFlow}
-        onSubmitDraftFlow={() => void submitCopilotDraftFlow()}
-        onGenerateTemplateSkeleton={() => void handleGenerateTemplateSkeleton()}
-        onCancelDraftFlow={() => { setIsCopilotDraftFlowOpen(false); setCopilotDraftFlowError(null); setCopilotStatusMessage("Đã hủy tạo bản thảo. Canvas không thay đổi."); }}
-        onOpenSourceWorkspace={openSourceWorkspaceFromCopilot}
-        onCancelSourceFlow={() => { setIsCopilotSourceFlowOpen(false); setCopilotStatusMessage("Đã đóng luồng thêm nguồn. Canvas không thay đổi."); }}
-        onOpenHistory={() => { switchWorkspaceMode("history"); setCopilotStatusMessage("Đã mở lịch sử văn bản. Bản thảo hiện tại không thay đổi."); }}
-        onChooseTemplate={openCopilotDraftFlow}
-        onCopyProposal={() => { if (pendingProposal?.proposedText) void navigator.clipboard?.writeText(pendingProposal.proposedText); setCopilotStatusMessage("Đã sao chép nội dung tham khảo."); }}
-        onOpen={openCopilotExpanded}
-        onClose={() => setCopilotViewMode("collapsed")}
-        onFullscreen={() => setCopilotViewMode("fullscreen")}
-        onReturnToCanvas={() => setCopilotViewMode("expanded")}
-        onRemoveContext={(id) => { setSelectedContextItems((items) => items.filter((item) => item.id !== id)); }}
-        onClearContext={clearCopilotContext}
-        onRunCommand={(id, prompt) => void handleRunCopilotCommand(id, prompt)}
-        onInputChange={setCopilotInput}
-        onSubmitPrompt={() => void handleSubmitCopilotPrompt()}
-        onApplyProposal={handleApplyCopilotProposal}
-        onCancelProposal={() => {
-          setPendingProposal(null);
-          setCopilotStatusMessage("Đã hủy đề xuất. Nội dung gốc không thay đổi.");
-        }}
-      />
-  );
+  const assistantContextItems = React.useMemo<AssistantContextSummaryItem[]>(() => {
+    const items: AssistantContextSummaryItem[] = [];
+    const preflightLabel = preflightUiStatus === "checking"
+      ? "Đang rà soát bản thảo…"
+      : preflightUiStatus === "ready"
+        ? reviewedPreflightIssues.length > 0
+          ? `Đã rà soát • ${reviewedPreflightIssues.length} vấn đề/gợi ý`
+          : "Đã rà soát • Chưa phát hiện vấn đề lớn"
+        : preflightUiStatus === "stale"
+          ? "Cần rà soát lại vì bản thảo đã thay đổi"
+          : hasGeneratedDraft
+            ? "Chưa rà soát trước khi xuất"
+            : "Không có bản thảo để kiểm tra";
+    items.push({
+      id: "preflight",
+      label: "Kiểm tra",
+      value: preflightLabel,
+      details: preflightUiStatus === "stale" && (reviewedPreflightIssues.length || visiblePreflightIssues.length)
+        ? [`${reviewedPreflightIssues.length || visiblePreflightIssues.length} cảnh báo từ lần kiểm tra gần nhất`]
+        : undefined,
+      tone: preflightUiStatus === "ready" && reviewedPreflightIssues.length === 0
+        ? "success"
+        : preflightUiStatus === "checking" || preflightUiStatus === "stale"
+          ? "warning"
+          : "neutral",
+    });
 
-  const RAIL_TABS = [
-    { id: "check" as const, label: "Kiểm tra" },
-    { id: "activity" as const, label: "Hoạt động" },
-    { id: "assistant" as const, label: "Trợ lý" },
-    { id: "sources" as const, label: "Nguồn" },
-  ];
+    const sourceNames = selectedDraftSources
+      .map((source) => source.title)
+      .filter((title): title is string => Boolean(title && title.trim()))
+      .slice(0, 3);
+    items.push({
+      id: "sources",
+      label: "Nguồn",
+      value: selectedDraftSources.length > 0
+        ? `${selectedDraftSources.length} nguồn đã gắn vào bản thảo`
+        : "Chưa gắn nguồn cho bản thảo này.",
+      details: sourceNames.length > 0 ? sourceNames : undefined,
+      tone: selectedDraftSources.length > 0 ? "success" : "neutral",
+    });
 
-  const renderRightRail = () => {
-    if (copilotViewMode === "fullscreen") return renderCopilotPanel("floating");
-    const isExpanded = copilotViewMode !== "collapsed";
-    const checkBadge = preflightUiStatus === "stale" ? Math.max(1, reviewedPreflightIssues.length) : preflightUiStatus === "ready" ? reviewedPreflightIssues.length : 0;
-    const activityBadge = systemActivityLogs.length;
-    const contextBadge = selectedContextItems.length;
-    const railBadgeCount = checkBadge + activityBadge + contextBadge;
-    const badgeLabel = railBadgeCount > 9 ? "9+" : String(railBadgeCount);
+    const activityDetails = systemActivityLogs
+      .slice(0, 5)
+      .map((log) => log.message)
+      .filter((message) => message.trim());
+    items.push({
+      id: "activity",
+      label: "Hoạt động gần nhất",
+      value: activityDetails.length > 0 ? `${activityDetails.length} hoạt động mới nhất` : "Chưa có hoạt động phiên này.",
+      details: activityDetails.length > 0 ? activityDetails : undefined,
+      tone: systemActivityLogs[0]?.type === "error"
+        ? "danger"
+        : systemActivityLogs[0]?.type === "warning"
+          ? "warning"
+          : systemActivityLogs[0]?.type === "success"
+            ? "success"
+            : "neutral",
+    });
 
-    if (!isExpanded) {
-      return (
-        <aside
-          data-export-exclude="true"
-          data-editorial-support="collapsed"
-          className="fixed bottom-4 right-0 top-[92px] z-40 hidden w-12 sm:block sm:w-14 md:block"
-        >
-          <button
-            type="button"
-            onClick={() => setCopilotViewMode("expanded")}
-            className="flex h-full w-full flex-col items-center justify-center gap-3 rounded-l-2xl border border-r-0 border-slate-200 bg-white/90 px-2 text-[#002D56] shadow-xl shadow-slate-900/10 backdrop-blur transition hover:bg-blue-50"
-            aria-label="Mở Hỗ trợ biên tập"
-          >
-            <PanelRightOpen className="h-5 w-5" />
-            <span className="[writing-mode:vertical-rl] text-[11px] font-black uppercase tracking-[0.18em]">Hỗ trợ</span>
-            {railBadgeCount > 0 && (
-              <span className="rounded-full bg-amber-400 px-1.5 py-0.5 text-[10px] font-black text-slate-900 [writing-mode:horizontal-tb]">{badgeLabel}</span>
-            )}
-          </button>
-        </aside>
-      );
+    if (selectedContextItems.length > 0) {
+      items.push({
+        id: "context",
+        label: "Canvas",
+        value: selectedContextItems.length === 1
+          ? "Đang hỏi theo đoạn đã chọn"
+          : `Đang hỏi theo ${selectedContextItems.length} đoạn đã chọn`,
+        details: selectedContextItems.slice(0, 2).map((item) => item.title || item.excerpt || "Nội dung đã chọn"),
+        tone: "success",
+      });
     }
 
-    return (
-      <aside
-        data-export-exclude="true"
-        data-editorial-support="expanded"
-        className={cn(
-          "data-editorial-support z-40 flex flex-col overflow-hidden border border-slate-200 bg-slate-50/95 shadow-2xl shadow-slate-900/15 backdrop-blur",
-          // Desktop/iPad landscape: fixed right rail
-          "fixed bottom-4 right-4 top-[92px] w-[min(420px,calc(100vw-2rem))] rounded-3xl",
-          // Mobile: full-width bottom sheet
-          "max-sm:bottom-0 max-sm:left-0 max-sm:right-0 max-sm:top-auto max-sm:max-h-[70vh] max-sm:w-full max-sm:rounded-t-3xl max-sm:rounded-b-none",
-        )}
-      >
-        {/* Header */}
-        <header className="flex shrink-0 items-center justify-between border-b border-slate-200 bg-white px-4 py-3">
-          <div className="min-w-0">
-            <p className="text-[13px] font-black text-[#002D56]">Hỗ trợ biên tập</p>
-          </div>
-          <button
-            type="button"
-            onClick={() => setCopilotViewMode("collapsed")}
-            className="rounded-lg p-2 text-slate-500 hover:bg-slate-100"
-            aria-label="Thu gọn hỗ trợ biên tập"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </header>
+    return items;
+  }, [hasGeneratedDraft, preflightUiStatus, reviewedPreflightIssues.length, selectedContextItems, selectedDraftSources, systemActivityLogs, visiblePreflightIssues.length]);
 
-        {/* Tab bar */}
-        <div className="flex shrink-0 border-b border-slate-200 bg-white px-1" role="tablist" aria-label="Hỗ trợ biên tập">
-          {RAIL_TABS.map((tab) => {
-            const badge =
-              tab.id === "check" ? checkBadge
-              : tab.id === "activity" ? activityBadge
-              : tab.id === "assistant" ? contextBadge
-              : 0;
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                role="tab"
-                aria-selected={railActiveTab === tab.id}
-                onClick={() => setRailActiveTab(tab.id)}
-                className={cn(
-                  "relative flex-1 px-2 py-2.5 text-[12px] font-bold transition-colors",
-                  railActiveTab === tab.id
-                    ? "text-[#002D56] after:absolute after:bottom-0 after:left-1 after:right-1 after:h-0.5 after:rounded-full after:bg-[#002D56] after:content-['']"
-                    : "text-slate-500 hover:text-slate-700",
-                )}
-              >
-                {tab.label}
-                {badge > 0 && (
-                  <span className="ml-1 rounded-full bg-amber-400 px-1 text-[10px] font-black text-slate-900">
-                    {badge > 9 ? "9+" : badge}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </div>
+  const renderCopilotPanel = (dockMode: "floating" | "rail" | "sidebar" = "sidebar") => (
+    <FloatingCopilot
+      dockMode={dockMode}
+      viewMode={copilotViewMode}
+      selectedContextItems={selectedContextItems}
+      commands={copilotCommands}
+      activeCommandId={activeCommandId}
+      pendingProposal={pendingProposal}
+      statusMessage={copilotStatusMessage}
+      inputValue={copilotInput}
+      chatMessages={copilotChatMessages}
+      draftFlow={copilotDraftFlowState}
+      sourceFlow={copilotSourceFlowState}
+      sourceMode={assistantSourceMode}
+      onSourceModeChange={setAssistantSourceMode}
+      isBusy={isCopilotBusy}
+      onDraftFlowChange={updateCopilotDraftFlow}
+      onSubmitDraftFlow={() => void submitCopilotDraftFlow()}
+      onGenerateTemplateSkeleton={() => void handleGenerateTemplateSkeleton()}
+      onCancelDraftFlow={() => { setIsCopilotDraftFlowOpen(false); setCopilotDraftFlowError(null); setCopilotStatusMessage("Đã hủy tạo bản thảo. Canvas không thay đổi."); }}
+      onOpenSourceWorkspace={openSourceWorkspaceFromCopilot}
+      onCancelSourceFlow={() => { setIsCopilotSourceFlowOpen(false); setCopilotStatusMessage("Đã đóng luồng thêm nguồn. Canvas không thay đổi."); }}
+      onOpenHistory={() => { switchWorkspaceMode("history"); setCopilotStatusMessage("Đã mở lịch sử văn bản. Bản thảo hiện tại không thay đổi."); }}
+      onChooseTemplate={openCopilotDraftFlow}
+      onCopyProposal={() => { if (pendingProposal?.proposedText) void navigator.clipboard?.writeText(pendingProposal.proposedText); setCopilotStatusMessage("Đã sao chép nội dung tham khảo."); }}
+      onOpen={openCopilotExpanded}
+      onClose={() => setCopilotViewMode("collapsed")}
+      onFullscreen={() => setCopilotViewMode("fullscreen")}
+      onReturnToCanvas={() => setCopilotViewMode("expanded")}
+      onRemoveContext={(id) => { setSelectedContextItems((items) => items.filter((item) => item.id !== id)); }}
+      onClearContext={clearCopilotContext}
+      onRunCommand={(id, prompt) => void handleRunCopilotCommand(id, prompt)}
+      onInputChange={setCopilotInput}
+      onSubmitPrompt={() => void handleSubmitCopilotPrompt()}
+      onSubmitSuggestion={(prompt) => void handleSubmitCopilotPrompt(prompt)}
+      onApplyProposal={handleApplyCopilotProposal}
+      onCancelProposal={() => {
+        setPendingProposal(null);
+        setCopilotStatusMessage("Đã hủy đề xuất. Nội dung gốc không thay đổi.");
+      }}
+    />
+  );
 
-        {/* Tab content - only render active tab */}
-        <div className="min-h-0 flex-1 overflow-y-auto custom-scrollbar">
-          {railActiveTab === "check" && (
-            <div className="p-3">
-              {taskType === "WRITE_NEW" ? (
-                <EditorialPreflightPanel
-                  kind={editorialKind}
-                  markdownContent={output}
-                  articleDocument={articleDocument}
-                  issues={visiblePreflightIssues}
-                  hasDraft={hasGeneratedDraft}
-                  reviewStatus={preflightUiStatus}
-                  onRequestReview={() => runUserRequestedPreflight("button")}
-                />
-              ) : (
-                <div className="rounded-xl bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
-                  <p className="font-semibold">Kiểm tra chỉ khả dụng khi viết bài mới.</p>
-                </div>
-              )}
-            </div>
-          )}
-
-          {railActiveTab === "activity" && (
-            <div className="p-3">
-              {renderSystemActivityPanel()}
-            </div>
-          )}
-
-          {railActiveTab === "assistant" && (
-            <div className="min-h-[520px]">
-              {renderCopilotPanel("rail")}
-            </div>
-          )}
-
-          {railActiveTab === "sources" && (
-            <div className="p-3">
-              <div className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
-                <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-500 mb-2">Nguồn tư liệu</p>
-                {selectedDraftSources.length === 0 ? (
-                  <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-xs font-semibold leading-5 text-slate-500">
-                    Chưa gắn nguồn cho bản thảo này.
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    {selectedDraftSources.map((source) => {
-                      return (
-                        <div key={source.id} className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2 text-xs">
-                          <div className="flex items-start gap-2">
-                            <FileText className="mt-0.5 h-3.5 w-3.5 shrink-0 text-blue-600" />
-                            <div className="min-w-0 flex-1">
-                              <p className="truncate font-semibold leading-snug text-slate-700">{source.title}</p>
-                              <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                                <span className={cn("rounded-full border px-2 py-0.5 text-[10px] font-black", source.status.className)}>{source.status.label}</span>
-                                {!source.document && <span className="text-[10px] font-semibold text-slate-400">ID đã ẩn để tránh nhiễu</span>}
-                              </div>
-                            </div>
-                            {typeof toggleDocSelection === "function" && (
-                              <button
-                                type="button"
-                                onClick={() => toggleDocSelection(source.id)}
-                                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-600"
-                                aria-label="Gỡ nguồn khỏi bản thảo"
-                                title="Gỡ nguồn"
-                              >
-                                <X className="h-3.5 w-3.5" />
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-                <button
-                  type="button"
-                  onClick={() => switchWorkspaceMode("sources")}
-                  className="mt-3 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-600 hover:bg-slate-50"
-                >
-                  Mở vùng nguồn tư liệu
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      </aside>
-    );
-  };
+  const renderAssistantSidebar = () => (
+    <AssistantSidebar
+      isOpen={copilotViewMode !== "collapsed"}
+      moduleStatus="Đang hỗ trợ biên tập"
+      onOpen={openCopilotExpanded}
+      onClose={() => setCopilotViewMode("collapsed")}
+      contextPane={<AssistantContextPane title="Trung tâm hỗ trợ" items={assistantContextItems} />}
+      chatPane={<AssistantChatPane>{renderCopilotPanel(copilotViewMode === "fullscreen" ? "floating" : "sidebar")}</AssistantChatPane>}
+    />
+  );
 
   const renderActiveWorkspace = () => {
     if (workspaceMode === "history") return renderHistoryMode();
@@ -4362,7 +4306,11 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
       <main
         className={cn(
           "h-full min-w-0 min-h-0 overflow-y-auto overscroll-contain custom-scrollbar space-y-5 pb-24 transition-[padding] duration-200",
-          copilotViewMode !== "collapsed" && copilotViewMode !== "fullscreen" ? "pr-14 xl:pr-[440px]" : "pr-12 xl:pr-16",
+          copilotViewMode === "fullscreen"
+            ? "pl-0 pr-0"
+            : copilotViewMode !== "collapsed"
+              ? "pl-0 pr-[400px] max-sm:pr-0"
+              : "pl-0 pr-11 max-sm:pr-0",
         )}
         onClick={handleWorkspaceClick}
       >
@@ -4408,7 +4356,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
         </div>
       )}
 
-      {renderRightRail()}
+      {renderAssistantSidebar()}
     </div>
   );
 };

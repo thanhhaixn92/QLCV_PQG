@@ -15,12 +15,14 @@ import {
   Send,
   Sparkles,
   Type,
-  User,
   X,
 } from "lucide-react";
 import { cn } from "../../lib/utils";
 import type { EditorialExecutionResult } from "../../types/editorialExecution";
 import type { EditorialTemplateGroup } from "../../types/editorialTemplate";
+import { AssistantMessageList } from "../assistant/AssistantMessageList";
+import { SourceModeBar } from "../assistant/SourceModeBar";
+import type { AssistantMessage, AssistantSourceMode } from "../assistant/assistantTypes";
 
 export type CopilotViewMode = "collapsed" | "expanded" | "fullscreen";
 
@@ -105,7 +107,7 @@ export interface CopilotChatMessage {
 
 interface FloatingCopilotProps {
   viewMode: CopilotViewMode;
-  dockMode?: "floating" | "rail";
+  dockMode?: "floating" | "rail" | "sidebar";
   selectedContextItems: CopilotContextItem[];
   commands: CopilotCommand[];
   activeCommandId?: string | null;
@@ -116,6 +118,8 @@ interface FloatingCopilotProps {
   chatMessages?: CopilotChatMessage[];
   draftFlow?: CopilotDraftFlowState | null;
   sourceFlow?: CopilotSourceFlowState | null;
+  sourceMode?: AssistantSourceMode;
+  onSourceModeChange?: (mode: AssistantSourceMode) => void;
   onDraftFlowChange?: (patch: Partial<CopilotDraftFlowState>) => void;
   onSubmitDraftFlow?: () => void;
   onGenerateTemplateSkeleton?: () => void;
@@ -134,6 +138,7 @@ interface FloatingCopilotProps {
   onRunCommand: (id: string, prompt?: string) => void;
   onInputChange: (value: string) => void;
   onSubmitPrompt: () => void;
+  onSubmitSuggestion?: (prompt: string) => void;
   onApplyProposal: () => void;
   onCancelProposal: () => void;
 }
@@ -150,22 +155,73 @@ const CONTEXT_LABELS: Record<CopilotContextType, string> = {
   selection: "vùng chọn",
 };
 
+function truncateOneLine(value: string, maxLength = 96): string {
+  const compact = value.replace(/\s+/gu, " ").trim();
+  if (compact.length <= maxLength) return compact;
+  return `${compact.slice(0, maxLength - 1).trim()}…`;
+}
+
 function summarizeContext(items: CopilotContextItem[]): string {
-  if (items.length === 0) return "Chưa chọn context";
-  if (items.length > 1) return `Đã chọn: ${items.length} block`;
+  if (items.length === 0) return "Đang hỏi chung về bản thảo";
+  if (items.length > 1) return `Đang hỏi theo ${items.length} đoạn đã chọn`;
 
   const [item] = items;
-  const label = CONTEXT_LABELS[item.type] || "nội dung";
-  const text = item.fullText || item.excerpt || "";
-  const wordCount = text.trim() ? text.trim().split(/\s+/u).length : 0;
-  return `Đã chọn: ${label.charAt(0).toLocaleUpperCase("vi-VN")}${label.slice(1)}${wordCount ? ` • ${wordCount} từ` : ""}`;
+  const excerpt = truncateOneLine(item.excerpt || item.fullText || "");
+  return `Đang hỏi theo đoạn đã chọn${excerpt ? ` • ${excerpt}` : ""}`;
+}
+
+
+function getSourceModeStatus(mode: AssistantSourceMode, items: CopilotContextItem[]): string {
+  if (mode === "canvas") return summarizeContext(items);
+  if (mode === "articles") return "Bài viết cần được gắn dữ liệu trước khi tổng hợp.";
+  if (mode === "library") return "Kho tư liệu chỉ dùng khi nguồn đã được gắn vào phiên.";
+  if (mode === "tasks") return "Công việc cần adapter riêng ở PR sau.";
+  return "Hỏi nhanh về thao tác chung.";
+}
+
+function isAdvisorySuggestion(prompt: string): boolean {
+  return /đoạn\s+này\s+ổn\s+không|nhận\s+xét\s+đoạn\s+này/iu.test(prompt);
+}
+
+function isEditSuggestion(prompt: string): boolean {
+  return /viết\s+lại|rút\s+gọn|sửa\s+đoạn/iu.test(prompt);
+}
+
+const EDITOR_EMPTY_MESSAGE = "Bạn có thể hỏi chung, chọn đoạn trên Canvas để hỏi theo ngữ cảnh, hoặc yêu cầu rà soát bản thảo.";
+const EDITOR_SUGGESTIONS = [
+  "Tóm tắt bản thảo này",
+  "Đoạn này ổn không?",
+  "Viết lại đoạn đang chọn",
+  "Kiểm tra lỗi trước khi xuất",
+];
+
+function toAssistantMessages(messages: CopilotChatMessage[]): AssistantMessage[] {
+  return messages.map((message) => ({
+    id: message.id,
+    role: message.role,
+    content: message.content,
+    createdAt: message.createdAt,
+    isAdvisory: message.isContextAdvice,
+  }));
 }
 
 function splitDockCommands(commands: CopilotCommand[]): { primaryCommands: CopilotCommand[]; overflowCommands: CopilotCommand[] } {
   const fallbackCommand = commands.find((command) => command.id === "more");
   const nonFallbackCommands = commands.filter((command) => command.id !== "more");
-  const primaryCommands = nonFallbackCommands.slice(0, 4);
-  const overflowCommands = nonFallbackCommands.slice(4);
+  const findFirst = (ids: string[]) => nonFallbackCommands.find((command) => ids.includes(command.id));
+  const preferredCommands = [
+    findFirst(["review_current_draft"]),
+    findFirst(["check_missing_source_or_caption", "fix_selection", "check_table_numbers", "check_long_paragraph"]),
+    findFirst(["add_source"]),
+  ].filter((command): command is CopilotCommand => Boolean(command));
+
+  const primaryCommands = [
+    ...preferredCommands,
+    ...nonFallbackCommands.filter((command) => !preferredCommands.some((preferred) => preferred.id === command.id)),
+  ].slice(0, 3);
+
+  const primaryIds = new Set(primaryCommands.map((command) => command.id));
+  const overflowCommands = nonFallbackCommands.filter((command) => !primaryIds.has(command.id));
 
   if (fallbackCommand) overflowCommands.push(fallbackCommand);
   return { primaryCommands, overflowCommands };
@@ -189,6 +245,8 @@ export function FloatingCopilot({
   chatMessages = [],
   draftFlow,
   sourceFlow,
+  sourceMode = "canvas",
+  onSourceModeChange,
   onDraftFlowChange,
   onSubmitDraftFlow,
   onGenerateTemplateSkeleton,
@@ -205,23 +263,19 @@ export function FloatingCopilot({
   onRunCommand,
   onInputChange,
   onSubmitPrompt,
+  onSubmitSuggestion,
   onApplyProposal,
   onCancelProposal,
 }: FloatingCopilotProps) {
   const contextSummary = summarizeContext(selectedContextItems);
+  const sourceModeStatus = getSourceModeStatus(sourceMode, selectedContextItems);
   const isDraftBriefMissing = Boolean(draftFlow) && !draftFlow?.brief.trim();
   const { primaryCommands, overflowCommands } = splitDockCommands(commands);
   const [isOverflowOpen, setIsOverflowOpen] = React.useState(false);
   const overflowRef = React.useRef<HTMLDivElement | null>(null);
-  const chatEndRef = React.useRef<HTMLDivElement | null>(null);
-
   React.useEffect(() => {
     setIsOverflowOpen(false);
   }, [commands, viewMode]);
-
-  React.useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [chatMessages]);
 
   React.useEffect(() => {
     if (!isOverflowOpen) return undefined;
@@ -241,6 +295,14 @@ export function FloatingCopilot({
     setIsOverflowOpen(false);
     onRunCommand(command.id, command.prompt);
   }, [onRunCommand]);
+
+  const handleSuggestionSelect = React.useCallback((suggestion: string) => {
+    if (isAdvisorySuggestion(suggestion) || (isEditSuggestion(suggestion) && selectedContextItems.length === 0)) {
+      onSubmitSuggestion?.(suggestion);
+      return;
+    }
+    onInputChange(suggestion);
+  }, [onInputChange, onSubmitSuggestion, selectedContextItems.length]);
 
   if (viewMode === "collapsed") {
     return (
@@ -272,6 +334,8 @@ export function FloatingCopilot({
 
   const isFullscreen = viewMode === "fullscreen";
   const isRailDocked = dockMode === "rail" && !isFullscreen;
+  const isSidebarDocked = dockMode === "sidebar" && !isFullscreen;
+  const assistantMessages = toAssistantMessages(chatMessages);
 
   return (
     <section
@@ -281,13 +345,15 @@ export function FloatingCopilot({
         "flex flex-col overflow-hidden border border-slate-200 bg-white",
         isFullscreen
           ? "fixed inset-0 z-[70] h-[100dvh] w-screen max-w-none rounded-none shadow-2xl shadow-slate-900/20"
-          : isRailDocked
-            ? "relative h-full min-h-[420px] w-full rounded-2xl shadow-none"
-            : "fixed bottom-5 right-5 top-[92px] z-40 w-[min(420px,calc(100vw-2rem))] rounded-2xl shadow-2xl shadow-slate-900/20",
+          : isSidebarDocked
+            ? "relative h-full min-h-0 w-full rounded-none border-0 bg-transparent shadow-none"
+            : isRailDocked
+              ? "relative h-full min-h-[420px] w-full rounded-none shadow-none"
+              : "fixed bottom-5 right-5 top-[92px] z-40 w-[min(420px,calc(100vw-2rem))] rounded-2xl shadow-2xl shadow-slate-900/20",
       )}
       aria-label="Trợ lý Canvas thông minh"
     >
-      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-slate-100 px-4 py-3">
+      {!isSidebarDocked && <header className="flex shrink-0 items-center justify-between gap-3 border-b border-slate-100 px-4 py-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-[#002D56]">
@@ -313,10 +379,14 @@ export function FloatingCopilot({
             <X className="h-4 w-4" />
           </button>
         </div>
-      </header>
+      </header>}
 
-      <nav className="relative shrink-0 border-b border-slate-100 bg-white px-3 py-2" aria-label="Command Dock" ref={overflowRef}>
-        <div className="flex flex-nowrap items-center gap-2 overflow-x-auto pb-1 [scrollbar-width:thin]">
+      {onSourceModeChange && (
+        <SourceModeBar value={sourceMode} onChange={onSourceModeChange} statusText={sourceModeStatus} />
+      )}
+
+      <nav className="relative shrink-0 border-b border-slate-100 bg-white px-2 py-1.5" aria-label="Command Dock" ref={overflowRef}>
+        <div className="grid grid-cols-4 gap-1">
           {primaryCommands.map((command) => (
             <button
               type="button"
@@ -325,12 +395,12 @@ export function FloatingCopilot({
               title={commandDisabledTitle(command)}
               onClick={() => runDockCommand(command)}
               className={cn(
-                "inline-flex min-h-8 max-w-[150px] items-center rounded-full border px-3 py-1.5 text-xs font-black transition",
+                "inline-flex min-h-7 min-w-0 items-center justify-center rounded-md border px-1.5 py-1 text-[11px] font-black transition",
                 activeCommandId === command.id ? "border-[#002D56] bg-blue-50 text-[#002D56]" : "border-slate-200 bg-slate-50 text-slate-700 hover:border-blue-200 hover:bg-blue-50",
                 command.disabled && "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400 opacity-70 hover:bg-slate-100",
               )}
             >
-              <span className="truncate">{command.label}</span>
+              <span className="whitespace-normal text-center leading-tight">{command.label}</span>
             </button>
           ))}
           {overflowCommands.length > 0 && (
@@ -338,13 +408,13 @@ export function FloatingCopilot({
               type="button"
               onClick={() => setIsOverflowOpen((current) => !current)}
               className={cn(
-                "inline-flex min-h-8 max-w-[96px] items-center rounded-full border px-3 py-1.5 text-xs font-black transition",
+                "inline-flex min-h-7 min-w-0 items-center justify-center rounded-md border px-1.5 py-1 text-[11px] font-black transition",
                 isOverflowOpen ? "border-[#002D56] bg-blue-50 text-[#002D56]" : "border-slate-200 bg-slate-50 text-slate-700 hover:border-blue-200 hover:bg-blue-50",
               )}
               aria-expanded={isOverflowOpen}
               aria-haspopup="menu"
             >
-              Khác
+              Thêm
             </button>
           )}
         </div>
@@ -376,42 +446,14 @@ export function FloatingCopilot({
           </div>
         )}
       </nav>
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 custom-scrollbar">
-        {/* Chat history */}
-        {chatMessages.length > 0 && (
-          <div className="mb-4 space-y-3">
-            {chatMessages.map((msg) => (
-              <div key={msg.id} className={cn("flex gap-2", msg.role === "user" ? "justify-end" : "justify-start")}>
-                {msg.role === "assistant" && (
-                  <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-50 text-[#002D56]">
-                    <Bot className="h-4 w-4" />
-                  </span>
-                )}
-                <div
-                  className={cn(
-                    "max-w-[82%] rounded-2xl px-3 py-2.5 text-sm leading-relaxed",
-                    msg.role === "user"
-                      ? "bg-[#002D56] text-white"
-                      : msg.isContextAdvice
-                        ? "border border-amber-100 bg-amber-50 text-amber-900"
-                        : "border border-slate-100 bg-slate-50 text-slate-800",
-                  )}
-                >
-                  <p className="whitespace-pre-wrap font-medium">{msg.content}</p>
-                  <p className={cn("mt-1 text-[10px] font-black opacity-60", msg.role === "user" ? "text-right text-blue-200" : "text-slate-400")}>
-                    {new Date(msg.createdAt).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}
-                  </p>
-                </div>
-                {msg.role === "user" && (
-                  <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-600">
-                    <User className="h-4 w-4" />
-                  </span>
-                )}
-              </div>
-            ))}
-            <div ref={chatEndRef} />
-          </div>
-        )}
+      <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3 custom-scrollbar">
+        <AssistantMessageList
+          messages={assistantMessages}
+          isLoading={isBusy}
+          emptyMessage={EDITOR_EMPTY_MESSAGE}
+          suggestions={EDITOR_SUGGESTIONS}
+          onSuggestionSelect={handleSuggestionSelect}
+        />
 
         {draftFlow && (
           <div className="mt-4 rounded-2xl border border-blue-200 bg-white p-3 shadow-sm">
@@ -700,8 +742,8 @@ export function FloatingCopilot({
         )}
       </div>
 
-      <footer className="shrink-0 border-t border-slate-100 bg-white p-3">
-        <div className="mb-2 max-h-16 overflow-hidden rounded-xl border border-blue-100 bg-blue-50/70 px-3 py-1.5">
+      <footer className="shrink-0 border-t border-slate-100 bg-white p-2.5">
+        <div className="mb-1.5 max-h-14 overflow-hidden rounded-md border border-blue-100 bg-blue-50/70 px-2.5 py-1.5">
           <div className="flex items-center justify-between gap-2">
             <p className="min-w-0 truncate text-xs font-black text-[#002D56]"><Paperclip className="mr-1 inline h-3.5 w-3.5" />{contextSummary}</p>
             <button type="button" onClick={onClearContext} disabled={selectedContextItems.length === 0} className="shrink-0 text-[11px] font-bold text-slate-500 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40">Xóa tất cả</button>
@@ -720,19 +762,19 @@ export function FloatingCopilot({
             </div>
           )}
         </div>
-        <div className="flex min-w-0 items-end gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-2 focus-within:border-[#002D56] focus-within:bg-white">
+        <div className="flex min-w-0 items-end gap-2 rounded-lg border border-slate-200 bg-slate-50 p-2 focus-within:border-[#002D56] focus-within:bg-white">
           <textarea
             value={inputValue}
             onChange={(event) => onInputChange(event.target.value)}
-            placeholder="Nhập yêu cầu cho Trợ lý biên tập…"
+            placeholder="Nhập câu hỏi hoặc yêu cầu biên tập…"
             rows={2}
-            className="min-h-[44px] min-w-0 flex-1 resize-none bg-transparent px-2 py-2 text-sm text-slate-800 outline-none"
+            className="min-h-10 min-w-0 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm text-slate-800 outline-none"
           />
-          <button type="button" disabled={isBusy || !inputValue.trim()} onClick={onSubmitPrompt} className="mb-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#002D56] text-white hover:bg-slate-900 disabled:opacity-50" aria-label="Gửi yêu cầu">
+          <button type="button" disabled={isBusy || !inputValue.trim()} onClick={onSubmitPrompt} className="mb-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[#002D56] text-white hover:bg-slate-900 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:opacity-70" aria-label="Gửi câu hỏi hoặc yêu cầu biên tập">
             {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
           </button>
         </div>
-        <p className="mt-2 text-[11px] text-slate-500">Copilot chỉ áp dụng sửa nội dung sau khi bạn bấm Áp dụng.</p>
+        <p className="mt-2 text-[11px] text-slate-500">Nội dung chỉ thay đổi khi bạn bấm Áp dụng.</p>
       </footer>
     </section>
   );
