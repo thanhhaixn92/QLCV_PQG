@@ -1,5 +1,5 @@
 import React from 'react';
-import { AlertCircle, AlertTriangle, CheckCircle2, Info } from 'lucide-react';
+import { AlertCircle, AlertTriangle, CheckCircle2, Info, Loader2 } from 'lucide-react';
 import type { EditorialDocumentKind } from '../../types/editorial';
 import { cn } from '../../lib/utils';
 import type { ArticleDocument } from '../../lib/publishing/articleDocument';
@@ -151,7 +151,7 @@ function renderIssue(issue: PreflightIssue) {
 export function EditorialPreflightPanel({ kind, markdownContent = '', articleDocument, issues, hasDraft, reviewStatus = 'ready', onRequestReview }: Props) {
   const hasRealDraft = hasDraft ?? Boolean(markdownContent.trim());
   const [isExpanded, setIsExpanded] = React.useState(false);
-  const shouldShowResults = reviewStatus === 'ready';
+  const shouldShowResults = reviewStatus === 'ready' || reviewStatus === 'stale';
 
   const preflightIssues = React.useMemo(() => {
     if (!hasRealDraft || !shouldShowResults) return [];
@@ -161,11 +161,17 @@ export function EditorialPreflightPanel({ kind, markdownContent = '', articleDoc
   }, [articleDocument, hasRealDraft, issues, kind, markdownContent, shouldShowResults]);
 
   const counts = React.useMemo(() => countPreflightIssuesBySeverity(preflightIssues), [preflightIssues]);
-  const status = counts.blocker > 0 ? 'Chưa thể xuất bản' : counts.warning > 0 || counts.info > 0 ? 'Cần rà soát' : 'Sẵn sàng xuất bản';
-  const summary = `${status} · ${counts.blocker} lỗi chặn · ${counts.warning} cảnh báo · ${counts.info} gợi ý`;
+  const status = reviewStatus === 'stale'
+    ? 'Cần rà soát lại'
+    : counts.blocker > 0
+      ? 'Chưa thể xuất bản'
+      : counts.warning > 0 || counts.info > 0
+        ? 'Cần rà soát'
+        : 'Sẵn sàng xuất bản';
+  const summary = `${counts.blocker} lỗi chặn · ${counts.warning} cảnh báo · ${counts.info} cần kiểm tra`;
   const statusClass = counts.blocker > 0
     ? 'border-red-200 bg-red-50/70 text-red-800'
-    : counts.warning > 0
+    : reviewStatus === 'stale' || counts.warning > 0
       ? 'border-amber-200 bg-amber-50/70 text-amber-800'
       : 'border-emerald-200 bg-emerald-50/70 text-emerald-800';
   const groupedIssues = {
@@ -180,26 +186,24 @@ export function EditorialPreflightPanel({ kind, markdownContent = '', articleDoc
 
   if (!hasRealDraft) {
     return (
-      <aside className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-500 shadow-sm" aria-label="Bảng kiểm xuất bản" data-preflight-panel="true" data-export-exclude="true">
-        Chưa có bản thảo để rà soát.
+      <aside className="rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-5 text-sm shadow-sm" aria-label="Bảng kiểm xuất bản" data-preflight-panel="true" data-export-exclude="true">
+        <p className="font-black text-slate-800">Không có bản thảo</p>
+        <p className="mt-1 text-xs font-semibold leading-5 text-slate-500">Tạo hoặc mở bản thảo trước khi chạy kiểm tra.</p>
       </aside>
     );
   }
 
   if (!shouldShowResults) {
     const isChecking = reviewStatus === 'checking';
-    const isStale = reviewStatus === 'stale';
     return (
       <aside className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm sm:p-4" aria-label="Bảng kiểm xuất bản" data-preflight-panel="true" data-export-exclude="true">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0">
             <p className="text-sm font-black text-slate-900">Kiểm tra trước xuất bản</p>
-            <p className={cn('mt-1 text-xs leading-5 font-semibold', isStale ? 'text-amber-700' : 'text-slate-500')}>
+            <p className={cn('mt-1 text-xs leading-5 font-semibold', isChecking ? 'text-amber-700' : 'text-slate-500')}>
               {isChecking
                 ? 'Đang rà soát bản thảo…'
-                : isStale
-                  ? 'Nội dung đã thay đổi sau lần rà soát gần nhất. Bấm Rà soát lại để cập nhật.'
-                  : 'Bản thảo đã được tạo. Bạn có thể rà soát trước khi lưu hoặc xuất.'}
+                : 'Chưa rà soát bản thảo trong phiên hiện tại.'}
             </p>
           </div>
           <button
@@ -208,7 +212,8 @@ export function EditorialPreflightPanel({ kind, markdownContent = '', articleDoc
             disabled={isChecking}
             className="inline-flex h-9 shrink-0 items-center justify-center rounded-lg border border-[#002D56] bg-white px-3 text-xs font-black text-[#002D56] hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {isStale ? 'Rà soát lại' : 'Rà soát bản thảo'}
+            {isChecking && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+            Rà soát bản thảo
           </button>
         </div>
       </aside>
@@ -218,26 +223,43 @@ export function EditorialPreflightPanel({ kind, markdownContent = '', articleDoc
   return (
     <aside className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm sm:p-4" aria-label="Bảng kiểm xuất bản" data-preflight-panel="true" data-export-exclude="true">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div className={cn('flex min-w-0 items-center gap-2 rounded-xl border px-3 py-2', statusClass)}>
+        <div className={cn('flex min-w-0 flex-1 items-center gap-2 rounded-xl border px-3 py-2', statusClass)}>
           <span className="shrink-0">
-            {counts.blocker > 0 ? <AlertCircle className="h-4 w-4" /> : counts.warning > 0 ? <AlertTriangle className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4" />}
+            {counts.blocker > 0 || reviewStatus === 'stale' ? <AlertCircle className="h-4 w-4" /> : counts.warning > 0 ? <AlertTriangle className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4" />}
           </span>
           <div className="min-w-0">
-            <p className="truncate text-sm font-black">{summary}</p>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <p className="text-sm font-black">{status}</p>
+              {reviewStatus === 'stale' && (
+                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.12em] text-amber-800">Cần rà soát lại</span>
+              )}
+            </div>
+            <p className="mt-0.5 text-[11px] font-semibold opacity-85">{summary}</p>
             {counts.blocker > 0 && <p className="mt-0.5 text-[11px] font-semibold opacity-85">Cần xử lý lỗi chặn trước khi xuất Word/PDF.</p>}
           </div>
         </div>
-        {hasDetails && (
-          <button
-            type="button"
-            onClick={() => setIsExpanded((value) => !value)}
-            aria-expanded={isExpanded}
-            aria-controls={detailsId}
-            className="inline-flex h-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700 hover:bg-slate-50"
-          >
-            {isExpanded ? 'Thu gọn' : 'Xem chi tiết'}
-          </button>
-        )}
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          {reviewStatus === 'stale' && (
+            <button
+              type="button"
+              onClick={onRequestReview}
+              className="inline-flex h-9 items-center justify-center rounded-lg border border-[#002D56] bg-white px-3 text-xs font-black text-[#002D56] hover:bg-blue-50"
+            >
+              Rà soát lại
+            </button>
+          )}
+          {hasDetails && (
+            <button
+              type="button"
+              onClick={() => setIsExpanded((value) => !value)}
+              aria-expanded={isExpanded}
+              aria-controls={detailsId}
+              className="inline-flex h-9 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-slate-700 hover:bg-slate-50"
+            >
+              {isExpanded ? 'Thu gọn' : 'Xem chi tiết'}
+            </button>
+          )}
+        </div>
       </div>
 
       {hasDetails ? (

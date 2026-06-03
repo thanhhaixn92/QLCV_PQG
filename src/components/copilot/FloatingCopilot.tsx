@@ -15,6 +15,7 @@ import {
   Send,
   Sparkles,
   Type,
+  User,
   X,
 } from "lucide-react";
 import { cn } from "../../lib/utils";
@@ -94,8 +95,17 @@ export interface CopilotCommand {
   prompt?: string;
 }
 
+export interface CopilotChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  createdAt: number;
+  isContextAdvice?: boolean; // advisory reply, no proposal generated
+}
+
 interface FloatingCopilotProps {
   viewMode: CopilotViewMode;
+  dockMode?: "floating" | "rail";
   selectedContextItems: CopilotContextItem[];
   commands: CopilotCommand[];
   activeCommandId?: string | null;
@@ -103,6 +113,7 @@ interface FloatingCopilotProps {
   statusMessage?: string | null;
   inputValue: string;
   isBusy?: boolean;
+  chatMessages?: CopilotChatMessage[];
   draftFlow?: CopilotDraftFlowState | null;
   sourceFlow?: CopilotSourceFlowState | null;
   onDraftFlowChange?: (patch: Partial<CopilotDraftFlowState>) => void;
@@ -167,6 +178,7 @@ function commandDisabledTitle(command: CopilotCommand): string | undefined {
 
 export function FloatingCopilot({
   viewMode,
+  dockMode = "floating",
   selectedContextItems,
   commands,
   activeCommandId,
@@ -174,6 +186,7 @@ export function FloatingCopilot({
   statusMessage,
   inputValue,
   isBusy = false,
+  chatMessages = [],
   draftFlow,
   sourceFlow,
   onDraftFlowChange,
@@ -200,10 +213,15 @@ export function FloatingCopilot({
   const { primaryCommands, overflowCommands } = splitDockCommands(commands);
   const [isOverflowOpen, setIsOverflowOpen] = React.useState(false);
   const overflowRef = React.useRef<HTMLDivElement | null>(null);
+  const chatEndRef = React.useRef<HTMLDivElement | null>(null);
 
   React.useEffect(() => {
     setIsOverflowOpen(false);
   }, [commands, viewMode]);
+
+  React.useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chatMessages]);
 
   React.useEffect(() => {
     if (!isOverflowOpen) return undefined;
@@ -231,13 +249,21 @@ export function FloatingCopilot({
         data-copilot-root="true"
         data-export-exclude="true"
         onClick={onOpen}
-        className="fixed bottom-5 right-5 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-[#002D56] text-white shadow-2xl shadow-slate-900/25 transition hover:bg-slate-900 focus:outline-none focus:ring-4 focus:ring-blue-200"
+        className={cn(
+          "z-40 flex items-center justify-center bg-[#002D56] text-white shadow-2xl shadow-slate-900/20 transition hover:bg-slate-900 focus:outline-none focus:ring-4 focus:ring-blue-200",
+          dockMode === "rail"
+            ? "h-full w-full rounded-none px-2 [writing-mode:vertical-rl]"
+            : "fixed bottom-5 right-5 h-14 w-14 rounded-full",
+        )}
         aria-label="Mở Copilot biên tập"
       >
-        <MessageCircle className="h-6 w-6" />
+        {dockMode === "rail" ? <span className="text-[11px] font-black uppercase tracking-[0.18em]">Trợ lý</span> : <MessageCircle className="h-6 w-6" />}
         {selectedContextItems.length > 0 && (
-          <span className="absolute -top-2 -left-2 rounded-full bg-amber-400 px-2 py-1 text-[10px] font-black text-slate-900 shadow-sm">
-            {selectedContextItems.length} nội dung
+          <span className={cn(
+            "absolute rounded-full bg-amber-400 px-2 py-1 text-[10px] font-black text-slate-900 shadow-sm",
+            dockMode === "rail" ? "left-1 top-2 [writing-mode:horizontal-tb]" : "-top-2 -left-2",
+          )}>
+            {selectedContextItems.length}
           </span>
         )}
       </button>
@@ -245,16 +271,19 @@ export function FloatingCopilot({
   }
 
   const isFullscreen = viewMode === "fullscreen";
+  const isRailDocked = dockMode === "rail" && !isFullscreen;
 
   return (
     <section
       data-copilot-root="true"
       data-export-exclude="true"
       className={cn(
-        "fixed flex flex-col overflow-hidden border border-slate-200 bg-white shadow-2xl shadow-slate-900/20",
+        "flex flex-col overflow-hidden border border-slate-200 bg-white",
         isFullscreen
-          ? "inset-0 z-[70] h-[100dvh] w-screen max-w-none rounded-none"
-          : "bottom-5 right-5 top-[92px] z-40 w-[min(420px,calc(100vw-2rem))] rounded-2xl",
+          ? "fixed inset-0 z-[70] h-[100dvh] w-screen max-w-none rounded-none shadow-2xl shadow-slate-900/20"
+          : isRailDocked
+            ? "relative h-full min-h-[420px] w-full rounded-2xl shadow-none"
+            : "fixed bottom-5 right-5 top-[92px] z-40 w-[min(420px,calc(100vw-2rem))] rounded-2xl shadow-2xl shadow-slate-900/20",
       )}
       aria-label="Trợ lý Canvas thông minh"
     >
@@ -348,6 +377,42 @@ export function FloatingCopilot({
         )}
       </nav>
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 custom-scrollbar">
+        {/* Chat history */}
+        {chatMessages.length > 0 && (
+          <div className="mb-4 space-y-3">
+            {chatMessages.map((msg) => (
+              <div key={msg.id} className={cn("flex gap-2", msg.role === "user" ? "justify-end" : "justify-start")}>
+                {msg.role === "assistant" && (
+                  <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-50 text-[#002D56]">
+                    <Bot className="h-4 w-4" />
+                  </span>
+                )}
+                <div
+                  className={cn(
+                    "max-w-[82%] rounded-2xl px-3 py-2.5 text-sm leading-relaxed",
+                    msg.role === "user"
+                      ? "bg-[#002D56] text-white"
+                      : msg.isContextAdvice
+                        ? "border border-amber-100 bg-amber-50 text-amber-900"
+                        : "border border-slate-100 bg-slate-50 text-slate-800",
+                  )}
+                >
+                  <p className="whitespace-pre-wrap font-medium">{msg.content}</p>
+                  <p className={cn("mt-1 text-[10px] font-black opacity-60", msg.role === "user" ? "text-right text-blue-200" : "text-slate-400")}>
+                    {new Date(msg.createdAt).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}
+                  </p>
+                </div>
+                {msg.role === "user" && (
+                  <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-600">
+                    <User className="h-4 w-4" />
+                  </span>
+                )}
+              </div>
+            ))}
+            <div ref={chatEndRef} />
+          </div>
+        )}
+
         {draftFlow && (
           <div className="mt-4 rounded-2xl border border-blue-200 bg-white p-3 shadow-sm">
             <div className="flex items-start gap-2">

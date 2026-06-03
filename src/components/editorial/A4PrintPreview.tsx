@@ -126,7 +126,7 @@ function editableBlockClass(block: ArticleBlock): string {
   return [
     blockStyleClass(block),
     "a4-canvas-block-editor",
-    "min-h-[2.5rem] rounded-lg bg-white/95 px-2 py-1 outline-none ring-2 ring-[#002D56]/35 focus:ring-[#002D56]/55 whitespace-pre-wrap transition-shadow",
+    "box-border min-h-[2.5rem] rounded-md bg-white/95 px-2 py-1 whitespace-pre-wrap outline outline-2 outline-offset-2 outline-[#002D56]/55 focus:outline-[#002D56]/70 shadow-[0_0_0_3px_rgba(0,45,86,0.08)] transition-[outline-color,box-shadow,background-color]",
   ].join(" ");
 }
 
@@ -344,7 +344,13 @@ function withSelectableBlock(
 
   const element = node as React.ReactElement<any>;
   const isSelected = options.selectedBlockIds?.includes(block.id) === true;
-  const className = [element.props.className, "a4-canvas-selectable cursor-pointer rounded-sm transition-shadow hover:ring-2 hover:ring-blue-200 focus:outline-none focus:ring-2 focus:ring-blue-300", isSelected ? "a4-canvas-selected ring-2 ring-blue-400 bg-blue-50/30" : ""].filter(Boolean).join(" ");
+  const isEditing = options.editingBlockId === block.id;
+  const className = [
+    element.props.className,
+    "a4-canvas-selectable box-border cursor-pointer rounded-sm outline-offset-2 transition-[outline-color,box-shadow,background-color] hover:outline hover:outline-1 hover:outline-blue-200 focus:outline focus:outline-1 focus:outline-blue-300",
+    isSelected && !isEditing ? "a4-canvas-selected bg-blue-50/20 outline outline-1 outline-blue-300 shadow-[0_0_0_3px_rgba(59,130,246,0.08)]" : "",
+    isEditing ? "a4-canvas-editing outline outline-2 outline-[#002D56]/60 shadow-[0_0_0_3px_rgba(0,45,86,0.08)]" : "",
+  ].filter(Boolean).join(" ");
 
   return React.cloneElement(element, {
     className,

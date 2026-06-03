@@ -50,10 +50,17 @@ import { executeEditorialWorkflowCommand, getEditorialWorkflowTelemetry } from '
 import type { EditorialExecutionResult, EditorialProposal } from '../../types/editorialExecution';
 import { doc, deleteDoc } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
+import { classifyCopilotIntent, getCopilotChatReply } from '../../lib/copilotIntentClassifier';
+import type { CopilotChatMessage } from '../copilot/FloatingCopilot';
 
 type EditorialCreationStep = "brief" | "recommendation" | "generating" | "draft";
 
 const COPILOT_ONBOARDING_KEY = "vms-editorial-copilot-onboarding-seen";
+const CANVAS_MULTILINE_OVERRIDES_STORAGE_PREFIX = "vms:editorial:canvas-multiline-overrides";
+const SYSTEM_ACTIVITY_STORAGE_PREFIX = "vms:editorial:system-activity";
+const SYSTEM_ACTIVITY_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const SYSTEM_ACTIVITY_MAX_ITEMS = 80;
+const SYSTEM_ACTIVITY_DEFAULT_VISIBLE = 6;
 
 type CopilotCommandId =
   | "draft_new"
@@ -111,7 +118,79 @@ interface CanvasBlockOverride {
   index: number;
 }
 
+interface PersistedCanvasBlockOverride {
+  blockId: string;
+  blockType: ArticleBlock["type"];
+  block: ArticleBlock;
+  empty: boolean;
+  index: number;
+  text: string;
+  updatedAt: number;
+}
+
+interface PersistedCanvasBlockOverridesPayload {
+  version: 1;
+  draftId: string;
+  outputFingerprint: string;
+  overrides: PersistedCanvasBlockOverride[];
+  updatedAt: number;
+}
+
+type SystemActivityType = "success" | "info" | "warning" | "error";
+type SystemActivityAction = "save" | "export" | "delete" | "restore" | "assistant" | "preflight" | "error" | "system";
+
+interface SystemActivityLogItem {
+  id: string;
+  type: SystemActivityType;
+  message: string;
+  source?: string;
+  createdAt: number;
+}
+
 type PreflightUiStatus = "idle" | "checking" | "ready" | "stale";
+
+interface ContextPillAnchor {
+  top: number;
+  left: number;
+  maxWidth: number;
+  placement: "side" | "below" | "above";
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  if (max < min) return min;
+  return Math.min(Math.max(value, min), max);
+}
+
+function getCanvasContextPillAnchor(rect: DOMRect): ContextPillAnchor {
+  const viewportWidth = typeof window === "undefined" ? 1024 : window.innerWidth;
+  const viewportHeight = typeof window === "undefined" ? 768 : window.innerHeight;
+  const margin = 8;
+  const topSafeArea = 92;
+  const estimatedWidth = Math.min(340, Math.max(248, viewportWidth - margin * 2));
+  const estimatedHeight = 48;
+  const sideLeft = rect.right + 12;
+  const sideFits = sideLeft + estimatedWidth <= viewportWidth - margin;
+
+  if (sideFits) {
+    return {
+      top: clampNumber(rect.top, topSafeArea, viewportHeight - estimatedHeight - margin),
+      left: sideLeft,
+      maxWidth: estimatedWidth,
+      placement: "side",
+    };
+  }
+
+  const belowTop = rect.bottom + 8;
+  const belowFits = belowTop + estimatedHeight <= viewportHeight - margin;
+  const top = belowFits ? belowTop : Math.max(topSafeArea, rect.top - estimatedHeight - 8);
+
+  return {
+    top: clampNumber(top, topSafeArea, viewportHeight - estimatedHeight - margin),
+    left: clampNumber(rect.right - estimatedWidth, margin, viewportWidth - estimatedWidth - margin),
+    maxWidth: estimatedWidth,
+    placement: belowFits ? "below" : "above",
+  };
+}
 
 const CANVAS_EDITABLE_BLOCK_TYPES = new Set<ArticleBlock["type"]>([
   "title",
@@ -268,7 +347,10 @@ function findParsedMultilineRun(blocks: ArticleBlock[], override: CanvasBlockOve
     ...blocks.map((_block, index) => index),
   ].filter((start, index, all) => start >= 0 && start + expectedLength <= blocks.length && all.indexOf(start) === index);
 
+  const isNonHeadingOverride = override.block.type !== "title" && override.block.type !== "section-heading";
   for (const start of starts) {
+    const candidateType = blocks[start]?.type;
+    if (isNonHeadingOverride && (candidateType === "title" || candidateType === "section-heading")) continue;
     const matches = lines.every((line, offset) => blockLines[start + offset] === line);
     if (matches) return { start, length: expectedLength };
   }
@@ -293,10 +375,217 @@ function applyCanvasBlockOverrides(baseBlocks: ArticleBlock[], overrides: Canvas
         blocks[existingIndex] = override.block;
         return;
       }
+
+      // Multiline overrides are allowed to re-merge only when their text is still present in output.
+      // This avoids carrying stale Canvas-only blocks into another saved/reloaded draft.
+      if (getOverrideMultilineLines(override.block).length > 1) return;
+
       blocks.splice(Math.min(override.index, blocks.length), 0, override.block);
     });
 
   return blocks;
+}
+
+
+function canvasDraftOutputFingerprint(value: unknown): string {
+  return normalizeEditorialBriefContent(normalizeCanvasMultilineText(value));
+}
+
+function getCanvasMultilineOverrideStorageKey(userId: string | undefined, draftId: string): string {
+  return `${CANVAS_MULTILINE_OVERRIDES_STORAGE_PREFIX}:${userId || "guest"}:${draftId}`;
+}
+
+function getSystemActivityStorageKey(userId: string | undefined, draftId?: string): string {
+  return `${SYSTEM_ACTIVITY_STORAGE_PREFIX}:${userId || "guest"}:${draftId || "editorial-main"}`;
+}
+
+function cleanSystemActivityLogs(logs: SystemActivityLogItem[], now = Date.now()): SystemActivityLogItem[] {
+  return logs
+    .filter((log) => log && typeof log.message === "string" && now - Number(log.createdAt || 0) <= SYSTEM_ACTIVITY_MAX_AGE_MS)
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .slice(0, SYSTEM_ACTIVITY_MAX_ITEMS);
+}
+
+function parseSystemActivityLogs(raw: string | null): SystemActivityLogItem[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return cleanSystemActivityLogs(parsed.map((item): SystemActivityLogItem | null => {
+      if (!item || typeof item.message !== "string") return null;
+      const type = item.type === "success" || item.type === "warning" || item.type === "error" ? item.type : "info";
+      return {
+        id: typeof item.id === "string" ? item.id : `activity-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        type,
+        message: item.message,
+        source: typeof item.source === "string" ? item.source : undefined,
+        createdAt: typeof item.createdAt === "number" ? item.createdAt : Date.now(),
+      };
+    }).filter((item): item is SystemActivityLogItem => Boolean(item)));
+  } catch {
+    return [];
+  }
+}
+
+function formatSystemActivityTime(createdAt: number): string {
+  const date = new Date(createdAt);
+  if (Number.isNaN(date.getTime())) return "vừa xong";
+  const ageMs = Date.now() - date.getTime();
+  if (ageMs < 60_000) return "vừa xong";
+  if (ageMs < 60 * 60_000) return `${Math.max(1, Math.floor(ageMs / 60_000))} phút trước`;
+  return date.toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" });
+}
+
+function getSystemActivityAction(log: Pick<SystemActivityLogItem, "type" | "message" | "source">): SystemActivityAction {
+  const haystack = `${log.source || ""} ${log.message || ""}`.toLocaleLowerCase("vi-VN");
+  if (log.type === "error" || /\blỗi\b|error|không thể|không lưu được|không xuất được/iu.test(haystack)) return "error";
+  if (/xuất|export|pdf|word|docx|html/iu.test(haystack)) return "export";
+  if (/\blưu\b|save|saved/iu.test(haystack)) return "save";
+  if (/xóa|xoá|delete|trash|gỡ/iu.test(haystack)) return "delete";
+  if (/khôi phục|mở lịch sử|history|restore|load/iu.test(haystack)) return "restore";
+  if (/trợ lý|copilot|ai|proposal|đề xuất/iu.test(haystack)) return "assistant";
+  if (/preflight|kiểm tra|rà soát|bảng kiểm/iu.test(haystack)) return "preflight";
+  return "system";
+}
+
+function compactSystemActivityLogsForDisplay(logs: SystemActivityLogItem[]): SystemActivityLogItem[] {
+  const compacted: SystemActivityLogItem[] = [];
+  let exportBatch: SystemActivityLogItem[] = [];
+
+  const flushExportBatch = () => {
+    if (exportBatch.length === 0) return;
+    if (exportBatch.length === 1) {
+      compacted.push(exportBatch[0]);
+    } else {
+      compacted.push({
+        ...exportBatch[0],
+        id: `export-group-${exportBatch[0].id}`,
+        message: `${exportBatch.length} hoạt động xuất file gần nhất · ${exportBatch[0].message}`,
+        source: "Xuất",
+      });
+    }
+    exportBatch = [];
+  };
+
+  logs.forEach((log) => {
+    if (getSystemActivityAction(log) === "export") {
+      const previous = exportBatch[exportBatch.length - 1];
+      if (!previous || Math.abs(previous.createdAt - log.createdAt) <= 180_000) {
+        exportBatch.push(log);
+        return;
+      }
+      flushExportBatch();
+      exportBatch.push(log);
+      return;
+    }
+    flushExportBatch();
+    compacted.push(log);
+  });
+  flushExportBatch();
+  return compacted;
+}
+
+function isPersistableCanvasBlockOverride(override: CanvasBlockOverride): boolean {
+  if (override.empty) return false;
+  if (override.block.type === "bullet-list" || override.block.type === "ordered-list" || override.block.type === "lead-in-list") return false;
+  return normalizeCanvasMultilineText(override.block.slots?.text).includes("\n");
+}
+
+function buildPersistedCanvasBlockOverridesPayload(
+  draftId: string,
+  output: string,
+  overrides: Record<string, CanvasBlockOverride>,
+): PersistedCanvasBlockOverridesPayload | null {
+  const now = Date.now();
+  const persistedOverrides = Object.values(overrides)
+    .filter(isPersistableCanvasBlockOverride)
+    .map((override) => ({
+      blockId: override.block.id,
+      blockType: override.block.type,
+      block: override.block,
+      empty: override.empty,
+      index: override.index,
+      text: normalizeCanvasMultilineText(override.block.slots?.text),
+      updatedAt: now,
+    }));
+
+  if (persistedOverrides.length === 0) return null;
+
+  return {
+    version: 1,
+    draftId,
+    outputFingerprint: canvasDraftOutputFingerprint(output),
+    overrides: persistedOverrides,
+    updatedAt: now,
+  };
+}
+
+function parsePersistedCanvasBlockOverridesPayload(raw: string | null): PersistedCanvasBlockOverridesPayload | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<PersistedCanvasBlockOverridesPayload>;
+    if (parsed?.version !== 1 || typeof parsed.draftId !== "string" || !Array.isArray(parsed.overrides)) return null;
+
+    const overrides = parsed.overrides
+      .map((override): PersistedCanvasBlockOverride | null => {
+        const block = override?.block;
+        const text = normalizeCanvasMultilineText(override?.text || block?.slots?.text);
+        if (!block?.id || typeof block.type !== "string" || !text.includes("\n")) return null;
+        if (block.type === "bullet-list" || block.type === "ordered-list" || block.type === "lead-in-list") return null;
+        return {
+          blockId: String(override.blockId || block.id),
+          blockType: block.type as ArticleBlock["type"],
+          block: block as ArticleBlock,
+          empty: Boolean(override.empty),
+          index: Number.isFinite(override.index) ? Number(override.index) : 0,
+          text,
+          updatedAt: typeof override.updatedAt === "number" ? override.updatedAt : Date.now(),
+        };
+      })
+      .filter((override): override is PersistedCanvasBlockOverride => Boolean(override));
+
+    if (overrides.length === 0) return null;
+
+    return {
+      version: 1,
+      draftId: parsed.draftId,
+      outputFingerprint: typeof parsed.outputFingerprint === "string" ? parsed.outputFingerprint : "",
+      overrides,
+      updatedAt: typeof parsed.updatedAt === "number" ? parsed.updatedAt : Date.now(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function canApplyPersistedCanvasBlockOverrides(payload: PersistedCanvasBlockOverridesPayload, output: string): boolean {
+  const outputFingerprint = canvasDraftOutputFingerprint(output);
+  if (payload.outputFingerprint && payload.outputFingerprint === outputFingerprint) return true;
+
+  const comparableOutputLines = outputFingerprint
+    .split(/\n/u)
+    .map((line) => comparableCanvasLine(line))
+    .filter(Boolean);
+
+  return payload.overrides.every((override) => {
+    const lines = multilineTextLines(override.text);
+    if (lines.length <= 1) return false;
+    return comparableOutputLines.some((_line, start) => (
+      start + lines.length <= comparableOutputLines.length
+      && lines.every((line, offset) => comparableOutputLines[start + offset] === line)
+    ));
+  });
+}
+
+function persistedCanvasOverridesToState(payload: PersistedCanvasBlockOverridesPayload): Record<string, CanvasBlockOverride> {
+  return payload.overrides.reduce<Record<string, CanvasBlockOverride>>((acc, override) => {
+    acc[override.blockId] = {
+      block: blockWithTextOverride(override.block, override.text),
+      empty: override.empty,
+      index: override.index,
+    };
+    return acc;
+  }, {});
 }
 
 function normalizePreflightText(value: unknown): string {
@@ -571,6 +860,14 @@ function sanitizeProposalReplacement(value: string, targetType?: CopilotContextI
   return cleaned;
 }
 
+function getProposalTargetBlockId(proposal: EditorialProposal | null | undefined): string | undefined {
+  if (!proposal || typeof proposal !== "object") return undefined;
+  if ("targetBlockId" in proposal && typeof proposal.targetBlockId === "string") {
+    return proposal.targetBlockId;
+  }
+  return undefined;
+}
+
 function isSafeReplacementForTarget(value: string, targetType?: CopilotContextItem["type"]): boolean {
   const cleaned = value.trim();
   if (!cleaned || COPILOT_SECTION_HEADING_PATTERN.test(cleaned)) return false;
@@ -584,6 +881,26 @@ function extractDocumentText(document: any): string {
   if (!document) return "";
   const candidates = [document.content, document.text, document.summary, document.description, document.excerpt, document.name, document.title];
   return candidates.map((value) => typeof value === "string" ? value.trim() : "").find(Boolean) || "";
+}
+
+function getDocumentReadableContent(document: any): string {
+  if (!document) return "";
+  const candidates = [document.content, document.text, document.summary, document.description, document.excerpt];
+  return candidates.map((value) => typeof value === "string" ? value.trim() : "").find(Boolean) || "";
+}
+
+function getDraftSourceTitle(document: any, index: number): string {
+  if (!document) return "Nguồn chưa tải";
+  const title = [document.name, document.title, document.fileName, document.url]
+    .map((value) => typeof value === "string" ? value.trim() : "")
+    .find(Boolean);
+  return title || `Nguồn ${index + 1}`;
+}
+
+function getDraftSourceStatus(document: any): { label: "Đã gắn" | "Cần kiểm tra" | "Chưa đọc nội dung"; className: string } {
+  if (!document) return { label: "Cần kiểm tra", className: "border-amber-200 bg-amber-50 text-amber-800" };
+  if (!getDocumentReadableContent(document)) return { label: "Chưa đọc nội dung", className: "border-slate-200 bg-slate-50 text-slate-600" };
+  return { label: "Đã gắn", className: "border-emerald-200 bg-emerald-50 text-emerald-700" };
 }
 
 function downloadHtmlFile(html: string, filename: string): void {
@@ -636,6 +953,8 @@ export const EditorWorkspace = (props: any) => {
   const [lastSavedAt, setLastSavedAt] = React.useState<number | null>(null);
   const [isSavingDraft, setIsSavingDraft] = React.useState(false);
   const [copilotViewMode, setCopilotViewMode] = React.useState<CopilotViewMode>("collapsed");
+  const [railActiveTab, setRailActiveTab] = React.useState<"check" | "activity" | "assistant" | "sources">("assistant");
+  const [copilotChatMessages, setCopilotChatMessages] = React.useState<CopilotChatMessage[]>([]);
   const [selectedContextItems, setSelectedContextItems] = React.useState<CopilotContextItem[]>([]);
   const [activeCommandId, setActiveCommandId] = React.useState<string | null>(null);
   const [pendingProposal, setPendingProposal] = React.useState<CopilotProposal | null>(null);
@@ -650,7 +969,7 @@ export const EditorWorkspace = (props: any) => {
   const [copilotDraftTargetGroup, setCopilotDraftTargetGroup] = React.useState<CopilotDraftFlowState["targetGroup"]>();
   const [canvasBlockEditState, setCanvasBlockEditState] = React.useState<CanvasBlockEditState | null>(null);
   const [canvasBlockOverrides, setCanvasBlockOverrides] = React.useState<Record<string, CanvasBlockOverride>>({});
-  const [pillAnchor, setPillAnchor] = React.useState<{ top: number; left: number } | null>(null);
+  const [pillAnchor, setPillAnchor] = React.useState<ContextPillAnchor | null>(null);
   const [isContextPillVisible, setIsContextPillVisible] = React.useState(false);
   const [onboardingSeen, setOnboardingSeen] = React.useState(() => {
     if (typeof window === "undefined") return true;
@@ -662,12 +981,24 @@ export const EditorWorkspace = (props: any) => {
   const [exportingFormat, setExportingFormat] = React.useState<null | "pdf" | "docx" | "html">(null);
   const [preflightUiStatus, setPreflightUiStatus] = React.useState<PreflightUiStatus>("idle");
   const [lastPreflightDraftSignature, setLastPreflightDraftSignature] = React.useState<string | null>(null);
+  const [reviewedPreflightIssues, setReviewedPreflightIssues] = React.useState<PreflightIssue[]>([]);
   const lastToastAtRef = React.useRef<Record<string, number>>({});
   const currentDraftId = React.useMemo(
     () => currentSessionId || `local-${user?.uid || "guest"}-editorial-main`,
     [currentSessionId, user?.uid],
   );
   const localDraftKey = editorialDraftKey || (user?.uid ? `vms:workspace:draft:${user.uid}:editorial:main` : null);
+  const canvasMultilineOverridesStorageKey = React.useMemo(
+    () => getCanvasMultilineOverrideStorageKey(user?.uid, currentDraftId),
+    [currentDraftId, user?.uid],
+  );
+  const systemActivityStorageKey = React.useMemo(() => getSystemActivityStorageKey(user?.uid, currentDraftId), [currentDraftId, user?.uid]);
+  const [systemActivityLogs, setSystemActivityLogs] = React.useState<SystemActivityLogItem[]>(() => (
+    typeof window === "undefined" ? [] : parseSystemActivityLogs(window.localStorage.getItem(getSystemActivityStorageKey(user?.uid, currentDraftId)))
+  ));
+  const [isSystemActivityExpanded, setIsSystemActivityExpanded] = React.useState(false);
+  const hydratedCanvasOverrideStorageKeyRef = React.useRef<string | null>(null);
+  const pendingCanvasOverrideRehydrateKeyRef = React.useRef<string | null>(null);
 
   const dedupeToast = React.useCallback((id: string, run: () => void, cooldownMs = 2500) => {
     const now = Date.now();
@@ -676,17 +1007,76 @@ export const EditorWorkspace = (props: any) => {
     run();
   }, []);
 
-  const notifySuccess = React.useCallback((id: string, message: string) => {
-    dedupeToast(id, () => toast.success(message, { id, duration: 3500 }));
+  React.useEffect(() => {
+    if (typeof window === "undefined") return;
+    setSystemActivityLogs(parseSystemActivityLogs(window.localStorage.getItem(systemActivityStorageKey)));
+  }, [systemActivityStorageKey]);
+
+  React.useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(systemActivityStorageKey, JSON.stringify(cleanSystemActivityLogs(systemActivityLogs)));
+  }, [systemActivityLogs, systemActivityStorageKey]);
+
+  const addSystemActivityLog = React.useCallback((type: SystemActivityType, message: string, source = "Hệ thống", id?: string) => {
+    const logId = id || `activity-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    dedupeToast(logId, () => {
+      const now = Date.now();
+      const log: SystemActivityLogItem = { id: logId, type, message, source, createdAt: now };
+      setSystemActivityLogs((current) => cleanSystemActivityLogs([log, ...current.filter((item) => item.id !== logId)], now));
+    }, 1200);
+  }, [dedupeToast]);
+
+  const showWorkspaceToast = React.useCallback((type: SystemActivityType, id: string, message: string, duration = 2600) => {
+    if (!toast) return;
+    dedupeToast(`toast:${id}`, () => {
+      const options = { id, duration };
+      if (type === "success" && typeof toast.success === "function") {
+        toast.success(message, options);
+        return;
+      }
+      if (type === "error" && typeof toast.error === "function") {
+        toast.error(message, { ...options, duration: Math.max(duration, 3600) });
+        return;
+      }
+      if (typeof toast === "function") {
+        toast(message, { ...options, icon: type === "warning" ? "⚠️" : "ℹ️" });
+      }
+    }, type === "error" ? 1600 : 2200);
   }, [dedupeToast, toast]);
 
-  const notifyWarning = React.useCallback((id: string, message: string, duration = 4500) => {
-    dedupeToast(id, () => toast(message, { id, icon: "⚠️", duration }));
-  }, [dedupeToast, toast]);
+  const clearSystemActivityLogs = React.useCallback(() => {
+    setSystemActivityLogs([]);
+    if (typeof window !== "undefined") window.localStorage.removeItem(systemActivityStorageKey);
+  }, [systemActivityStorageKey]);
 
-  const notifyError = React.useCallback((id: string, message: string) => {
-    dedupeToast(id, () => toast.error(message, { id, duration: 8000 }));
-  }, [dedupeToast, toast]);
+  const notifyInfo = React.useCallback((id: string, message: string, source = "Hệ thống") => {
+    addSystemActivityLog("info", message, source, id);
+    showWorkspaceToast("info", id, message, 2200);
+  }, [addSystemActivityLog, showWorkspaceToast]);
+
+  const notifySuccess = React.useCallback((id: string, message: string, source = "Hệ thống") => {
+    addSystemActivityLog("success", message, source, id);
+    showWorkspaceToast("success", id, message, 2200);
+  }, [addSystemActivityLog, showWorkspaceToast]);
+
+  const notifyWarning = React.useCallback((id: string, message: string, durationOrSource: number | string = 3200, sourceOverride = "Hệ thống") => {
+    const duration = typeof durationOrSource === "number" ? durationOrSource : 3200;
+    const source = typeof durationOrSource === "string" ? durationOrSource : sourceOverride;
+    addSystemActivityLog("warning", message, source, id);
+    showWorkspaceToast("warning", id, message, duration);
+  }, [addSystemActivityLog, showWorkspaceToast]);
+
+  const notifyError = React.useCallback((id: string, message: string, source = "Hệ thống") => {
+    addSystemActivityLog("error", message, source, id);
+    showWorkspaceToast("error", id, message, 4200);
+  }, [addSystemActivityLog, showWorkspaceToast]);
+
+  const clearCanvasMultilineOverrideStorage = React.useCallback((key = canvasMultilineOverridesStorageKey) => {
+    if (typeof window === "undefined") return;
+    window.localStorage.removeItem(key);
+    if (hydratedCanvasOverrideStorageKeyRef.current === key) hydratedCanvasOverrideStorageKeyRef.current = null;
+    if (pendingCanvasOverrideRehydrateKeyRef.current === key) pendingCanvasOverrideRehydrateKeyRef.current = null;
+  }, [canvasMultilineOverridesStorageKey]);
 
   const clearEditorialLocalDraft = React.useCallback(() => {
     if (localDraftKey) localStorage.removeItem(localDraftKey);
@@ -712,6 +1102,7 @@ export const EditorWorkspace = (props: any) => {
   const clearEditorialEditorTransientState = React.useCallback(() => {
     setCanvasBlockEditState(null);
     setCanvasBlockOverrides({});
+    clearCanvasMultilineOverrideStorage();
     setSelectedContextItems([]);
     setPendingProposal(null);
     setPillAnchor(null);
@@ -719,7 +1110,8 @@ export const EditorWorkspace = (props: any) => {
     setActiveCommandId(null);
     setPreflightUiStatus("idle");
     setLastPreflightDraftSignature(null);
-  }, []);
+    setReviewedPreflightIssues([]);
+  }, [clearCanvasMultilineOverrideStorage]);
 
   const resetEditorialDraftState = React.useCallback(() => {
     setOutput("");
@@ -791,6 +1183,20 @@ export const EditorWorkspace = (props: any) => {
     });
   }, [documents, selectedSourceDocIds]);
 
+  const selectedDraftSources = React.useMemo(() => (
+    selectedSourceDocIds.map((docId: string, index: number) => {
+      const document = Array.isArray(documents) ? documents.find((item: any) => item?.id === docId) : undefined;
+      const status = getDraftSourceStatus(document);
+      return {
+        id: docId,
+        document,
+        title: getDraftSourceTitle(document, index),
+        status,
+        readableContent: getDocumentReadableContent(document),
+      };
+    })
+  ), [documents, selectedSourceDocIds]);
+
   React.useEffect(() => {
     if (!copilotStatusMessage || isCopilotBusy || pendingProposal) return undefined;
     if (!copilotStatusMessage.startsWith("Đã")) return undefined;
@@ -835,6 +1241,52 @@ export const EditorWorkspace = (props: any) => {
   }, [localDraftKey]);
 
   React.useEffect(() => {
+    if (!hasGeneratedDraft || Object.keys(canvasBlockOverrides).length === 0) return;
+    const payload = buildPersistedCanvasBlockOverridesPayload(currentDraftId, output || "", canvasBlockOverrides);
+    if (!payload) return;
+    if (canApplyPersistedCanvasBlockOverrides(payload, output || "")) return;
+    setCanvasBlockOverrides({});
+    clearCanvasMultilineOverrideStorage();
+  }, [canvasBlockOverrides, clearCanvasMultilineOverrideStorage, currentDraftId, hasGeneratedDraft, output]);
+
+  React.useEffect(() => {
+    if (typeof window === "undefined" || !hasGeneratedDraft) return;
+    if (Object.keys(canvasBlockOverrides).length > 0) return;
+    if (hydratedCanvasOverrideStorageKeyRef.current === canvasMultilineOverridesStorageKey) return;
+
+    const payload = parsePersistedCanvasBlockOverridesPayload(window.localStorage.getItem(canvasMultilineOverridesStorageKey));
+    hydratedCanvasOverrideStorageKeyRef.current = canvasMultilineOverridesStorageKey;
+
+    if (!payload || payload.draftId !== currentDraftId || !canApplyPersistedCanvasBlockOverrides(payload, output || "")) {
+      pendingCanvasOverrideRehydrateKeyRef.current = null;
+      return;
+    }
+
+    pendingCanvasOverrideRehydrateKeyRef.current = canvasMultilineOverridesStorageKey;
+    setCanvasBlockOverrides(persistedCanvasOverridesToState(payload));
+  }, [canvasBlockOverrides, canvasMultilineOverridesStorageKey, currentDraftId, hasGeneratedDraft, output]);
+
+  React.useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!hasGeneratedDraft) {
+      window.localStorage.removeItem(canvasMultilineOverridesStorageKey);
+      pendingCanvasOverrideRehydrateKeyRef.current = null;
+      return;
+    }
+
+    const payload = buildPersistedCanvasBlockOverridesPayload(currentDraftId, output || "", canvasBlockOverrides);
+    if (!payload) {
+      if (pendingCanvasOverrideRehydrateKeyRef.current === canvasMultilineOverridesStorageKey) return;
+      window.localStorage.removeItem(canvasMultilineOverridesStorageKey);
+      return;
+    }
+
+    pendingCanvasOverrideRehydrateKeyRef.current = null;
+    hydratedCanvasOverrideStorageKeyRef.current = canvasMultilineOverridesStorageKey;
+    window.localStorage.setItem(canvasMultilineOverridesStorageKey, JSON.stringify(payload));
+  }, [canvasBlockOverrides, canvasMultilineOverridesStorageKey, currentDraftId, hasGeneratedDraft, output]);
+
+  React.useEffect(() => {
     persistEditorialLocalDraft();
   }, [persistEditorialLocalDraft]);
 
@@ -859,9 +1311,12 @@ export const EditorWorkspace = (props: any) => {
     setCopilotDraftSelectedTemplateId(null);
     setCanvasBlockEditState(null);
     setCanvasBlockOverrides({});
+    clearCanvasMultilineOverrideStorage();
     setPreflightUiStatus("idle");
     setLastPreflightDraftSignature(null);
-  }, [setError, setInput, setIsEditing, setOutput]);
+    // Clear copilot chat so previous session messages don't bleed into new article
+    setCopilotChatMessages([]);
+  }, [clearCanvasMultilineOverrideStorage, setError, setInput, setIsEditing, setOutput]);
 
   const hasProtectedWorkspaceData = React.useMemo(() => (
     isDraftDirty ||
@@ -933,6 +1388,23 @@ export const EditorWorkspace = (props: any) => {
   }, [canvasBlockOverrides, output, selectedLayout, user?.displayName, user?.email]);
 
   const emptyCanvasBlockIds = React.useMemo(() => Object.values(canvasBlockOverrides).filter((override) => override.empty).map((override) => override.block.id), [canvasBlockOverrides]);
+  const articleBlockIdSet = React.useMemo(() => new Set(articleDocument.blocks.map((block) => block.id)), [articleDocument.blocks]);
+
+  React.useEffect(() => {
+    const hasStaleContext = selectedContextItems.some((item) => item.blockId && !articleBlockIdSet.has(item.blockId));
+    if (hasStaleContext) {
+      setSelectedContextItems((items) => items.filter((item) => !item.blockId || articleBlockIdSet.has(item.blockId)));
+      setPillAnchor(null);
+      setIsContextPillVisible(false);
+    }
+
+    setCanvasBlockEditState((current) => current && !articleBlockIdSet.has(current.blockId) ? null : current);
+    setPendingProposal((current) => {
+      const targetBlockId = getProposalTargetBlockId(current?.executionResult?.proposal);
+      return targetBlockId && !articleBlockIdSet.has(targetBlockId) ? null : current;
+    });
+  }, [articleBlockIdSet, selectedContextItems]);
+
   const articleExportModel = React.useMemo(() => normalizeArticleDocumentForExport(articleDocument), [articleDocument]);
   const articleValidation = React.useMemo(() => validateArticleDocument(articleDocument), [articleDocument]);
   
@@ -982,6 +1454,7 @@ export const EditorWorkspace = (props: any) => {
     if (!hasGeneratedDraft) {
       setPreflightUiStatus("idle");
       setLastPreflightDraftSignature(null);
+      setReviewedPreflightIssues([]);
       return;
     }
     if (preflightUiStatus === "ready" && lastPreflightDraftSignature && lastPreflightDraftSignature !== preflightDraftSignature) {
@@ -996,16 +1469,21 @@ export const EditorWorkspace = (props: any) => {
     }
     setPreflightUiStatus("checking");
     setLastPreflightDraftSignature(preflightDraftSignature);
-    window.setTimeout(() => setPreflightUiStatus("ready"), 0);
+    setReviewedPreflightIssues(preflightIssues);
+    window.setTimeout(() => setPreflightUiStatus("ready"), 320);
     if (source !== "export") {
-      setCopilotStatusMessage(preflightIssues.length > 0
+      const message = preflightIssues.length > 0
         ? `Đã rà soát bản thảo: ${preflightIssues.length} vấn đề/gợi ý cần xem.`
-        : "Đã rà soát bản thảo. Chưa phát hiện vấn đề lớn.");
+        : "Đã rà soát bản thảo. Chưa phát hiện vấn đề lớn.";
+      setCopilotStatusMessage(message);
+      addSystemActivityLog(preflightIssues.length > 0 ? "warning" : "success", message, "Preflight", "preflight-review-result");
+    } else {
+      addSystemActivityLog(preflightIssues.length > 0 ? "warning" : "success", "Đã kiểm tra bản thảo trước khi xuất file.", "Kiểm tra", "preflight-export-check");
     }
     return true;
-  }, [hasGeneratedDraft, preflightDraftSignature, preflightIssues.length]);
+  }, [addSystemActivityLog, hasGeneratedDraft, preflightDraftSignature, preflightIssues]);
 
-  const visiblePreflightIssues = preflightUiStatus === "ready" ? preflightIssues : [];
+  const visiblePreflightIssues = preflightUiStatus === "ready" || preflightUiStatus === "stale" ? reviewedPreflightIssues : [];
   const preflightCounts = React.useMemo(() => countPreflightIssuesBySeverity(preflightIssues), [preflightIssues]);
   const hasPreflightBlockers = React.useMemo(() => hasBlockingPreflightIssues(preflightIssues), [preflightIssues]);
 
@@ -1148,7 +1626,7 @@ export const EditorWorkspace = (props: any) => {
   const handleCanvasBlockSelect = React.useCallback((block: ArticleBlock, event: React.MouseEvent<HTMLElement>) => {
     const contextItem = buildContextFromBlock(block);
     const wasSelected = selectedContextItems.some((item) => item.id === contextItem.id);
-    const rect = event.currentTarget.getBoundingClientRect();
+    const nextAnchor = getCanvasContextPillAnchor(event.currentTarget.getBoundingClientRect());
 
     setSelectedContextItems((current) => {
       if (wasSelected) {
@@ -1159,7 +1637,7 @@ export const EditorWorkspace = (props: any) => {
           setIsContextPillVisible(false);
           setCopilotStatusMessage("Chưa chọn ngữ cảnh");
         } else {
-          setPillAnchor({ top: Math.max(92, rect.top + window.scrollY - 8), left: Math.min(window.innerWidth - 180, rect.right + window.scrollX - 150) });
+          setPillAnchor(nextAnchor);
           setIsContextPillVisible(nextCanvasItems.length <= 3);
         }
         return nextItems;
@@ -1170,7 +1648,7 @@ export const EditorWorkspace = (props: any) => {
     });
 
     if (!wasSelected) {
-      setPillAnchor({ top: Math.max(92, rect.top + window.scrollY - 8), left: Math.min(window.innerWidth - 180, rect.right + window.scrollX - 150) });
+      setPillAnchor(nextAnchor);
       setIsContextPillVisible(true);
       setCopilotStatusMessage(null);
     }
@@ -1271,33 +1749,68 @@ export const EditorWorkspace = (props: any) => {
     setCopilotStatusMessage("Đã hủy sửa trên Canvas. Nội dung gốc không thay đổi.");
   }, []);
 
-  const deleteCanvasBlock = React.useCallback(async () => {
-    if (!canvasBlockEditState) return;
-    const hasContent = canvasBlockEditState.originalText.trim().length > 0 || canvasBlockEditState.value.trim().length > 0;
-    if (hasContent) {
-      const confirmed = await requestConfirmAsync("Xóa block này khỏi bản thảo? Hành động này chưa tự lưu cho đến khi bạn bấm Lưu.");
-      if (!confirmed) return;
-    }
 
-    const nextOutput = replaceOutputText(canvasBlockEditState.originalText, "");
-    if (nextOutput === null) {
-      setCanvasBlockEditState((current) => current ? { ...current, error: "Không tìm thấy block trong bản thảo để xóa an toàn." } : current);
+  const deleteSelectedCanvasBlocks = React.useCallback(async () => {
+    const blockIds = selectedContextItems.map((item) => item.blockId).filter((id): id is string => Boolean(id));
+    if (blockIds.length === 0) return;
+
+    const uniqueBlockIds = Array.from(new Set(blockIds));
+    const targetBlocks = uniqueBlockIds
+      .map((blockId) => articleDocument.blocks.find((block) => block.id === blockId))
+      .filter((block): block is ArticleBlock => Boolean(block));
+
+    if (targetBlocks.length === 0) {
+      setSelectedContextItems((items) => items.filter((item) => !item.blockId || !uniqueBlockIds.includes(item.blockId)));
+      setCanvasBlockEditState((current) => current && uniqueBlockIds.includes(current.blockId) ? null : current);
+      setPendingProposal((current) => uniqueBlockIds.includes(getProposalTargetBlockId(current?.executionResult?.proposal) || "") ? null : current);
+      setPillAnchor(null);
+      setIsContextPillVisible(false);
+      setCopilotStatusMessage("Block đã chọn không còn tồn tại trên Canvas. Đã bỏ chọn context cũ.");
       return;
     }
 
-    setOutput(nextOutput);
+    const confirmed = await requestConfirmAsync(targetBlocks.length === 1
+      ? `Xóa block "${getArticleBlockExcerpt(targetBlocks[0]).slice(0, 96) || canvasBlockEditLabel(targetBlocks[0].type)}" khỏi Canvas? Nội dung chưa tự lưu cho đến khi bạn bấm Lưu.`
+      : `Xóa ${targetBlocks.length} block đã chọn khỏi Canvas? Nội dung chưa tự lưu cho đến khi bạn bấm Lưu.`);
+    if (!confirmed) return;
+
+    const targetBlockIds = targetBlocks.map((block) => block.id);
+    const blockTexts = targetBlocks
+      .map((block) => getArticleBlockFullText(block))
+      .filter((value) => value.trim().length > 0);
+
+    let nextOutput = normalizeEditorialBriefContent(output || "");
+    blockTexts.forEach((blockText) => {
+      const index = nextOutput.indexOf(blockText);
+      if (index >= 0) {
+        nextOutput = `${nextOutput.slice(0, index)}${nextOutput.slice(index + blockText.length)}`;
+      } else {
+        const lines = nextOutput.split(/\r?\n/u);
+        const matchingLineIndex = lines.findIndex((line) => line.includes(blockText.slice(0, 80)) || blockText.includes(line.trim()));
+        if (matchingLineIndex >= 0) {
+          lines.splice(matchingLineIndex, 1);
+          nextOutput = lines.join("\n");
+        }
+      }
+    });
+
+    setOutput(normalizeEditorialBriefContent(nextOutput).replace(/\n{3,}/gu, "\n\n"));
+    setCanvasBlockOverrides((current) => {
+      const next = { ...current };
+      targetBlockIds.forEach((blockId) => delete next[blockId]);
+      return next;
+    });
+    setSelectedContextItems((items) => items.filter((item) => !item.blockId || !targetBlockIds.includes(item.blockId)));
+    setCanvasBlockEditState((current) => current && targetBlockIds.includes(current.blockId) ? null : current);
+    setPendingProposal((current) => targetBlockIds.includes(getProposalTargetBlockId(current?.executionResult?.proposal) || "") ? null : current);
+    setPillAnchor(null);
+    setIsContextPillVisible(false);
     setIsDraftDirty(true);
     setCurrentStep("draft");
     setWorkspaceMode("edit");
-    setCanvasBlockEditState(null);
-    setCanvasBlockOverrides((current) => {
-      const next = { ...current };
-      delete next[canvasBlockEditState.blockId];
-      return next;
-    });
-    setSelectedContextItems((items) => items.filter((item) => item.blockId !== canvasBlockEditState.blockId));
-    setCopilotStatusMessage("Đã xóa block khỏi bản thảo. Nội dung chưa tự lưu cho đến khi bạn bấm Lưu.");
-  }, [canvasBlockEditState, replaceOutputText, requestConfirmAsync, setOutput]);
+    setCopilotStatusMessage(targetBlockIds.length === 1 ? "Đã xóa block đã chọn. Context và trạng thái sửa đã được dọn sạch; nội dung chưa tự lưu." : `Đã xóa ${targetBlockIds.length} block đã chọn. Context và trạng thái sửa đã được dọn sạch; nội dung chưa tự lưu.`);
+    notifyWarning("canvas-delete-block", targetBlockIds.length === 1 ? "Đã xóa block đã chọn." : `Đã xóa ${targetBlockIds.length} block đã chọn.`, 3500, "Canvas edit");
+  }, [articleDocument.blocks, notifyWarning, output, requestConfirmAsync, selectedContextItems, setOutput]);
 
   const pushCanvasEditValue = React.useCallback((nextValue: string | ((value: string) => string)) => {
     setCanvasBlockEditState((current) => {
@@ -1428,7 +1941,8 @@ export const EditorWorkspace = (props: any) => {
   const createProposal = React.useCallback((proposal: Omit<CopilotProposal, "id">) => {
     setPendingProposal({ ...proposal, id: `proposal-${Date.now()}` });
     setCopilotStatusMessage("Đề xuất đã sẵn sàng. Nội dung gốc chưa thay đổi cho đến khi bạn bấm Áp dụng.");
-  }, []);
+    addSystemActivityLog("info", "Trợ lý đã tạo đề xuất; cần Áp dụng/Hủy để thay đổi bản thảo.", "Trợ lý", "copilot-proposal-ready");
+  }, [addSystemActivityLog]);
 
   const formatExecutionProposal = React.useCallback((result: EditorialExecutionResult): Omit<CopilotProposal, "id"> => {
     const proposal = result.proposal;
@@ -1551,12 +2065,14 @@ export const EditorWorkspace = (props: any) => {
   const runProcessWithLayout = React.useCallback(async (layoutId?: string, layoutVersion?: string) => {
     setSelectedLayoutId(layoutId);
     setSelectedLayoutVersion(layoutVersion);
+    setCanvasBlockOverrides({});
+    clearCanvasMultilineOverrideStorage();
     setCurrentStep("generating");
     await handleProcess();
     setCurrentStep("draft");
     setIsDraftDirty(true);
     setLastSavedAt(null);
-  }, [handleProcess]);
+  }, [clearCanvasMultilineOverrideStorage, handleProcess]);
 
   const openCopilotDraftFlow = React.useCallback(() => {
     if (currentTool?.taskType !== "WRITE_NEW") {
@@ -1716,6 +2232,8 @@ export const EditorWorkspace = (props: any) => {
 
       const generatedDraft = lines.join("\n").trim();
       setOutput(generatedDraft);
+      setCanvasBlockOverrides({});
+      clearCanvasMultilineOverrideStorage();
       
       const targetLayoutId = getDefaultArticleLayout().layoutId;
       const targetLayoutVersion = getDefaultArticleLayout().layoutVersion;
@@ -1740,7 +2258,7 @@ export const EditorWorkspace = (props: any) => {
     } finally {
       setIsCopilotBusy(false);
     }
-  }, [copilotDraftSelectedTemplateId, input, copilotDraftExtraNotes, setOutput]);
+  }, [clearCanvasMultilineOverrideStorage, copilotDraftSelectedTemplateId, input, copilotDraftExtraNotes, setOutput]);
 
   const submitCopilotDraftFlow = React.useCallback(async () => {
     const brief = normalizeEditorialBriefInput(input);
@@ -1934,6 +2452,8 @@ export const EditorWorkspace = (props: any) => {
       return;
     }
 
+    const proposalTargetBlockId = getProposalTargetBlockId(executionProposal);
+
     let nextOutput: string | null = null;
     if (executionProposal.type === "add_caption") {
       if (!executionProposal.targetBlockId || !pendingProposal.proposedText.trim()) {
@@ -1980,6 +2500,13 @@ ${pendingProposal.proposedText}`;
       return;
     }
     setOutput(nextOutput);
+    if (proposalTargetBlockId) {
+      setCanvasBlockOverrides((current) => {
+        const next = { ...current };
+        delete next[proposalTargetBlockId];
+        return next;
+      });
+    }
     setIsDraftDirty(true);
     setPendingProposal(null);
     setCurrentStep("draft");
@@ -1993,9 +2520,71 @@ ${pendingProposal.proposedText}`;
   const handleSubmitCopilotPrompt = React.useCallback(async () => {
     const prompt = normalizeEditorialBriefInput(copilotInput);
     if (!prompt) return;
-    await handleRunCopilotCommand("more", prompt);
+
+    const hasContext = selectedContextItems.length > 0;
+    const intent = classifyCopilotIntent(prompt, hasContext);
+
+    // Record user message immediately
+    const userMsg: CopilotChatMessage = {
+      id: `chat-user-${Date.now()}`,
+      role: "user",
+      content: prompt,
+      createdAt: Date.now(),
+    };
+    setCopilotChatMessages((prev) => [...prev, userMsg]);
     setCopilotInput("");
-  }, [copilotInput, handleRunCopilotCommand]);
+
+    // ----------------------------------------------------------------
+    // SAFE CHAT INTENTS — never touch proposal workflow
+    // ----------------------------------------------------------------
+
+    // greeting / general_chat / help_request / context_question
+    // getCopilotChatReply returns a non-null string for all these intents
+    const chatReply = getCopilotChatReply(intent, hasContext);
+    if (chatReply !== null) {
+      // context_question with no context → guide user to select a block
+      const content =
+        intent === "context_question" && !hasContext
+          ? "Bạn chưa chọn đoạn nào. Hãy chọn một đoạn trên Canvas để tôi nhận xét cụ thể hơn."
+          : chatReply;
+      const assistantMsg: CopilotChatMessage = {
+        id: `chat-assistant-${Date.now()}`,
+        role: "assistant",
+        content,
+        createdAt: Date.now(),
+        isContextAdvice: intent === "context_question",
+      };
+      setCopilotChatMessages((prev) => [...prev, assistantMsg]);
+      addSystemActivityLog("info", hasContext ? "Trợ lý đã phản hồi dựa trên context đang chọn." : "Trợ lý đã phản hồi chat thường, không tạo đề xuất.", "Trợ lý", `copilot-chat-${intent}`);
+      return;
+    }
+
+    // ----------------------------------------------------------------
+    // EDIT INTENT — requires a selected block
+    // ----------------------------------------------------------------
+    if (intent === "edit_selected_block" && !hasContext) {
+      const assistantMsg: CopilotChatMessage = {
+        id: `chat-assistant-${Date.now()}`,
+        role: "assistant",
+        content: "Hãy chọn đoạn cần chỉnh sửa trên Canvas rồi gửi lại yêu cầu. Tôi sẽ tạo đề xuất ngay.",
+        createdAt: Date.now(),
+      };
+      setCopilotChatMessages((prev) => [...prev, assistantMsg]);
+      addSystemActivityLog("info", "Trợ lý cần bạn chọn block trước khi tạo đề xuất sửa.", "Trợ lý", "copilot-edit-needs-context");
+      return;
+    }
+
+    // ----------------------------------------------------------------
+    // WORKFLOW INTENTS — generate_draft / preflight / source / edit (with context)
+    // These produce a proposal card via the existing engine
+    // ----------------------------------------------------------------
+    await handleRunCopilotCommand("more", prompt);
+  }, [
+    copilotInput,
+    addSystemActivityLog,
+    selectedContextItems,
+    handleRunCopilotCommand,
+  ]);
 
 
   const handleExportArticle = React.useCallback(async (format: "pdf" | "docx" | "html") => {
@@ -2008,7 +2597,7 @@ ${pendingProposal.proposedText}`;
 
       if (format === "pdf") {
         let pdfValidationWarningCount = 0;
-        toast("Đang tạo file PDF...", { id: "export-pdf-loading", icon: "ℹ️", duration: 3500 });
+        notifyInfo("export-pdf-loading", "Đang tạo file PDF…", "Export");
         const { exportPrintablePdfFromArticleExportModel } = await import("../../lib/printablePdfExport");
         await exportPrintablePdfFromArticleExportModel(articleExportModel, {
           title: articleExportModel.title || `Bai_viet_HTMB_${Date.now()}`,
@@ -2059,7 +2648,7 @@ ${pendingProposal.proposedText}`;
     } finally {
       setExportingFormat(null);
     }
-  }, [articleDocument, articleExportModel, closeAllHeaderMenus, currentSessionId, editorialKind, exportingFormat, logActivity, notifyError, notifySuccess, notifyWarning, sessions, setError, toast, validateArticleBeforeExport]);
+  }, [articleDocument, articleExportModel, closeAllHeaderMenus, currentSessionId, editorialKind, exportingFormat, logActivity, notifyError, notifyInfo, notifySuccess, notifyWarning, sessions, setError, validateArticleBeforeExport]);
 
   const [cooldownRemaining, setCooldownRemaining] = React.useState(0);
   React.useEffect(() => {
@@ -2086,7 +2675,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
 
   const openLayoutRecommendations = React.useCallback(() => {
     if (!normalizeEditorialBriefInput(input) && selectedSourceDocIds.length === 0) {
-      toast.error("Vui lòng nhập nội dung hoặc chọn tài liệu nguồn trước khi xử lý.");
+      notifyError("process-input-missing", "Vui lòng nhập nội dung hoặc chọn tài liệu nguồn trước khi xử lý.", "Soạn thảo");
       return;
     }
 
@@ -2104,7 +2693,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
         : undefined,
     );
     setCurrentStep("recommendation");
-  }, [buildRecommendationBrief, input, selectedSourceDocIds.length, toast]);
+  }, [buildRecommendationBrief, input, notifyError, selectedSourceDocIds.length]);
 
 
   const handleSelectRecommendedLayout = React.useCallback((recommendation: LayoutRecommendation) => {
@@ -2158,6 +2747,8 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
     if (typeof loadSession === "function") {
       await loadSession(session);
     }
+    // Clear chat history when switching to a different session
+    setCopilotChatMessages([]);
     setWorkspaceMode("edit");
   }, [loadSession]);
 
@@ -2227,7 +2818,6 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
       <div className="sticky top-0 z-30 rounded-2xl border border-slate-200 bg-white/95 px-4 py-3 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-white/85">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div className="min-w-0">
-            <p className="text-[11px] font-black uppercase tracking-[0.18em] text-[#002D56]">Intelligent Canvas Assistant</p>
             <h1 className="mt-1 truncate text-lg font-black text-slate-950 sm:text-xl">{documentTitle}</h1>
             <p className={cn("mt-1 text-xs font-bold", !hasGeneratedDraft ? "text-slate-500" : isDraftDirty ? "text-amber-700" : "text-emerald-700")}>{draftSaveLabel}</p>
           </div>
@@ -2365,7 +2955,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                       try {
                         await deleteDoc(doc(db, "users", user.uid, "sessions", session.id));
                         setSessions?.((prev: any[]) => prev.filter((item: any) => item.id !== session.id));
-                        toast.success("Đã xóa bài viết.");
+                        notifySuccess("history-delete-success", "Đã xóa bài viết.", "Lịch sử");
                         await logActivity?.({
                           module: "editorial",
                           action: "deleted",
@@ -2378,7 +2968,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                         });
                       } catch (err) {
                         console.error("Delete session error:", err);
-                        toast.error("Không thể xóa bài viết trên hệ thống.");
+                        notifyError("history-delete-error", "Không thể xóa bài viết trên hệ thống.", "Lịch sử");
                       }
                     } else {
                       setSessions?.((prev: any[]) => prev.filter((item: any) => item.id !== session.id));
@@ -2554,18 +3144,21 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
           )}
           <div className="border-t border-slate-200 pt-4">
             <p className="text-[12px] font-bold text-slate-700 mb-3">Nguồn đang chọn ({selectedSourceDocIds.length})</p>
-            {selectedSourceDocIds.length === 0 ? (
-              <p className="rounded-lg border border-dashed border-slate-200 bg-white p-4 text-[13px] text-slate-500">Chưa chọn nguồn tư liệu.</p>
+            {selectedDraftSources.length === 0 ? (
+              <p className="rounded-lg border border-dashed border-slate-200 bg-white p-4 text-[13px] text-slate-500">Chưa gắn nguồn cho bản thảo này.</p>
             ) : (
               <div className="grid gap-2">
-                {documents.filter((doc: any) => selectedSourceDocIds.includes(doc.id)).map((doc: any, idx: number) => (
-                  <div key={getRenderKey("source-mode-selected", doc, idx)} className="flex items-center gap-3 rounded-lg border border-blue-100 bg-white p-3">
+                {selectedDraftSources.map((source, idx: number) => (
+                  <div key={getRenderKey("source-mode-selected", source.document || { id: source.id }, idx)} className="flex items-center gap-3 rounded-lg border border-blue-100 bg-white p-3">
                     <FileText className="w-4 h-4 text-blue-600" />
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-[13px] font-semibold text-slate-800">{doc.name}</p>
-                      <p className="text-[11px] text-slate-500">{getDocTypeLabel(doc.type)} • {getSourceTypeLabel(doc.sourceType)}</p>
+                      <p className="truncate text-[13px] font-semibold text-slate-800">{source.title}</p>
+                      <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                        <span className={cn("rounded-full border px-2 py-0.5 text-[10px] font-black", source.status.className)}>{source.status.label}</span>
+                        {source.document && <span className="text-[11px] text-slate-500">{getDocTypeLabel(source.document.type)} • {getSourceTypeLabel(source.document.sourceType)}</span>}
+                      </div>
                     </div>
-                    <button onClick={() => toggleDocSelection(doc.id)} title="Bỏ chọn nguồn" aria-label="Bỏ chọn nguồn" className="rounded-md p-2 text-slate-400 hover:bg-rose-50 hover:text-rose-600">
+                    <button onClick={() => toggleDocSelection(source.id)} title="Bỏ chọn nguồn" aria-label="Bỏ chọn nguồn" className="rounded-md p-2 text-slate-400 hover:bg-rose-50 hover:text-rose-600">
                       <X className="w-4 h-4" />
                     </button>
                   </div>
@@ -3316,18 +3909,6 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                       </button>
                                     </div>
                                   </div>
-                                  {taskType === "WRITE_NEW" && (
-                                    <EditorialPreflightPanel
-                                      kind={editorialKind}
-                                      markdownContent={output}
-                                      articleDocument={articleDocument}
-                                      issues={visiblePreflightIssues}
-                                      hasDraft={hasGeneratedDraft}
-                                      reviewStatus={preflightUiStatus}
-                                      onRequestReview={() => runUserRequestedPreflight("button")}
-                                    />
-                                  )}
-
                                   <div className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-slate-50/80 p-2 text-[11px] text-slate-600">
                                     <span className="px-1 font-bold uppercase tracking-[0.16em] text-slate-500">Xuất nhanh</span>
                                     {currentTool?.allowPdfExport !== false && (
@@ -3390,44 +3971,43 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                                         const isBold = isCanvasInlineWrapped(canvasBlockEditState.value, "**");
                                         const isItalic = isCanvasInlineWrapped(canvasBlockEditState.value, "_");
                                         const toolbarButtonClass = (active = false) => [
-                                          "inline-flex h-9 min-w-9 items-center justify-center rounded-lg border px-2.5 text-[12px] font-black transition focus:outline-none focus:ring-2 focus:ring-[#002D56]/20",
+                                          "inline-flex h-10 min-w-10 items-center justify-center rounded-lg border px-2 text-[12px] font-black transition focus:outline-none focus:ring-2 focus:ring-[#002D56]/20 touch-manipulation",
                                           active ? "border-[#002D56] bg-[#002D56] text-white shadow-sm" : "border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50",
                                         ].join(" ");
                                         const separatorClass = "mx-0.5 hidden h-7 w-px bg-slate-200 sm:block";
 
                                         return (
-                                          <div data-export-exclude="true" className="mb-3 rounded-2xl border border-slate-200 bg-white/95 px-3 py-2 shadow-sm backdrop-blur">
-                                            <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
-                                              <div className="flex min-w-0 items-center gap-2 lg:max-w-[220px]">
+                                          <div data-export-exclude="true" className="sticky top-[max(0.75rem,env(safe-area-inset-top))] z-30 mx-auto mb-3 w-fit max-w-[calc(100vw-1rem)] rounded-2xl border border-slate-200 bg-white/95 px-2 py-2 shadow-lg shadow-slate-900/10 backdrop-blur">
+                                            <div className="flex max-w-full flex-wrap items-center justify-center gap-1.5">
+                                              <div className="mr-1 hidden min-w-0 items-center gap-2 md:flex md:max-w-[132px]">
                                                 <span className="h-2.5 w-2.5 flex-none rounded-full bg-emerald-500 shadow-sm" aria-hidden="true" />
                                                 <div className="min-w-0">
-                                                  <p className="truncate text-[12px] font-black text-slate-900">Đang sửa: {canvasBlockEditState.title}</p>
-                                                  <p className="truncate text-[11px] font-semibold text-slate-500">Xong để cập nhật · Hủy để khôi phục</p>
+                                                  <p className="truncate text-[12px] font-black text-slate-900">Sửa: {canvasBlockEditState.title}</p>
+                                                  <p className="truncate text-[10px] font-semibold text-slate-500">Toàn block</p>
                                                 </div>
                                               </div>
 
-                                              <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto rounded-xl bg-slate-50/80 px-1.5 py-1 [scrollbar-width:thin] lg:justify-center" role="toolbar" aria-label="Công cụ định dạng block đang sửa">
-                                                <button type="button" onClick={undoCanvasEdit} disabled={canvasBlockEditState.undoStack.length === 0} title="Hoàn tác trong block đang sửa" className={`${toolbarButtonClass(false)} disabled:cursor-not-allowed disabled:opacity-40`}>↶</button>
-                                                <button type="button" onClick={redoCanvasEdit} disabled={canvasBlockEditState.redoStack.length === 0} title="Làm lại trong block đang sửa" className={`${toolbarButtonClass(false)} disabled:cursor-not-allowed disabled:opacity-40`}>↷</button>
+                                              <div className="flex min-w-0 items-center gap-1.5 overflow-x-auto rounded-xl bg-slate-50/80 px-1 py-1 [scrollbar-width:thin]" role="toolbar" aria-label="Công cụ định dạng toàn block đang sửa">
+                                                <button type="button" onClick={undoCanvasEdit} disabled={canvasBlockEditState.undoStack.length === 0} title="Hoàn tác trong block đang sửa" aria-label="Hoàn tác" className={`${toolbarButtonClass(false)} disabled:cursor-not-allowed disabled:opacity-40`}>↶</button>
+                                                <button type="button" onClick={redoCanvasEdit} disabled={canvasBlockEditState.redoStack.length === 0} title="Làm lại trong block đang sửa" aria-label="Làm lại" className={`${toolbarButtonClass(false)} disabled:cursor-not-allowed disabled:opacity-40`}>↷</button>
                                                 <span className={separatorClass} aria-hidden="true" />
-                                                <button type="button" onClick={applyCanvasParagraphFormat} title="Văn bản thường" className={toolbarButtonClass(!headingLevel && !isBulletList && !isNumberedList)}>P</button>
-                                                <button type="button" onClick={() => applyCanvasHeadingFormat(1)} title="Tiêu đề cấp 1" className={toolbarButtonClass(headingLevel === 1)}>H1</button>
-                                                <button type="button" onClick={() => applyCanvasHeadingFormat(2)} title="Tiêu đề cấp 2" className={toolbarButtonClass(headingLevel === 2)}>H2</button>
-                                                <button type="button" onClick={() => applyCanvasHeadingFormat(3)} title="Tiêu đề cấp 3" className={toolbarButtonClass(headingLevel === 3)}>H3</button>
+                                                <button type="button" onClick={applyCanvasParagraphFormat} title="Văn bản thường" aria-label="Văn bản thường" className={toolbarButtonClass(!headingLevel && !isBulletList && !isNumberedList)}>P</button>
+                                                <button type="button" onClick={() => applyCanvasHeadingFormat(1)} title="Tiêu đề cấp 1" aria-label="Tiêu đề cấp 1" className={toolbarButtonClass(headingLevel === 1)}>H1</button>
+                                                <button type="button" onClick={() => applyCanvasHeadingFormat(2)} title="Tiêu đề cấp 2" aria-label="Tiêu đề cấp 2" className={toolbarButtonClass(headingLevel === 2)}>H2</button>
+                                                <button type="button" onClick={() => applyCanvasHeadingFormat(3)} title="Tiêu đề cấp 3" aria-label="Tiêu đề cấp 3" className={toolbarButtonClass(headingLevel === 3)}>H3</button>
                                                 <span className={separatorClass} aria-hidden="true" />
-                                                <button type="button" onClick={() => applyCanvasInlineFormat("**")} title="In đậm toàn block" className={toolbarButtonClass(isBold)}>B</button>
-                                                <button type="button" onClick={() => applyCanvasInlineFormat("_")} title="In nghiêng toàn block" className={`${toolbarButtonClass(isItalic)} italic`}>I</button>
+                                                <button type="button" onClick={() => applyCanvasInlineFormat("**")} title="In đậm toàn block" aria-label="In đậm toàn block" className={toolbarButtonClass(isBold)}>B</button>
+                                                <button type="button" onClick={() => applyCanvasInlineFormat("_")} title="In nghiêng toàn block" aria-label="In nghiêng toàn block" className={`${toolbarButtonClass(isItalic)} italic`}>I</button>
                                                 <span className={separatorClass} aria-hidden="true" />
-                                                <button type="button" onClick={applyCanvasBulletFormat} title="Danh sách bullet" className={toolbarButtonClass(isBulletList)}>• List</button>
-                                                <button type="button" onClick={applyCanvasNumberedFormat} title="Danh sách đánh số" className={toolbarButtonClass(isNumberedList)}>1. List</button>
+                                                <button type="button" onClick={applyCanvasBulletFormat} title="Danh sách bullet" aria-label="Danh sách bullet" className={toolbarButtonClass(isBulletList)}>•</button>
+                                                <button type="button" onClick={applyCanvasNumberedFormat} title="Danh sách đánh số" aria-label="Danh sách đánh số" className={toolbarButtonClass(isNumberedList)}>1.</button>
                                                 <span className={separatorClass} aria-hidden="true" />
-                                                <button type="button" onClick={clearCanvasEditFormat} title="Xóa định dạng markdown cơ bản" className={toolbarButtonClass(false)}>Clear</button>
+                                                <button type="button" onClick={clearCanvasEditFormat} title="Xóa định dạng markdown cơ bản" aria-label="Xóa định dạng" className={toolbarButtonClass(false)}>Tx</button>
                                               </div>
 
-                                              <div className="flex flex-none items-center justify-end gap-2">
-                                                <button type="button" onClick={applyCanvasBlockEdit} className="inline-flex h-9 items-center justify-center rounded-lg bg-[#002D56] px-3.5 text-[12px] font-black text-white shadow-sm transition hover:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-[#002D56]/25">Xong</button>
-                                                <button type="button" onClick={cancelCanvasBlockEdit} className="inline-flex h-9 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-[12px] font-bold text-slate-700 transition hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-slate-200">Hủy</button>
-                                                <button type="button" onClick={() => void deleteCanvasBlock()} className="ml-1 inline-flex h-9 items-center justify-center rounded-lg border border-red-200 bg-white px-3 text-[12px] font-bold text-red-600 transition hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-red-100">Xóa block</button>
+                                              <div className="flex flex-none items-center justify-end gap-1.5">
+                                                <button type="button" onClick={applyCanvasBlockEdit} className="inline-flex h-10 min-w-12 items-center justify-center rounded-lg bg-[#002D56] px-3 text-[12px] font-black text-white shadow-sm transition hover:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-[#002D56]/25 touch-manipulation">Xong</button>
+                                                <button type="button" onClick={cancelCanvasBlockEdit} className="inline-flex h-10 min-w-12 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-[12px] font-bold text-slate-700 transition hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-slate-200 touch-manipulation">Hủy</button>
                                               </div>
                                             </div>
                                             {canvasBlockEditState.error && <p className="mt-2 rounded-lg bg-red-50 px-3 py-2 text-xs font-bold text-red-700">{canvasBlockEditState.error}</p>}
@@ -3461,54 +4041,89 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
                       </div>
   );
 
-  const renderActiveWorkspace = () => {
-    if (workspaceMode === "history") return renderHistoryMode();
-    if (workspaceMode === "create") return renderCreateMode();
-    if (workspaceMode === "review") return renderPlaceholderMode("review");
-    if (workspaceMode === "summarize") return renderPlaceholderMode("summarize");
-    if (workspaceMode === "sources") return renderSourcesMode();
-    return renderEditMode();
-  };
 
-  return (
-    <div className="relative h-full min-h-0 overflow-hidden">
-      <main
-        className={cn(
-          "h-full min-w-0 min-h-0 overflow-y-auto overscroll-contain custom-scrollbar space-y-5 pb-24 transition-[padding] duration-200",
-          copilotViewMode !== "collapsed" && copilotViewMode !== "fullscreen" ? "pr-1 xl:pr-[440px]" : "pr-1",
-        )}
-        onClick={handleWorkspaceClick}
-      >
-        {renderWorkspaceHeader()}
-        {renderActiveWorkspace()}
-      </main>
+  const renderSystemActivityPanel = () => {
+    const compactLogs = compactSystemActivityLogsForDisplay(systemActivityLogs);
+    const visibleLogs = isSystemActivityExpanded ? compactLogs.slice(0, 10) : compactLogs.slice(0, SYSTEM_ACTIVITY_DEFAULT_VISIBLE);
+    const getActivityVisual = (log: SystemActivityLogItem) => {
+      const action = getSystemActivityAction(log);
+      if (action === "save") return { label: "Lưu", icon: Save, className: "border-emerald-100 bg-emerald-50/70 text-emerald-800" };
+      if (action === "export") return { label: "Xuất", icon: FileDown, className: "border-blue-100 bg-blue-50/70 text-blue-800" };
+      if (action === "delete") return { label: "Xóa", icon: Trash2, className: "border-red-100 bg-red-50/70 text-red-800" };
+      if (action === "restore") return { label: "Khôi phục", icon: History, className: "border-violet-100 bg-violet-50/70 text-violet-800" };
+      if (action === "assistant") return { label: "Trợ lý", icon: Sparkles, className: "border-indigo-100 bg-indigo-50/70 text-indigo-800" };
+      if (action === "preflight") return { label: "Kiểm tra", icon: ClipboardCheck, className: "border-amber-100 bg-amber-50/70 text-amber-800" };
+      if (action === "error") return { label: "Lỗi", icon: AlertCircle, className: "border-red-100 bg-red-50/70 text-red-800" };
+      return {
+        label: log.type === "success" ? "Hoàn tất" : "Thông tin",
+        icon: log.type === "success" ? Check : Clock,
+        className: log.type === "success" ? "border-emerald-100 bg-emerald-50/70 text-emerald-800" : "border-slate-100 bg-slate-50 text-slate-700",
+      };
+    };
 
-      {isContextPillVisible && pillAnchor && selectedContextItems.length > 0 && selectedContextItems.length <= 3 && (
-        <div
-          data-context-pill="true"
-          data-export-exclude="true"
-          className="fixed z-40 flex items-center gap-2 rounded-full border border-blue-200 bg-white px-2 py-2 shadow-xl shadow-slate-900/10"
-          style={{ top: pillAnchor.top, left: pillAnchor.left }}
-          onMouseEnter={() => setIsContextPillVisible(true)}
-        >
+    return (
+      <section data-export-exclude="true" className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm" aria-label="Thông báo hệ thống">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <div className="min-w-0">
+            <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-500">Hoạt động</p>
+            <p className="truncate text-xs font-semibold text-slate-500">{systemActivityLogs.length > 0 ? `${systemActivityLogs.length} hoạt động của bản thảo/phiên hiện tại` : "Chưa có hoạt động phiên này"}</p>
+          </div>
           <button
             type="button"
-            onClick={() => {
-              setCopilotViewMode("expanded");
-              setIsContextPillVisible(false);
-            }}
-            className="inline-flex min-h-9 items-center gap-2 rounded-full bg-[#002D56] px-3 text-xs font-black text-white hover:bg-slate-900"
+            onClick={clearSystemActivityLogs}
+            disabled={systemActivityLogs.length === 0}
+            className="inline-flex h-8 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 text-[11px] font-bold text-slate-500 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
           >
-            <MessageCircle className="h-4 w-4" />
-            {selectedContextItems.length === 1 ? "Hỏi AI" : `Hỏi AI về ${selectedContextItems.length} nội dung`}
-          </button>
-          <button type="button" onClick={clearCopilotContext} className="flex h-8 w-8 items-center justify-center rounded-full text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Bỏ chọn context">
-            <X className="h-4 w-4" />
+            <Trash2 className="h-3.5 w-3.5" />
+            Xóa
           </button>
         </div>
-      )}
 
-      <FloatingCopilot
+        {visibleLogs.length === 0 ? (
+          <div className="rounded-xl bg-slate-50 px-3 py-3 text-xs font-semibold text-slate-500">
+            Lưu, xuất, xóa, kiểm tra và trạng thái Trợ lý của bản thảo/phiên hiện tại sẽ được ghi tại đây.
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {visibleLogs.map((log) => {
+              const visual = getActivityVisual(log);
+              const ActivityIcon = visual.icon;
+              return (
+              <div key={log.id} className={cn("rounded-xl border px-3 py-2 text-xs", visual.className)}>
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0 flex items-start gap-2">
+                    <span className="mt-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white/75">
+                      <ActivityIcon className="h-3.5 w-3.5" />
+                    </span>
+                    <div className="min-w-0">
+                      <p className="text-[10px] font-black uppercase tracking-[0.12em] opacity-70">{visual.label}</p>
+                      <p className="mt-0.5 font-bold leading-snug">{log.message}</p>
+                    </div>
+                  </div>
+                  <span className="shrink-0 whitespace-nowrap text-[10px] font-black opacity-70">{formatSystemActivityTime(log.createdAt)}</span>
+                </div>
+              </div>
+              );
+            })}
+          </div>
+        )}
+
+        {compactLogs.length > SYSTEM_ACTIVITY_DEFAULT_VISIBLE && (
+          <button
+            type="button"
+            onClick={() => setIsSystemActivityExpanded((current) => !current)}
+            className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-600 hover:bg-slate-50"
+          >
+            {isSystemActivityExpanded ? "Thu gọn" : `Xem thêm ${compactLogs.length - SYSTEM_ACTIVITY_DEFAULT_VISIBLE} hoạt động`}
+          </button>
+        )}
+      </section>
+    );
+  };
+
+  const renderCopilotPanel = (dockMode: "floating" | "rail" = "rail") => (
+<FloatingCopilot
+        dockMode={dockMode}
         viewMode={copilotViewMode}
         selectedContextItems={selectedContextItems}
         commands={copilotCommands}
@@ -3516,6 +4131,7 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
         pendingProposal={pendingProposal}
         statusMessage={copilotStatusMessage}
         inputValue={copilotInput}
+        chatMessages={copilotChatMessages}
         draftFlow={copilotDraftFlowState}
         sourceFlow={copilotSourceFlowState}
         isBusy={isCopilotBusy}
@@ -3543,6 +4159,256 @@ Nguồn tư liệu đã chọn: ${selectedSourceDocIds.length} tài liệu.`
           setCopilotStatusMessage("Đã hủy đề xuất. Nội dung gốc không thay đổi.");
         }}
       />
+  );
+
+  const RAIL_TABS = [
+    { id: "check" as const, label: "Kiểm tra" },
+    { id: "activity" as const, label: "Hoạt động" },
+    { id: "assistant" as const, label: "Trợ lý" },
+    { id: "sources" as const, label: "Nguồn" },
+  ];
+
+  const renderRightRail = () => {
+    if (copilotViewMode === "fullscreen") return renderCopilotPanel("floating");
+    const isExpanded = copilotViewMode !== "collapsed";
+    const checkBadge = preflightUiStatus === "stale" ? Math.max(1, reviewedPreflightIssues.length) : preflightUiStatus === "ready" ? reviewedPreflightIssues.length : 0;
+    const activityBadge = systemActivityLogs.length;
+    const contextBadge = selectedContextItems.length;
+    const railBadgeCount = checkBadge + activityBadge + contextBadge;
+    const badgeLabel = railBadgeCount > 9 ? "9+" : String(railBadgeCount);
+
+    if (!isExpanded) {
+      return (
+        <aside
+          data-export-exclude="true"
+          data-editorial-support="collapsed"
+          className="fixed bottom-4 right-0 top-[92px] z-40 hidden w-12 sm:block sm:w-14 md:block"
+        >
+          <button
+            type="button"
+            onClick={() => setCopilotViewMode("expanded")}
+            className="flex h-full w-full flex-col items-center justify-center gap-3 rounded-l-2xl border border-r-0 border-slate-200 bg-white/90 px-2 text-[#002D56] shadow-xl shadow-slate-900/10 backdrop-blur transition hover:bg-blue-50"
+            aria-label="Mở Hỗ trợ biên tập"
+          >
+            <PanelRightOpen className="h-5 w-5" />
+            <span className="[writing-mode:vertical-rl] text-[11px] font-black uppercase tracking-[0.18em]">Hỗ trợ</span>
+            {railBadgeCount > 0 && (
+              <span className="rounded-full bg-amber-400 px-1.5 py-0.5 text-[10px] font-black text-slate-900 [writing-mode:horizontal-tb]">{badgeLabel}</span>
+            )}
+          </button>
+        </aside>
+      );
+    }
+
+    return (
+      <aside
+        data-export-exclude="true"
+        data-editorial-support="expanded"
+        className={cn(
+          "data-editorial-support z-40 flex flex-col overflow-hidden border border-slate-200 bg-slate-50/95 shadow-2xl shadow-slate-900/15 backdrop-blur",
+          // Desktop/iPad landscape: fixed right rail
+          "fixed bottom-4 right-4 top-[92px] w-[min(420px,calc(100vw-2rem))] rounded-3xl",
+          // Mobile: full-width bottom sheet
+          "max-sm:bottom-0 max-sm:left-0 max-sm:right-0 max-sm:top-auto max-sm:max-h-[70vh] max-sm:w-full max-sm:rounded-t-3xl max-sm:rounded-b-none",
+        )}
+      >
+        {/* Header */}
+        <header className="flex shrink-0 items-center justify-between border-b border-slate-200 bg-white px-4 py-3">
+          <div className="min-w-0">
+            <p className="text-[13px] font-black text-[#002D56]">Hỗ trợ biên tập</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setCopilotViewMode("collapsed")}
+            className="rounded-lg p-2 text-slate-500 hover:bg-slate-100"
+            aria-label="Thu gọn hỗ trợ biên tập"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </header>
+
+        {/* Tab bar */}
+        <div className="flex shrink-0 border-b border-slate-200 bg-white px-1" role="tablist" aria-label="Hỗ trợ biên tập">
+          {RAIL_TABS.map((tab) => {
+            const badge =
+              tab.id === "check" ? checkBadge
+              : tab.id === "activity" ? activityBadge
+              : tab.id === "assistant" ? contextBadge
+              : 0;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                aria-selected={railActiveTab === tab.id}
+                onClick={() => setRailActiveTab(tab.id)}
+                className={cn(
+                  "relative flex-1 px-2 py-2.5 text-[12px] font-bold transition-colors",
+                  railActiveTab === tab.id
+                    ? "text-[#002D56] after:absolute after:bottom-0 after:left-1 after:right-1 after:h-0.5 after:rounded-full after:bg-[#002D56] after:content-['']"
+                    : "text-slate-500 hover:text-slate-700",
+                )}
+              >
+                {tab.label}
+                {badge > 0 && (
+                  <span className="ml-1 rounded-full bg-amber-400 px-1 text-[10px] font-black text-slate-900">
+                    {badge > 9 ? "9+" : badge}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Tab content - only render active tab */}
+        <div className="min-h-0 flex-1 overflow-y-auto custom-scrollbar">
+          {railActiveTab === "check" && (
+            <div className="p-3">
+              {taskType === "WRITE_NEW" ? (
+                <EditorialPreflightPanel
+                  kind={editorialKind}
+                  markdownContent={output}
+                  articleDocument={articleDocument}
+                  issues={visiblePreflightIssues}
+                  hasDraft={hasGeneratedDraft}
+                  reviewStatus={preflightUiStatus}
+                  onRequestReview={() => runUserRequestedPreflight("button")}
+                />
+              ) : (
+                <div className="rounded-xl bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
+                  <p className="font-semibold">Kiểm tra chỉ khả dụng khi viết bài mới.</p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {railActiveTab === "activity" && (
+            <div className="p-3">
+              {renderSystemActivityPanel()}
+            </div>
+          )}
+
+          {railActiveTab === "assistant" && (
+            <div className="min-h-[520px]">
+              {renderCopilotPanel("rail")}
+            </div>
+          )}
+
+          {railActiveTab === "sources" && (
+            <div className="p-3">
+              <div className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+                <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-500 mb-2">Nguồn tư liệu</p>
+                {selectedDraftSources.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-xs font-semibold leading-5 text-slate-500">
+                    Chưa gắn nguồn cho bản thảo này.
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {selectedDraftSources.map((source) => {
+                      return (
+                        <div key={source.id} className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2 text-xs">
+                          <div className="flex items-start gap-2">
+                            <FileText className="mt-0.5 h-3.5 w-3.5 shrink-0 text-blue-600" />
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate font-semibold leading-snug text-slate-700">{source.title}</p>
+                              <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                                <span className={cn("rounded-full border px-2 py-0.5 text-[10px] font-black", source.status.className)}>{source.status.label}</span>
+                                {!source.document && <span className="text-[10px] font-semibold text-slate-400">ID đã ẩn để tránh nhiễu</span>}
+                              </div>
+                            </div>
+                            {typeof toggleDocSelection === "function" && (
+                              <button
+                                type="button"
+                                onClick={() => toggleDocSelection(source.id)}
+                                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-600"
+                                aria-label="Gỡ nguồn khỏi bản thảo"
+                                title="Gỡ nguồn"
+                              >
+                                <X className="h-3.5 w-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={() => switchWorkspaceMode("sources")}
+                  className="mt-3 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-600 hover:bg-slate-50"
+                >
+                  Mở vùng nguồn tư liệu
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </aside>
+    );
+  };
+
+  const renderActiveWorkspace = () => {
+    if (workspaceMode === "history") return renderHistoryMode();
+    if (workspaceMode === "create") return renderCreateMode();
+    if (workspaceMode === "review") return renderPlaceholderMode("review");
+    if (workspaceMode === "summarize") return renderPlaceholderMode("summarize");
+    if (workspaceMode === "sources") return renderSourcesMode();
+    return renderEditMode();
+  };
+
+  return (
+    <div className="relative h-full min-h-0 overflow-hidden">
+      <main
+        className={cn(
+          "h-full min-w-0 min-h-0 overflow-y-auto overscroll-contain custom-scrollbar space-y-5 pb-24 transition-[padding] duration-200",
+          copilotViewMode !== "collapsed" && copilotViewMode !== "fullscreen" ? "pr-14 xl:pr-[440px]" : "pr-12 xl:pr-16",
+        )}
+        onClick={handleWorkspaceClick}
+      >
+        {renderWorkspaceHeader()}
+        {renderActiveWorkspace()}
+      </main>
+
+      {isContextPillVisible && pillAnchor && selectedContextItems.length > 0 && selectedContextItems.length <= 3 && (
+        <div
+          data-context-pill="true"
+          data-export-exclude="true"
+          data-context-pill-placement={pillAnchor.placement}
+          className="fixed z-40 flex flex-wrap items-center justify-end gap-2 rounded-2xl border border-blue-200 bg-white px-2 py-2 shadow-xl shadow-slate-900/10"
+          style={{ top: pillAnchor.top, left: pillAnchor.left, maxWidth: pillAnchor.maxWidth }}
+          onMouseEnter={() => setIsContextPillVisible(true)}
+        >
+          <button
+            type="button"
+            onClick={() => {
+              setCopilotViewMode("expanded");
+              setIsContextPillVisible(false);
+            }}
+            className="inline-flex min-h-10 items-center gap-2 rounded-full bg-[#002D56] px-3 text-xs font-black text-white hover:bg-slate-900 touch-manipulation"
+          >
+            <MessageCircle className="h-4 w-4" />
+            {selectedContextItems.length === 1 ? "Hỏi AI" : `Hỏi AI về ${selectedContextItems.length} nội dung`}
+          </button>
+          {!canvasBlockEditState && (
+            <button
+              type="button"
+              onClick={() => void deleteSelectedCanvasBlocks()}
+              className="inline-flex min-h-10 items-center gap-1.5 rounded-full border border-red-200 bg-white px-3 text-xs font-black text-red-600 hover:bg-red-50 touch-manipulation"
+              aria-label={selectedContextItems.length === 1 ? "Xóa block đã chọn" : `Xóa ${selectedContextItems.length} block đã chọn`}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              Xóa
+            </button>
+          )}
+          <button type="button" onClick={clearCopilotContext} className="inline-flex min-h-10 items-center gap-1.5 rounded-full px-3 text-xs font-black text-slate-500 hover:bg-slate-100 hover:text-slate-700 touch-manipulation" aria-label="Bỏ chọn context">
+            <X className="h-4 w-4" />
+            Bỏ chọn
+          </button>
+        </div>
+      )}
+
+      {renderRightRail()}
     </div>
   );
 };
