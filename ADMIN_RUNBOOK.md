@@ -67,6 +67,7 @@ Khi gặp lỗi nghiêm trọng trên production sau khi release, thực hiện 
 1. **Owner-based Access**: Dữ liệu người dùng được phân tách theo `userId` trong Firestore Security Rules.
 2. **Fail-closed Auth**: Mọi API ghi dữ liệu đều verify Firebase Token. Không có fallback parse thủ công.
 3. **Storage Quota**: Ảnh minh họa bị giới hạn 5MB và chỉ chấp nhận định dạng ảnh.
+4. **Excel Parser Audit**: `xlsx` hiện có cảnh báo bảo mật từ `npm audit` nhưng chưa có bản vá tương thích. Khi xử lý file Excel, giới hạn kích thước/tệp đầu vào, không xử lý file không tin cậy ngoài luồng xác thực, và ưu tiên tạo ticket thay thế bằng thư viện có bản vá khi khả thi.
 
 ## 7. Bảo trì Hình ảnh (Storage)
 - Đường dẫn: `illustrations/{userId}/{sessionId}/`.

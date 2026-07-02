@@ -39,6 +39,15 @@ import {
   extractDriveContent,
   determineDocumentKind,
 } from "./server/lib/drive.js";
+import {
+  DEFAULT_FALLBACK_MODEL,
+  DEFAULT_PRO_MODEL,
+  DEFAULT_TEXT_MODEL,
+  getModelConfigStatus,
+  normalizeModelName,
+  validateModelWithWhitelist,
+} from "./server/lib/modelConfig";
+import { createApiNotFoundResponse } from "./server/lib/apiResponses";
 
 // Firestore state
 let firestoreReady = false;
@@ -87,12 +96,6 @@ export interface DocumentSource {
   createdAt?: number;
   updatedAt?: number;
 }
-
-// Initialization constants
-const DEFAULT_TEXT_MODEL = process.env.GEMINI_TEXT_MODEL || "gemini-3.5-flash";
-const DEFAULT_PRO_MODEL = process.env.GEMINI_PRO_MODEL || "gemini-3.1-pro-preview";
-const DEFAULT_FALLBACK_MODEL =
-  process.env.GEMINI_FALLBACK_MODEL || "gemini-3.5-flash";
 
 // Initialize Firebase Admin
 let targetProjectId = process.env.FIREBASE_PROJECT_ID || "";
@@ -792,7 +795,7 @@ async function resolveActiveAIConfig(userId: string | null): Promise<{
   const systemApiKey = getSystemGeminiApiKey();
   const systemConfig = {
     apiKey: systemApiKey,
-    model: normalizeModelName(DEFAULT_TEXT_MODEL, "gemini-3.5-flash"),
+    model: normalizeModelName(DEFAULT_TEXT_MODEL, "gemini-2.5-flash-lite"),
     provider: "gemini",
     source: "system",
   };
@@ -874,40 +877,6 @@ async function assertSafeUrl(rawUrl: string) {
   if (records.some((r) => isPrivateIp(r.address)))
     throw new Error("URL nội bộ không được phép truy cập");
   return parsed.href;
-}
-
-const ALLOWED_MODELS = [
-  "gemini-3.5-flash",
-  "gemini-3.1-pro-preview",
-  "gemini-3.1-flash-lite",
-  "gemini-2.5-flash-lite",
-  "gemini-2.5-flash",
-  "gemini-2.5-pro",
-  "gemma-4-26b-a4b-it",
-  "gemma-4-31b-it",
-];
-
-function normalizeModelName(
-  name: string | undefined,
-  defaultModel: string,
-): string {
-  let target = (name || defaultModel).trim().toLowerCase();
-
-  if (target.startsWith("models/")) {
-    target = target.replace(/^models\//, "");
-  }
-
-  return target;
-}
-
-function validateModelWithWhitelist(modelName: string): void {
-  const allowCustom = process.env.ALLOW_CUSTOM_MODELS === "true";
-  const cleanModel = normalizeModelName(modelName, "");
-  if (!allowCustom && cleanModel && !ALLOWED_MODELS.includes(cleanModel)) {
-    throw new Error(
-      `Model ${cleanModel} không được hỗ trợ. Vui lòng chọn model trong danh sách (hoặc cấu hình ALLOW_CUSTOM_MODELS=true).`,
-    );
-  }
 }
 
 function getAI(apiKeyOverride?: string) {
@@ -1487,9 +1456,9 @@ function getDynamicModel(content: string, taskType: string): string {
   );
 
   if (isComplexType || isLong || hasComplexityKeywords) {
-    return normalizeModelName(process.env.GEMINI_PRO_MODEL, "gemini-3.1-pro-preview");
+    return normalizeModelName(process.env.GEMINI_PRO_MODEL, "gemini-2.5-pro");
   }
-  return normalizeModelName(process.env.GEMINI_TEXT_MODEL, "gemini-3.5-flash");
+  return normalizeModelName(process.env.GEMINI_TEXT_MODEL, "gemini-2.5-flash-lite");
 }
 
 function classifyGeminiError(error: any) {
@@ -1624,7 +1593,7 @@ async function analyzeDocumentContent(
     const aiConfig = await resolveActiveAIConfig(userId);
     const ai = getAI(aiConfig.apiKey);
     const model = ai.getGenerativeModel({
-      model: aiConfig.model || "gemini-3.5-flash",
+      model: aiConfig.model || "gemini-2.5-flash-lite",
       systemInstruction:
         "Bạn là chuyên gia phân tích và tóm tắt tài liệu nghiệp vụ hàng hải. Luôn trích xuất dữ kiện khách quan, không bịa đặt.",
     });
@@ -1861,7 +1830,7 @@ async function generateChatWithFallback(
 
     let fallbackModel = normalizeModelName(
       DEFAULT_FALLBACK_MODEL,
-      "gemini-3.5-flash",
+      "gemini-2.5-flash-lite",
     );
 
     if (!shouldFallback || fallbackModel === primaryModelId) {
@@ -2233,6 +2202,7 @@ async function startServer() {
 
     const sysKey = getSystemGeminiApiKey();
     const hasSystemGeminiKey = !!sysKey;
+    const modelConfig = getModelConfigStatus(process.env);
     const isDebug = process.env.DEBUG_HEALTH === "true";
     const isProduction = process.env.NODE_ENV === "production";
 
@@ -2244,6 +2214,9 @@ async function startServer() {
       firestoreDatabaseId: configuredDatabaseId || "",
       firestoreDatabaseIdLength: configuredDatabaseId ? configuredDatabaseId.length : 0,
       aiConfigured: hasSystemGeminiKey,
+      models: modelConfig.models,
+      modelConfigValid: modelConfig.modelConfigValid,
+      modelConfigErrors: modelConfig.modelConfigErrors,
       driveConfigured: !!process.env.GOOGLE_DRIVE_API_KEY,
       timestamp: new Date().toISOString(),
     };
@@ -2258,18 +2231,6 @@ async function startServer() {
         hasSystemGeminiKey,
         hasGoogleDriveKey: !!process.env.GOOGLE_DRIVE_API_KEY,
         hasEncryptionSecret: !!process.env.AI_KEY_ENCRYPTION_SECRET,
-        textModel: normalizeModelName(
-          process.env.GEMINI_TEXT_MODEL,
-          DEFAULT_TEXT_MODEL,
-        ),
-        proModel: normalizeModelName(
-          process.env.GEMINI_PRO_MODEL,
-          DEFAULT_PRO_MODEL,
-        ),
-        fallbackModel: normalizeModelName(
-          process.env.GEMINI_FALLBACK_MODEL,
-          DEFAULT_FALLBACK_MODEL,
-        ),
       };
 
       if (isDebug) {
@@ -3364,7 +3325,7 @@ async function startServer() {
         });
       }
 
-      const testModel = req.body.model || aiConfig.model || process.env.GEMINI_TEXT_MODEL || "gemini-3.5-flash";
+      const testModel = req.body.model || aiConfig.model || process.env.GEMINI_TEXT_MODEL || "gemini-2.5-flash-lite";
       
       const ai = getAI(aiConfig.apiKey);
       const model = ai.getGenerativeModel({ model: testModel });
@@ -3421,7 +3382,7 @@ async function startServer() {
       const aiConfig = await resolveActiveAIConfig(userId);
       const textModel =
         aiConfig.model ||
-        normalizeModelName(DEFAULT_TEXT_MODEL, "gemini-3.5-flash");
+        normalizeModelName(DEFAULT_TEXT_MODEL, "gemini-2.5-flash-lite");
 
       let ai;
       try {
@@ -3588,7 +3549,7 @@ async function startServer() {
 
       if (provider === "gemini") {
         const testAI = new GoogleGenerativeAI(apiKey);
-        const testModel = normalizeModelName(model, "gemini-3.5-flash");
+        const testModel = normalizeModelName(model, "gemini-2.5-flash-lite");
         const generativeModel = testAI.getGenerativeModel({ model: testModel });
         const result = await generativeModel.generateContent({
           contents: [
@@ -3683,7 +3644,7 @@ async function startServer() {
 
       // Re-test before saving to be safe
       const testAI = new GoogleGenerativeAI(apiKey);
-      const testModel = normalizeModelName(model, "gemini-3.5-flash");
+      const testModel = normalizeModelName(model, "gemini-2.5-flash-lite");
       const generativeModel = testAI.getGenerativeModel({ model: testModel });
       await generativeModel.generateContent({
         contents: [{ role: "user", parts: [{ text: "OK" }] }],
@@ -4929,7 +4890,7 @@ TRẢ VỀ DUY NHẤT 1 FILE JSON THEO ĐÚNG CẤU TRÚC SAU (không code block
             ? aiConfig.model
             : normalizeModelName(
                 process.env.GEMINI_PRO_MODEL,
-                "gemini-3.1-pro-preview",
+                "gemini-2.5-pro",
               );
         const model = ai.getGenerativeModel({
           model: usedModel,
@@ -5010,7 +4971,7 @@ TRẢ VỀ DUY NHẤT 1 FILE JSON THEO ĐÚNG CẤU TRÚC SAU (không code block
       const fallbackModels = [
         preferredModel,
         process.env.GEMINI_TEXT_MODEL,
-        "gemini-3.5-flash"
+        "gemini-2.5-flash-lite"
       ].filter(Boolean) as string[];
 
       const uniqueModels = [...new Set(fallbackModels)];
@@ -5578,7 +5539,7 @@ Trả về kết quả dưới định dạng JSON, gồm slide đã được c�
       const textModel =
         aiConfig.model && aiConfig.provider === "gemini"
           ? aiConfig.model
-          : "gemini-3.5-flash";
+          : "gemini-2.5-flash-lite";
       const modelConfig = {
         model: textModel,
         systemInstruction: AI_SAFETY_NOTE,
@@ -5690,7 +5651,7 @@ Chỉ trả về JSON hợp lệ theo schema sau, KHÔNG prefix với markdown:
       const textModel =
         aiConfig.model && aiConfig.provider === "gemini"
           ? aiConfig.model
-          : "gemini-3.5-flash";
+          : "gemini-2.5-flash-lite";
       const modelConfig = {
         model: textModel,
         systemInstruction: AI_SAFETY_NOTE,
@@ -5780,7 +5741,7 @@ Trả về kết quả dưới định dạng JSON:
       const textModel =
         aiConfig.model && aiConfig.provider === "gemini"
           ? aiConfig.model
-          : "gemini-3.5-flash";
+          : "gemini-2.5-flash-lite";
       const modelConfig = {
         model: textModel,
         systemInstruction: AI_SAFETY_NOTE,
@@ -5877,7 +5838,7 @@ Hãy xuất ra MỘT file HTML hoàn chỉnh, không tách rời CSS/JS, để t
       const textModel =
         aiConfig.model && aiConfig.provider === "gemini"
           ? aiConfig.model
-          : "gemini-3.1-pro-preview";
+          : "gemini-2.5-pro";
       const modelConfig = {
         model: textModel,
         systemInstruction: AI_SAFETY_NOTE,
@@ -6747,14 +6708,14 @@ Schema bắt buộc:
       const configuredDataModel = process.env.GEMINI_DATA_ANALYSIS_MODEL;
       const allowProForData = process.env.ALLOW_PRO_FOR_DATA_ANALYSIS === "true";
 
-      let modelName = configuredDataModel || process.env.GEMINI_TEXT_MODEL || "gemini-3.5-flash";
+      let modelName = configuredDataModel || process.env.GEMINI_TEXT_MODEL || "gemini-2.5-flash-lite";
 
       if (!allowProForData && /pro|preview/i.test(modelName)) {
-        console.warn("[DATA_ANALYZE] Pro/Preview model is disabled for data analysis. Falling back to gemini-3.5-flash.");
-        modelName = "gemini-3.5-flash";
+        console.warn("[DATA_ANALYZE] Pro/Preview model is disabled for data analysis. Falling back to gemini-2.5-flash-lite.");
+        modelName = "gemini-2.5-flash-lite";
       }
 
-      usedModel = normalizeModelName(modelName, "gemini-3.5-flash");
+      usedModel = normalizeModelName(modelName, "gemini-2.5-flash-lite");
       
       const modelConfig = {
         model: usedModel,
@@ -6967,7 +6928,7 @@ Schema bắt buộc:
       const aiConfig = await resolveActiveAIConfig(userId);
       const ai = getAI(aiConfig.apiKey);
       
-      usedModel = normalizeModelName(DEFAULT_TEXT_MODEL, "gemini-3.5-flash");
+      usedModel = normalizeModelName(DEFAULT_TEXT_MODEL, "gemini-2.5-flash-lite");
 
       const prompt = `Bạn là Trợ lý Biên tập Đề án chuyên nghiệp cho "VMS Navigator".
 Nhiệm vụ: Đọc nội dung file trích xuất và phân bổ nội dung vào các mục đề cương của đề án "${proposal?.name}".
@@ -7215,7 +7176,7 @@ Hãy phản hồi theo ĐÚNG định dạng JSON:
           ? aiConfig.model
           : normalizeModelName(
               process.env.GEMINI_TEXT_MODEL,
-              "gemini-3.5-flash",
+              "gemini-2.5-flash-lite",
             );
       const model = ai.getGenerativeModel({
         model: textModel,
@@ -7740,13 +7701,7 @@ ${content.slice(0, 10000)}`;
 
   // Global API 404 handler - MUST remain AFTER all API routes but BEFORE Vite middleware
   app.use("/api", (req, res) => {
-    res.status(404).json({
-      success: false,
-      errorType: "api_route_not_found",
-      message: `Không tìm thấy API route: ${req.method} ${req.originalUrl}`,
-      path: req.originalUrl,
-      method: req.method,
-    });
+    res.status(404).json(createApiNotFoundResponse(req.method, req.originalUrl));
   });
 
   // Global API error handler - MUST remain before Vite middleware
@@ -7782,11 +7737,7 @@ ${content.slice(0, 10000)}`;
 
   // Explicitly prevent /api/* routes from falling through to the frontend / vite handler
   app.use('/api', (req, res) => {
-    res.status(404).json({
-      success: false,
-      error: 'api_not_found',
-      message: `API route not found: ${req.method} ${req.originalUrl}`
-    });
+    res.status(404).json(createApiNotFoundResponse(req.method, req.originalUrl));
   });
 
   // Vite/Frontend serving
@@ -7826,3 +7777,4 @@ process.on("uncaughtException", (err) => {
 });
 
 startServer();
+

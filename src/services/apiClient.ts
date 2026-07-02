@@ -17,6 +17,22 @@ if (typeof window !== 'undefined') {
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+export function shouldRetryApiError(err: any): boolean {
+  if (err?.errorType === 'quota_exceeded' || err?.errorType === 'ai_overloaded') {
+    return false;
+  }
+
+  if (!err?.status) {
+    return true;
+  }
+
+  if ((err.status >= 400 && err.status < 500) || err.status === 410) {
+    return false;
+  }
+
+  return err.status >= 500;
+}
+
 export async function apiFetchJson<T = any>(
   url: string,
   options: ApiFetchOptions = {}
@@ -214,12 +230,7 @@ export async function apiFetchJson<T = any>(
 
       if (attempt < retries) {
         // Only retry on network errors, 5xx server errors (not overloaded), or timeouts
-        const shouldRetry = !err.status || (err.status >= 500 && err.status !== 503 && err.errorType !== 'ai_overloaded');
-        
-        // Actually, for 503, YÊU CẦU 1 says don't retry if it's ai_overloaded.
-        // If status is 503 but it's NOT ai_overloaded, maybe it's the backend really being down.
-        
-        if (shouldRetry) {
+        if (shouldRetryApiError(err)) {
           await sleep(retryDelayMs * (attempt + 1));
           continue;
         }

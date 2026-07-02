@@ -16,14 +16,17 @@ Trên Firebase Console:
 ## 3. Biến môi trường
 Tạo file `.env` từ `.env.example` và điền đầy đủ các giá trị:
 - `GEMINI_API_KEY`: Lấy từ [Google AI Studio](https://aistudio.google.com/).
-- `GEMINI_TEXT_MODEL`: Chốt ở `gemini-2.5-flash` cho hiệu năng cao.
+- `GEMINI_TEXT_MODEL`: Chốt ở `gemini-2.5-flash-lite` cho hiệu năng cao.
 - `GEMINI_PRO_MODEL`: Chốt ở `gemini-2.5-pro` dùng cho phân tích sâu và lập kế hoạch công việc.
+- `GEMINI_FALLBACK_MODEL`: Chốt ở `gemini-2.5-flash-lite`.
+- `ALLOW_CUSTOM_MODELS`: Đặt `false` mặc định; chỉ bật `true` khi chủ động dùng model ngoài allowlist backend.
 - `GOOGLE_API_KEY`: API Key từ Google Cloud Console để quét thư mục Drive và Search.
 - `FIREBASE_PROJECT_ID`: ID dự án Firebase (`YOUR_FIREBASE_PROJECT_ID`).
 - `FIRESTORE_DATABASE_ID`: ID database Firestore (`YOUR_FIRESTORE_DATABASE_ID`).
 - `FIREBASE_SERVICE_ACCOUNT_JSON`: Nội dung JSON Service Account.
 - `FIREBASE_SERVICE_ACCOUNT_JSON_BASE64`: Nội dung JSON Service Account dạng Base64 (nếu không hỗ trợ multiline secret).
 - `DEBUG_HEALTH`: Đặt `true` để xem chi tiết lỗi tại `/api/health`.
+- Production auth: đặt `VITE_ENABLE_GOOGLE_AUTH=true` và `VITE_ENABLE_ANONYMOUS_AUTH=false`, trừ khi có quyết định vận hành riêng cho môi trường preview/dev.
 
 ### Lưu ý quan trọng về Bảo mật:
 - **KHÔNG ĐƯỢC** commit Service Account JSON vào mã nguồn.
@@ -57,3 +60,12 @@ Hệ thống sẽ chạy ở port 3000 và phục vụ các file tĩnh từ `dis
 - Tải được ảnh thủ công lên Storage.
 - Xuất được file PDF có đầy đủ ảnh đã duyệt.
 - AI Task Builder trích xuất được công việc đúng định dạng.
+
+## 7. Release Checklist
+Trước khi triển khai production:
+- [ ] Backup Firestore hoặc xác nhận backup tự động gần nhất còn dùng được.
+- [ ] Chạy `npm ci`, `npm run lint`, `npm test`, `npm run build`, `npm run security:audit`.
+- [ ] Deploy staging/preview và kiểm tra `/api/health` trả JSON, `modelConfigValid: true`.
+- [ ] Smoke test: Auth, Task CRUD, Editorial save/reload, DOCX/PDF export, Drive import.
+- [ ] Kiểm tra logs backend sau deploy, đặc biệt lỗi Auth audience, Firestore database ID, Gemini quota/model.
+- [ ] Không bật Proposal API/Menu nếu chưa có quyết định release riêng.
