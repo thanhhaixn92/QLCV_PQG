@@ -18,13 +18,29 @@ export default defineConfig(({mode}) => {
     build: {
       rollupOptions: {
         output: {
-          manualChunks: {
-            vendor: ['react', 'react-dom'],
-            firebase: ['firebase/app', 'firebase/auth', 'firebase/firestore', 'firebase/storage'],
-            ui: ['lucide-react', 'motion/react', 'react-hot-toast'],
-            pptx: ['pptxgenjs'],
-            docx: ['docx', 'file-saver'],
-            markdown: ['react-markdown']
+          manualChunks(id) {
+            if (id.includes('node_modules')) {
+              if (id.includes('firebase')) return 'firebase';
+              if (id.includes('pdfmake')) return 'pdfmake';
+              if (id.includes('vfs_fonts')) return 'pdfmake-fonts';
+              if (id.includes('xlsx')) return 'xlsx';
+              if (id.includes('docx') || id.includes('file-saver')) return 'docx';
+              if (id.includes('pptxgenjs')) return 'pptx';
+              if (id.includes('react-markdown')) return 'markdown';
+              if (id.includes('lucide-react') || id.includes('motion') || id.includes('react-hot-toast')) return 'ui';
+              if (id.includes('react') || id.includes('react-dom')) return 'vendor';
+            }
+
+            const normalized = id.split(path.sep).join('/');
+            if (normalized.includes('/src/features/proposals/') || normalized.includes('/src/components/proposals/')) {
+              return 'proposals';
+            }
+            if (normalized.includes('/src/components/admin/')) {
+              return 'admin';
+            }
+            if (normalized.includes('/src/components/editorial/') || normalized.includes('/src/lib/publishing/')) {
+              return 'editorial';
+            }
           }
         }
       }
