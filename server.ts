@@ -48,6 +48,7 @@ import {
 } from "./server/lib/modelConfig";
 import { createApiNotFoundResponse } from "./server/lib/apiResponses";
 import { registerHealthRoute } from "./server/routes/health";
+import { registerUserProfileRoutes } from "./server/routes/userProfile";
 
 // Firestore state
 let firestoreReady = false;
@@ -3685,155 +3686,16 @@ async function startServer() {
     }
   });
 
-  // --- USER PROFILE & SETTINGS ---
-  app.get("/api/user/profile", async (req, res) => {
-    try {
-      const userId = await getUserIdFromRequest(req, res);
-      if (userId === "AUTH_AUDIENCE_MISMATCH" || userId === "AUTH_ERROR")
-        return;
-      if (!userId) {
-        return res
-          .status(401)
-          .json({
-            success: false,
-            error: "unauthorized",
-            errorType: "unauthorized",
-            message: "Vui lòng đăng nhập.",
-          });
-      }
-
-      const token = await getUserTokenFromRequest(req);
-      if (!token) return; // Should not happen if userId is set
-
-      const effectiveRole = getEffectiveUserRole(token);
-
-      // Auto-bootstrap set claim if needed
-      if (effectiveRole === "admin" && token.role !== "admin") {
-        if (adminAuth) {
-          await adminAuth.setCustomUserClaims(token.uid, { role: "admin" });
-        }
-      }
-
-      if (!firestoreReady) {
-        return res.json({
-          success: true,
-          profile: {
-            uid: token.uid,
-            email: token.email || "",
-            displayName: token.name || "Người dùng Offline",
-            photoURL: token.picture || "",
-            role: effectiveRole,
-            createdAt: Date.now(),
-            updatedAt: Date.now(),
-          },
-        });
-      }
-
-      const profileSnap = await db
-        .collection("users")
-        .doc(token.uid)
-        .collection("profile")
-        .doc("main")
-        .get();
-
-      if (profileSnap.exists) {
-        return res.json({
-          success: true,
-          profile: {
-            ...profileSnap.data(),
-            uid: token.uid,
-            email: token.email || "",
-            role: effectiveRole,
-          },
-        });
-      }
-
-      // Initialize basic profile if missing
-      const baseProfile = {
-        uid: token.uid,
-        email: token.email || "",
-        displayName: token.name || "",
-        photoURL: token.picture || "",
-        role: effectiveRole,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      };
-
-      await db
-        .collection("users")
-        .doc(token.uid)
-        .collection("profile")
-        .doc("main")
-        .set(baseProfile);
-
-      return res.json({
-        success: true,
-        profile: baseProfile,
-      });
-    } catch (error: any) {
-      const classified = classifyFirestoreError(error);
-      logFirestoreError("api/user/profile", error);
-
-      return res.status(500).json({
-        success: false,
-        errorType: classified.errorType || "profile_get_failed",
-        message: classified.message || "Không thể lấy thông tin hồ sơ.",
-      });
-    }
-  });
-
-  app.post("/api/user/profile", async (req, res) => {
-    try {
-      const userId = await getUserIdFromRequest(req);
-      if (!userId) {
-        return res.status(401).json({
-          success: false,
-          errorType: "unauthorized",
-          message: "Vui lòng đăng nhập để lưu hồ sơ.",
-        });
-      }
-
-      if (!ensureFirestoreReady(res)) return;
-
-      const timestamp = Date.now();
-      const profileData = {
-        displayName: String(req.body?.displayName || "").trim(),
-        title: String(req.body?.title || "").trim(),
-        department: String(req.body?.department || "").trim(),
-        phone: String(req.body?.phone || "").trim(),
-        avatarText: String(req.body?.avatarText || "").trim(),
-        defaultAssigneeName: String(req.body?.defaultAssigneeName || "").trim(),
-        defaultTaskCategoryCode: String(
-          req.body?.defaultTaskCategoryCode || "LV_DH",
-        ).trim(),
-        ownerId: userId,
-        updatedAt: timestamp,
-      };
-
-      await db
-        .collection("users")
-        .doc(userId)
-        .collection("profile")
-        .doc("main")
-        .set(profileData, { merge: true });
-
-      return res.json({
-        success: true,
-        profile: profileData,
-      });
-    } catch (error: any) {
-      const classified = classifyFirestoreError(error);
-      console.error("[Firestore Error - POST /api/user/profile]", {
-        errorType: classified.errorType,
-        message: classified.message,
-      });
-
-      return res.status(500).json({
-        success: false,
-        errorType: classified.errorType || "profile_save_failed",
-        message: classified.message || "Không thể lưu thông tin hồ sơ.",
-      });
-    }
+  registerUserProfileRoutes(app, {
+    getUserIdFromRequest,
+    getUserTokenFromRequest,
+    getEffectiveUserRole,
+    adminAuth,
+    db,
+    isFirestoreReady: () => firestoreReady,
+    ensureFirestoreReady,
+    classifyFirestoreError,
+    logFirestoreError,
   });
 
   // --- AI CHAT ATTACHMENTS ---
