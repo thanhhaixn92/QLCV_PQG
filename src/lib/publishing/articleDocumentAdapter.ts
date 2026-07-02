@@ -267,9 +267,37 @@ export function createArticleDocumentFromCurrentContent(
   const parsedLines = parseMarkdownLines(normalizeEditorialBriefContent(content));
   const blocks: ArticleBlock[] = [];
   let blockIndex = 0;
-  let resolvedTitle = options.title?.trim() || "Bài viết chưa có tiêu đề";
-  let titleConsumed = Boolean(options.title?.trim());
-  let sapoConsumed = Boolean(options.sapo?.trim());
+
+  // Use provided options as fallback, but content remains primary
+  let resolvedTitle = options.title?.trim() || "";
+  let resolvedSapo = options.sapo?.trim() || "";
+  
+  // Strategy: If title/sapo are provided in options, we'll try to find them in content first.
+  // If found/parsed from content, we use content version.
+  // If NOT found in content, we push them from options ONLY if they are substantial.
+  
+  let titleConsumed = false;
+  let sapoConsumed = false;
+
+  // Pre-parse check for title to avoid duplication if it's the very first heading
+  const firstHeadingLine = parsedLines.find(l => l.kind === "heading" && l.level === 1);
+  if (firstHeadingLine && resolvedTitle && normalizeComparableText(firstHeadingLine.text) === normalizeComparableText(resolvedTitle)) {
+    // If first # Heading matches options.title, we skip pushing it from options and let it be consumed by parser
+  } else if (resolvedTitle) {
+    // If no match but title exists in options, push it now as a block
+    blocks.push(createBlock("title", blockIndex++, { text: resolvedTitle }));
+    titleConsumed = true;
+  }
+
+  // Similar for sapo - if options.sapo matches a paragraph at the start, skip pushing from options
+  const firstSignificantPara = parsedLines.find(l => l.kind === "paragraph" && l.text.length > 5);
+  if (firstSignificantPara && resolvedSapo && normalizeComparableText(firstSignificantPara.text) === normalizeComparableText(resolvedSapo)) {
+    // If first para matches sapo, skip pushing header-input sapo from options
+  } else if (resolvedSapo) {
+    blocks.push(createBlock("sapo", blockIndex++, { text: resolvedSapo }));
+    sapoConsumed = true;
+  }
+
   let previousText = "";
   let previousFigureCaption = "";
   const pendingBullets: string[] = [];
@@ -334,13 +362,6 @@ export function createArticleDocumentFromCurrentContent(
     flushOrdered();
     flushTable();
   };
-
-  if (options.title?.trim()) {
-    blocks.push(createBlock("title", blockIndex++, { text: resolvedTitle }));
-  }
-  if (options.sapo?.trim()) {
-    blocks.push(createBlock("sapo", blockIndex++, { text: options.sapo.trim() }));
-  }
 
   parsedLines.forEach((line) => {
     if (line.kind === "blank") {
@@ -444,12 +465,12 @@ export function createArticleDocumentFromCurrentContent(
 
   flushLists();
 
-  if (!titleConsumed) {
-    blocks.unshift(createBlock("title", 0, { text: resolvedTitle }));
+  if (blocks.length === 0 && !titleConsumed) {
+    blocks.push(createBlock("title", 0, { text: resolvedTitle }));
   }
 
-  if (blocks.length === 1) {
-    blocks.push(createBlock("paragraph", 1, { text: "Nội dung bài viết sẽ được bổ sung trong bước biên tập tiếp theo." }));
+  if (blocks.length <= 1 && !blocks.find(b => b.type === "paragraph")) {
+    blocks.push(createBlock("paragraph", blockIndex++, { text: "Nội dung bài viết sẽ được bổ sung trong bước biên tập tiếp theo." }));
   }
 
   return {
@@ -464,7 +485,7 @@ export function createArticleDocumentFromCurrentContent(
     locale: "vi-VN",
     metadata: {
       title: resolvedTitle,
-      sapo: options.sapo,
+      sapo: resolvedSapo || options.sapo,
       authorName: options.authorName,
       organization: options.organization,
       category: options.category,
