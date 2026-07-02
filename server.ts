@@ -43,11 +43,11 @@ import {
   DEFAULT_FALLBACK_MODEL,
   DEFAULT_PRO_MODEL,
   DEFAULT_TEXT_MODEL,
-  getModelConfigStatus,
   normalizeModelName,
   validateModelWithWhitelist,
 } from "./server/lib/modelConfig";
 import { createApiNotFoundResponse } from "./server/lib/apiResponses";
+import { registerHealthRoute } from "./server/routes/health";
 
 // Firestore state
 let firestoreReady = false;
@@ -2188,60 +2188,21 @@ async function startServer() {
     },
   );
 
-  app.get("/api/health", async (req, res) => {
-    if (process.env.DEBUG_HEALTH === "true") console.log("[HEALTH] request");
-    // Attempt verification only if potentially ready
-    if (
-      !firestoreReady &&
-      targetProjectId &&
-      credentialSource !== "none" &&
-      db
-    ) {
-      await verifyFirestoreAccess();
-    }
-
-    const sysKey = getSystemGeminiApiKey();
-    const hasSystemGeminiKey = !!sysKey;
-    const modelConfig = getModelConfigStatus(process.env);
-    const isDebug = process.env.DEBUG_HEALTH === "true";
-    const isProduction = process.env.NODE_ENV === "production";
-
-    let healthData: any = {
-      ok: true,
-      serverReady: true,
+  registerHealthRoute(app, {
+    getState: () => ({
       firestoreReady,
-      firebaseProjectId: targetProjectId || "",
-      firestoreDatabaseId: configuredDatabaseId || "",
-      firestoreDatabaseIdLength: configuredDatabaseId ? configuredDatabaseId.length : 0,
-      aiConfigured: hasSystemGeminiKey,
-      models: modelConfig.models,
-      modelConfigValid: modelConfig.modelConfigValid,
-      modelConfigErrors: modelConfig.modelConfigErrors,
-      driveConfigured: !!process.env.GOOGLE_DRIVE_API_KEY,
-      timestamp: new Date().toISOString(),
-    };
-
-    if (!isProduction || isDebug) {
-      healthData = {
-        ...healthData,
-        firebaseConfigured: !!targetProjectId,
-        errorType: firestoreErrorType,
-        credentialSource,
-        credentialProjectId,
-        hasSystemGeminiKey,
-        hasGoogleDriveKey: !!process.env.GOOGLE_DRIVE_API_KEY,
-        hasEncryptionSecret: !!process.env.AI_KEY_ENCRYPTION_SECRET,
-      };
-
-      if (isDebug) {
-        healthData.firestoreError = firestoreError;
-        healthData.firestoreErrorType = firestoreErrorType;
-        healthData.firestoreRawCode = firestoreRawCode;
-      }
-    }
-
-    if (process.env.DEBUG_HEALTH === "true") console.log("[HEALTH] response");
-    res.json(healthData);
+      targetProjectId,
+      configuredDatabaseId,
+      credentialSource,
+      credentialProjectId,
+      firestoreError,
+      firestoreErrorType,
+      firestoreRawCode,
+      canVerifyFirestore:
+        !!targetProjectId && credentialSource !== "none" && !!db,
+    }),
+    verifyFirestoreAccess,
+    getSystemGeminiApiKey,
   });
 
   app.get("/api/fetch-link", async (req, res) => {
